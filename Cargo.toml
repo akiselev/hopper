@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/hopper-core",
+    "crates/hopper-rsp",
+    "crates/hopper-rr",
+    "crates/hopper-symbols",
+    "crates/hopper-eval",
+    "crates/hopper-sidecar",
+    "crates/hopper-index",
+    "crates/hopper-engine",
+    "crates/hopper-fake",
+    "crates/hopper-cli",
+    "crates/hopper-mcp",
+    "crates/hopper-dap",
+]
+# Built separately: `hopper-build` needs a pinned nightly with rustc-dev (its own
+# rust-toolchain.toml), `gui/` needs the sibling svelters/berth/quire checkouts, and
+# `fixtures/` holds the debuggee programs the tests record and inspect.
+exclude = ["hopper-build", "gui", "fixtures"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+hopper-core = { path = "crates/hopper-core" }
+hopper-rsp = { path = "crates/hopper-rsp" }
+hopper-rr = { path = "crates/hopper-rr" }
+hopper-symbols = { path = "crates/hopper-symbols" }
+hopper-eval = { path = "crates/hopper-eval" }
+hopper-sidecar = { path = "crates/hopper-sidecar" }
+hopper-index = { path = "crates/hopper-index" }
+hopper-engine = { path = "crates/hopper-engine" }
+hopper-fake = { path = "crates/hopper-fake" }
+
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gimli = "0.34"
+addr2line = "0.27"
+object = "0.40"
+memmap2 = "0.9"
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
+zstd = "0.14"
+redb = "4"
+crossbeam-channel = "0.5"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+rustc-demangle = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev]
+debug = "line-tables-only"

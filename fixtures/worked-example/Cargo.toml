@@ -1,0 +1,14 @@
+[package]
+name = "worked-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[profile.dev]
+debug = 2
+opt-level = 0
+
+[profile.release]
+debug = 2
