@@ -1,0 +1,5 @@
+# rustc_plugin 0.15.2 pins this nightly; the driver links against its rustc-dev, so the binaries
+# hopper-build produces (and their sidecars) come from exactly this compiler.
+[toolchain]
+channel = "nightly-2026-05-01"
+components = ["rustc-dev", "llvm-tools-preview", "rust-src", "clippy", "rustfmt"]

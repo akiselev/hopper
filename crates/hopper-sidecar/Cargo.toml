@@ -1,5 +1,6 @@
 [package]
 name = "hopper-sidecar"
+description = "The .hsc ownership-sidecar format (reader, writer, partial linking) and the PC-to-ownership-event join."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,13 @@ publish.workspace = true
 
 [dependencies]
 hopper-core.workspace = true
+serde.workspace = true
+zstd.workspace = true
+object.workspace = true
+rustc-demangle.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

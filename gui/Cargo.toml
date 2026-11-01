@@ -1,0 +1,78 @@
+# hopper's desktop GUI: its own workspace, because it builds against the sibling checkouts
+# `../../svelters` (skelter), `../../berth` (docking) and `../../quire` (the source view).
+[workspace]
+resolver = "3"
+members = ["."]
+
+[package]
+name = "hopper-gui"
+description = "hopper's desktop viewer on skelter: source, stack, locals, timeline, calls and a query pane over a dyn Debugger."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[[bin]]
+name = "hopper-gui"
+path = "src/main.rs"
+
+[dependencies]
+hopper-core = { path = "../crates/hopper-core" }
+hopper-fake = { path = "../crates/hopper-fake" }
+
+skelter = { path = "../../svelters/crates/skelter" }
+skelter-base = { path = "../../svelters/crates/skelter-base" }
+skelter-core = { path = "../../svelters/crates/skelter-core" }
+skelter-canvas = { path = "../../svelters/crates/skelter-canvas" }
+skelter-compositor = { path = "../../svelters/crates/skelter-compositor" }
+skelter-platform = { path = "../../svelters/crates/skelter-platform" }
+skelter-text = { path = "../../svelters/crates/skelter-text" }
+skelter-widgets = { path = "../../svelters/crates/skelter-widgets" }
+# The headless harness: `--shot` renders the window offscreen (lavapipe), and the smoke test.
+skelter-test = { path = "../../svelters/crates/skelter-test" }
+
+skelter_berth = { path = "../../berth/crates/skelter_berth" }
+berth-core = { path = "../../berth/crates/berth-core" }
+
+skelter_quire = { path = "../../quire/crates/skelter_quire" }
+quire-core = { path = "../../quire/crates/quire-core" }
+
+# One svelters in the graph: skelter_berth and skelter_quire name the skelter crates by git
+# (master); take them from the sibling checkout, as cadatomic's root manifest does.
+[patch."https://github.com/akiselev/svelters"]
+skelter = { path = "../../svelters/crates/skelter" }
+skelter-anim = { path = "../../svelters/crates/skelter-anim" }
+skelter-base = { path = "../../svelters/crates/skelter-base" }
+skelter-canvas = { path = "../../svelters/crates/skelter-canvas" }
+skelter-compositor = { path = "../../svelters/crates/skelter-compositor" }
+skelter-core = { path = "../../svelters/crates/skelter-core" }
+skelter-frame = { path = "../../svelters/crates/skelter-frame" }
+skelter-platform = { path = "../../svelters/crates/skelter-platform" }
+skelter-render = { path = "../../svelters/crates/skelter-render" }
+skelter-text = { path = "../../svelters/crates/skelter-text" }
+skelter-widgets = { path = "../../svelters/crates/skelter-widgets" }
+
+# One quire too: skelter-widgets names quire-text by git at f220847; take it from the sibling.
+[patch."https://github.com/akiselev/quire"]
+quire-text = { path = "../../quire/crates/quire-text" }
+
+# The AccessKit fork svelters' root manifest patches in (AT-SPI expanded state); one copy of
+# AccessKit's types must serve every crate.
+[patch.crates-io]
+accesskit = { git = "https://github.com/akiselev/accesskit", rev = "b22e1418f323f15c93ed0d76e16d4c097ba6cce0" }
+accesskit_atspi_common = { git = "https://github.com/akiselev/accesskit", rev = "b22e1418f323f15c93ed0d76e16d4c097ba6cce0" }
+accesskit_consumer = { git = "https://github.com/akiselev/accesskit", rev = "b22e1418f323f15c93ed0d76e16d4c097ba6cce0" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev]
+debug = 0
+
+# taffy runs on every relayout; svelters builds it at opt-level 3 in dev for the same reason.
+[profile.dev.package.taffy]
+opt-level = 3

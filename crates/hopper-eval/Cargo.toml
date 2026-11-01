@@ -1,5 +1,6 @@
 [package]
 name = "hopper-eval"
+description = "hopper's value evaluator: DWARF expressions, the type graph, the lazy value tree, the Rust std layout table and the expression language."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 hopper-core.workspace = true
+hopper-symbols.workspace = true
+gimli.workspace = true
+
+[dev-dependencies]
 
 [lints]
 workspace = true

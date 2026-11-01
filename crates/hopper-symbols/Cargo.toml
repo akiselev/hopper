@@ -1,5 +1,6 @@
 [package]
 name = "hopper-symbols"
+description = "ELF and DWARF for hopper: modules, PC to source, function and line lookup, CFI unwinding, scopes, disassembly, core files."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,19 @@ publish.workspace = true
 
 [dependencies]
 hopper-core.workspace = true
+gimli.workspace = true
+addr2line.workspace = true
+object.workspace = true
+iced-x86.workspace = true
+rustc-demangle.workspace = true
+
+[features]
+# Test support for this crate's and dependants' tests: fixture builds, gdb-made core files and
+# gdb's own answers to compare against.
+test-fixtures = []
+
+[dev-dependencies]
+hopper-symbols = { path = ".", features = ["test-fixtures"] }
 
 [lints]
 workspace = true
