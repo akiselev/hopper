@@ -1,7 +1,7 @@
 //! The rustc driver: a [`rustc_plugin::RustcPlugin`] whose callback writes a partial sidecar.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use hopper_sidecar::{Binding, CrateUnit, Header, SidecarData, UnitOutput, link::write_partial};
 use rustc_middle::ty::TyCtxt;
@@ -13,11 +13,44 @@ use serde::{Deserialize, Serialize};
 /// The name of the driver binary, beside `cargo-hopper-build`.
 pub const DRIVER_NAME: &str = "hopper-build-driver";
 
+/// The environment variable that carries the driver's identity ([`driver_identity`]). The driver
+/// records it as an env dependency of every crate it analyses, so cargo rebuilds (and the driver
+/// re-analyses) a crate whenever a different driver build runs, in every profile.
+pub const DRIVER_IDENTITY_VAR: &str = "HOPPER_BUILD_DRIVER";
+
+/// The directory, beside a profile's `deps/`, that holds its partial sidecars.
+pub const PARTIALS_DIR_NAME: &str = "hopper-partials";
+
 /// What the CLI tells every driver invocation (through rustc_plugin's `PLUGIN_ARGS`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DriverArgs {
-    /// Where partial sidecars go: `<target dir>/hopper/partials`.
-    pub partials_dir: PathBuf,
+    /// Where partials go when rustc has no `--out-dir` (cargo always passes one; then partials go
+    /// to `<out-dir>/../hopper-partials`, one directory per profile and target).
+    pub fallback_partials_dir: Option<PathBuf>,
+}
+
+/// A string that changes whenever the driver binary does: tool version, toolchain, path, size and
+/// modification time.
+pub fn driver_identity(driver: &Path) -> std::io::Result<String> {
+    let md = std::fs::metadata(driver)?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    Ok(format!(
+        "{} {} {} {} {mtime}",
+        crate::tool_version(),
+        rustc_plugin::CHANNEL,
+        driver.display(),
+        md.len()
+    ))
+}
+
+/// The partials directory for a compilation whose `--out-dir` is `out_dir`
+/// (`target/debug/deps` → `target/debug/hopper-partials`).
+pub fn partials_dir_for_out_dir(out_dir: &Path) -> PathBuf {
+    out_dir.parent().unwrap_or(out_dir).join(PARTIALS_DIR_NAME)
 }
 
 #[derive(Debug)]
@@ -38,7 +71,7 @@ impl RustcPlugin for HopperBuildPlugin {
     /// has its own CLI ([`crate::cli`]) because it must run `cargo build`.
     fn args(&self, target_dir: &Utf8Path) -> RustcPluginArgs<DriverArgs> {
         RustcPluginArgs {
-            args: DriverArgs { partials_dir: target_dir.join("hopper").join("partials").into() },
+            args: DriverArgs { fallback_partials_dir: Some(target_dir.join(PARTIALS_DIR_NAME).into()) },
             filter: CrateFilter::OnlyWorkspace,
         }
     }
@@ -57,11 +90,26 @@ struct SidecarCallbacks {
 }
 
 impl rustc_driver::Callbacks for SidecarCallbacks {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        let identity = std::env::var(DRIVER_IDENTITY_VAR).ok();
+        config.track_state = Some(Box::new(move |sess| {
+            sess.env_depinfo.borrow_mut().insert((
+                rustc_span::Symbol::intern(DRIVER_IDENTITY_VAR),
+                identity.as_deref().map(rustc_span::Symbol::intern),
+            ));
+        }));
+    }
+
     fn after_analysis(&mut self, _compiler: &rustc_interface::interface::Compiler, tcx: TyCtxt<'_>)
     -> rustc_driver::Compilation {
         if tcx.sess.opts.output_types.should_codegen() {
             let data = crate_partial(tcx);
-            if let Err(e) = write_partial(&self.args.partials_dir, &data) {
+            let dir = match (&tcx.sess.io.output_dir, &self.args.fallback_partials_dir) {
+                (Some(out), _) => partials_dir_for_out_dir(&std::path::absolute(out).unwrap_or_else(|_| out.clone())),
+                (None, Some(fallback)) => fallback.clone(),
+                (None, None) => PathBuf::from(PARTIALS_DIR_NAME),
+            };
+            if let Err(e) = write_partial(&dir, &data) {
                 tcx.dcx().warn(format!("hopper-build: could not write the ownership sidecar: {e}"));
             }
         }

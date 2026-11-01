@@ -61,7 +61,15 @@ pub struct GdbserverTarget<C: Connection = TcpStream> {
 impl GdbserverTarget<TcpStream> {
     /// Run `gdbserver --once --no-startup-with-shell 127.0.0.1:0 <program> <args>`, connect to
     /// the port it prints and stop at the program's first instruction.
+    ///
+    /// gdbserver without a shell cannot pass an argument containing whitespace; such arguments
+    /// are refused here rather than by gdbserver's exit.
     pub fn launch(config: &GdbserverConfig, program: &Path, args: &[OsString]) -> Result<Self> {
+        if let Some(a) = args.iter().find(|a| a.to_string_lossy().contains(char::is_whitespace)) {
+            return Err(HopperError::Invalid(format!(
+                "gdbserver cannot pass the argument {a:?}: it contains whitespace"
+            )));
+        }
         let mut cmd = Command::new(&config.gdbserver);
         cmd.arg("--once")
             .arg("--no-startup-with-shell")

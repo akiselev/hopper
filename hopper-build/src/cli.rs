@@ -2,11 +2,18 @@
 //!
 //! Runs `cargo build` on the pinned nightly with `hopper-build-driver` as the workspace rustc
 //! wrapper (so every workspace crate, and no dependency, is analysed), collects the executables
-//! cargo reports, and links each one's sidecar from the partials the driver wrote.
+//! cargo reports, and links each one's sidecar from the partials the driver wrote beside its
+//! profile's `deps/` (`<target>/<profile>/hopper-partials/`).
 //!
 //! rustc_plugin's own `cli_main` runs `cargo check`, which produces no binaries, so this CLI
 //! drives cargo itself and reuses only rustc_plugin's driver side and its argument passing.
+//!
+//! Freshness: the driver records [`DRIVER_IDENTITY_VAR`] as an env dependency, so cargo rebuilds
+//! a crate whenever a different driver build runs. A crate that cargo still considers fresh but
+//! has no partial (it was last compiled by a plain `cargo build` on the same nightly, or its
+//! partial was deleted) is cleaned for the selected profile and rebuilt once.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -14,14 +21,14 @@ use std::process::{Command, ExitCode, Stdio};
 
 use hopper_sidecar::link::PartialSet;
 
-use crate::plugin::{DRIVER_NAME, DriverArgs};
+use crate::plugin::{DRIVER_IDENTITY_VAR, DRIVER_NAME, DriverArgs, PARTIALS_DIR_NAME, driver_identity};
 
 /// What a build produced.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BuildOutcome {
     /// The executables cargo built, each with the sidecar written beside it.
     pub sidecars: Vec<(PathBuf, PathBuf)>,
-    /// Executables no partial described (built outside hopper-build, or not workspace code).
+    /// Executables no partial described even after a rebuild.
     pub without_sidecar: Vec<PathBuf>,
 }
 
@@ -63,6 +70,12 @@ pub fn main() -> ExitCode {
     }
 }
 
+/// One executable cargo reported.
+struct Executable {
+    path: PathBuf,
+    package_id: String,
+}
+
 /// Build with sidecars. `cargo_args` are `cargo build`'s arguments.
 pub fn run(cargo_args: &[String]) -> Result<BuildOutcome, String> {
     if cargo_args.iter().any(|a| a.starts_with("--message-format")) {
@@ -71,25 +84,72 @@ pub fn run(cargo_args: &[String]) -> Result<BuildOutcome, String> {
     let driver = std::env::current_exe()
         .map_err(|e| format!("cannot find own executable: {e}"))?
         .with_file_name(DRIVER_NAME);
-    if !driver.exists() {
-        return Err(format!("driver not found at {}", driver.display()));
-    }
-    let meta = Metadata::read(cargo_args)?;
-    let target_dir = match flag_value(cargo_args, "--target-dir") {
-        Some(dir) => std::path::absolute(dir).map_err(|e| e.to_string())?,
-        None => meta.target_directory.clone(),
-    };
-    let partials_dir = target_dir.join("hopper").join("partials");
-    refresh_if_driver_changed(&driver, &target_dir, &partials_dir, &meta, cargo_args)?;
-    let driver_args = serde_json::to_string(&DriverArgs { partials_dir: partials_dir.clone() })
-        .map_err(|e| e.to_string())?;
+    let identity = driver_identity(&driver).map_err(|e| format!("driver {}: {e}", driver.display()))?;
+    let sysroot = sysroot()?;
 
+    let tool = crate::tool_version();
+    let mut outcome = BuildOutcome::default();
+    let mut missing = link_all(&build(cargo_args, &driver, &identity, &sysroot)?, &tool, &mut outcome)?;
+    if !missing.is_empty() {
+        let packages: BTreeSet<&str> = missing.iter().map(|e| e.package_id.as_str()).collect();
+        clean(cargo_args, &packages)?;
+        missing = link_all(&build(cargo_args, &driver, &identity, &sysroot)?, &tool, &mut outcome)?;
+    }
+    outcome.without_sidecar = missing.into_iter().map(|e| e.path).collect();
+    Ok(outcome)
+}
+
+/// Link the sidecar of every executable that has a partial; return those that have none.
+fn link_all(executables: &[Executable], tool: &str, outcome: &mut BuildOutcome) -> Result<Vec<Executable>, String> {
+    let mut missing = Vec::new();
+    for exe in executables {
+        let linked = match partials_dir_for(&exe.path) {
+            Some(dir) => {
+                let set = PartialSet::load_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                set.link_binary(&exe.path, tool).map_err(|e| format!("{}: {e}", exe.path.display()))?
+            }
+            None => None,
+        };
+        match linked {
+            Some(sc) => outcome.sidecars.push((exe.path.clone(), sc)),
+            None => missing.push(Executable { path: exe.path.clone(), package_id: exe.package_id.clone() }),
+        }
+    }
+    Ok(missing)
+}
+
+/// The partials directory of an executable's profile: beside the executable
+/// (`target/debug/app`) or one level up (`target/debug/examples/app`, `target/debug/deps/test-…`).
+fn partials_dir_for(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors().skip(1).take(2).map(|d| d.join(PARTIALS_DIR_NAME)).find(|d| d.is_dir())
+}
+
+/// The pinned toolchain's sysroot. The driver needs it to find that toolchain's std; rustc_plugin
+/// would otherwise derive it from `RUSTUP_HOME` and `RUSTUP_TOOLCHAIN`, which names the channel
+/// without its host triple and so no directory.
+fn sysroot() -> Result<PathBuf, String> {
+    let out = Command::new("rustc")
+        .env("RUSTUP_TOOLCHAIN", rustc_plugin::CHANNEL)
+        .args(["--print", "sysroot"])
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| format!("cannot run rustc --print sysroot: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("rustc --print sysroot failed ({}); is {} installed?", out.status, rustc_plugin::CHANNEL));
+    }
+    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+fn build(cargo_args: &[String], driver: &Path, identity: &str, sysroot: &Path) -> Result<Vec<Executable>, String> {
+    let driver_args = serde_json::to_string(&DriverArgs::default()).map_err(|e| e.to_string())?;
     let mut cmd = cargo();
     cmd.arg("build")
         .args(cargo_args)
         .arg("--message-format=json-render-diagnostics")
-        .env("RUSTC_WORKSPACE_WRAPPER", &driver)
+        .env("RUSTC_WORKSPACE_WRAPPER", driver)
         .env("PLUGIN_ARGS", driver_args)
+        .env(DRIVER_IDENTITY_VAR, identity)
+        .env("SYSROOT", sysroot)
         // Every crate the wrapper sees is a workspace member; analyse them all, not only the
         // packages selected on the command line.
         .env("RUSTC_PLUGIN_ALL_TARGETS", "")
@@ -105,10 +165,13 @@ pub fn run(cargo_args: &[String]) -> Result<BuildOutcome, String> {
                 if msg["reason"] == "compiler-artifact"
                     && let Some(exe) = msg["executable"].as_str()
                 {
-                    executables.push(PathBuf::from(exe));
+                    executables.push(Executable {
+                        path: PathBuf::from(exe),
+                        package_id: msg["package_id"].as_str().unwrap_or_default().to_owned(),
+                    });
                 }
             }
-            // Not a cargo message: a build script or the program printed it.
+            // Not a cargo message: a build script printed it.
             Err(_) => println!("{line}"),
         }
     }
@@ -116,17 +179,29 @@ pub fn run(cargo_args: &[String]) -> Result<BuildOutcome, String> {
     if !status.success() {
         return Err(format!("cargo build failed ({status})"));
     }
+    Ok(executables)
+}
 
-    let partials = PartialSet::load_dir(&partials_dir).map_err(|e| e.to_string())?;
-    let mut outcome = BuildOutcome::default();
-    let tool = crate::tool_version();
-    for exe in executables {
-        match partials.link_binary(&exe, &tool).map_err(|e| format!("{}: {e}", exe.display()))? {
-            Some(sc) => outcome.sidecars.push((exe, sc)),
-            None => outcome.without_sidecar.push(exe),
+/// `cargo clean -p <package>...` for the profile, target and target directory `args` select.
+fn clean(args: &[String], packages: &BTreeSet<&str>) -> Result<(), String> {
+    let mut cmd = cargo();
+    cmd.args(["clean", "-q"]);
+    for flag in ["--manifest-path", "--target-dir", "--target", "--profile"] {
+        if let Some(v) = flag_value(args, flag) {
+            cmd.args([flag, v]);
         }
     }
-    Ok(outcome)
+    if args.iter().take_while(|a| *a != "--").any(|a| a == "--release" || a == "-r") {
+        cmd.arg("--release");
+    }
+    for p in packages {
+        cmd.args(["-p", p]);
+    }
+    let status = cmd.status().map_err(|e| format!("cannot run cargo clean: {e}"))?;
+    if !status.success() {
+        return Err(format!("cargo clean failed ({status})"));
+    }
+    Ok(())
 }
 
 /// `cargo` on the pinned nightly: the driver links that nightly's rustc, so the standard library
@@ -136,91 +211,6 @@ fn cargo() -> Command {
     let mut cmd = Command::new(cargo);
     cmd.env("RUSTUP_TOOLCHAIN", rustc_plugin::CHANNEL);
     cmd
-}
-
-/// What `cargo metadata` says about the workspace.
-struct Metadata {
-    /// Honours `CARGO_TARGET_DIR` and cargo config (not `--target-dir`, which `run` applies).
-    target_directory: PathBuf,
-    /// Package id specs of the workspace members.
-    members: Vec<String>,
-}
-
-impl Metadata {
-    fn read(args: &[String]) -> Result<Metadata, String> {
-        let mut cmd = cargo();
-        cmd.args(["metadata", "--format-version", "1", "--no-deps"]);
-        if let Some(m) = flag_value(args, "--manifest-path") {
-            cmd.args(["--manifest-path", m]);
-        }
-        let out =
-            cmd.stderr(Stdio::inherit()).output().map_err(|e| format!("cannot run cargo metadata: {e}"))?;
-        if !out.status.success() {
-            return Err(format!("cargo metadata failed ({})", out.status));
-        }
-        let v: serde_json::Value =
-            serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata output: {e}"))?;
-        let target_directory = v["target_directory"]
-            .as_str()
-            .map(PathBuf::from)
-            .ok_or("cargo metadata gave no target_directory")?;
-        let members = v["workspace_members"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|m| m.as_str().map(str::to_owned)).collect())
-            .unwrap_or_default();
-        Ok(Metadata { target_directory, members })
-    }
-}
-
-/// Cargo does not fingerprint the wrapper binary's contents, so after the driver changes it would
-/// reuse crates the old driver analysed (or that a plain `cargo build` compiled) and their
-/// partials would be stale or missing. The driver's identity is stamped in the target directory;
-/// when it differs, the workspace members are cleaned and their partials removed.
-fn refresh_if_driver_changed(
-    driver: &Path,
-    target_dir: &Path,
-    partials_dir: &Path,
-    meta: &Metadata,
-    args: &[String],
-) -> Result<(), String> {
-    let md = std::fs::metadata(driver).map_err(|e| format!("{}: {e}", driver.display()))?;
-    let mtime = md
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos());
-    let stamp = format!(
-        "{}\n{}\n{}\n{mtime}\n{}\n",
-        crate::tool_version(),
-        rustc_plugin::CHANNEL,
-        driver.display(),
-        md.len()
-    );
-    let stamp_path = target_dir.join("hopper").join("driver-stamp");
-    if std::fs::read_to_string(&stamp_path).ok().as_deref() == Some(stamp.as_str()) {
-        return Ok(());
-    }
-    if !meta.members.is_empty() {
-        let mut cmd = cargo();
-        cmd.arg("clean").arg("--target-dir").arg(target_dir).arg("-q");
-        if let Some(m) = flag_value(args, "--manifest-path") {
-            cmd.args(["--manifest-path", m]);
-        }
-        for spec in &meta.members {
-            cmd.args(["-p", spec]);
-        }
-        let status = cmd.status().map_err(|e| format!("cannot run cargo clean: {e}"))?;
-        if !status.success() {
-            return Err(format!("cargo clean of the workspace members failed ({status})"));
-        }
-    }
-    match std::fs::remove_dir_all(partials_dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", partials_dir.display())),
-    }
-    std::fs::create_dir_all(stamp_path.parent().unwrap_or(target_dir)).map_err(|e| e.to_string())?;
-    std::fs::write(&stamp_path, stamp).map_err(|e| format!("{}: {e}", stamp_path.display()))
 }
 
 /// The value of `--flag value` or `--flag=value` among cargo's arguments.
@@ -240,11 +230,6 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     None
 }
 
-/// The sidecar `cargo hopper-build` writes for `binary`.
-pub fn sidecar_for(binary: &Path) -> PathBuf {
-    hopper_sidecar::sidecar_path(binary)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +244,16 @@ mod tests {
         assert_eq!(flag_value(&s(&["--target-dir=/t"]), "--target-dir"), Some("/t"));
         assert_eq!(flag_value(&s(&["--release"]), "--target-dir"), None);
         assert_eq!(flag_value(&s(&["--", "--target-dir", "/t"]), "--target-dir"), None);
+    }
+
+    #[test]
+    fn partials_dir_is_found_beside_or_above() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("debug");
+        std::fs::create_dir_all(profile.join(PARTIALS_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(profile.join("examples")).unwrap();
+        assert_eq!(partials_dir_for(&profile.join("app")), Some(profile.join(PARTIALS_DIR_NAME)));
+        assert_eq!(partials_dir_for(&profile.join("examples/ex")), Some(profile.join(PARTIALS_DIR_NAME)));
+        assert_eq!(partials_dir_for(&dir.path().join("elsewhere/x/y")), None);
     }
 }

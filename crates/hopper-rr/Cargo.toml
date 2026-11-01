@@ -16,6 +16,7 @@ uuid.workspace = true
 [dev-dependencies]
 object.workspace = true
 rustc-demangle.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

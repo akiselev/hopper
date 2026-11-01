@@ -9,7 +9,9 @@
 //!
 //! Events per MIR construct:
 //! - `Operand::Move` / `Operand::Copy` / constants → Move / Copy / Literal, wherever an operand
-//!   is used as a value (assignments, casts, aggregate fields, call arguments);
+//!   is used as a value (assignments, casts, aggregate fields, call arguments). Move or Copy is
+//!   decided by the operand's type (`Copy` types copy), because optimised MIR no longer says what
+//!   the source did: it writes `copy` for a non-`Copy` value's last use;
 //! - `Rvalue::Ref` / `RawPtr` → SharedBorrow or MutBorrow, preceded by Projection when the
 //!   borrowed place has projections;
 //! - `Rvalue::Aggregate` → Aggregate, then one operand event per field into `dst.field`;
@@ -206,7 +208,13 @@ struct FnWalker<'a, 'tcx> {
     symbol: String,
     body: &'tcx Body<'tcx>,
     env: TypingEnv<'tcx>,
+    /// Debug names declared in the function's own scopes.
     names: HashMap<Local, String>,
+    /// Debug names declared in MIR-inlined callees' scopes (an inlined `self`): used only for
+    /// statements that are themselves inlined, so a user statement never reads as `self[0]`.
+    inlined_names: HashMap<Local, String>,
+    /// Whether the statement being walked comes from an inlined callee.
+    in_inlined_scope: bool,
     /// Debuginfo names bound to places with projections (closure captures), longest first.
     projected_names: Vec<(Place<'tcx>, String)>,
     temps: HashMap<Local, TempValue<'tcx>>,
@@ -229,13 +237,15 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     ) -> Self {
         let body = tcx.instance_mir(instance.def);
         let mut names = HashMap::new();
+        let mut inlined_names = HashMap::new();
         let mut projected_names = Vec::new();
         for vdi in &body.var_debug_info {
             if let VarDebugInfoContents::Place(p) = vdi.value
                 && vdi.composite.is_none()
             {
                 if p.projection.is_empty() {
-                    names.entry(p.local).or_insert_with(|| vdi.name.to_string());
+                    let map = if scope_is_inlined(body, vdi.source_info.scope) { &mut inlined_names } else { &mut names };
+                    map.entry(p.local).or_insert_with(|| vdi.name.to_string());
                 } else {
                     projected_names.push((p, vdi.name.to_string()));
                 }
@@ -249,6 +259,8 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             body,
             env: TypingEnv::fully_monomorphized(),
             names,
+            inlined_names,
+            in_inlined_scope: false,
             projected_names,
             temps: HashMap::new(),
             files,
@@ -281,6 +293,7 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         let is_flag = |l: Local| {
             assigned_const.get(&l) == Some(&true)
                 && !self.names.contains_key(&l)
+                && !self.inlined_names.contains_key(&l)
                 && self.body.local_decls[l].ty.is_bool()
         };
         let mut out = HashSet::new();
@@ -332,10 +345,12 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             };
             for (i, stmt) in data.statements.iter().enumerate() {
                 let loc = MirLocation { block: bb.as_u32(), position: MirPosition::Statement(i as u32) };
+                self.in_inlined_scope = scope_is_inlined(self.body, stmt.source_info.scope);
                 self.statement(&stmt.kind, stmt.source_info, loc);
             }
             if let Some(term) = &data.terminator {
                 let loc = MirLocation { block: bb.as_u32(), position: MirPosition::Terminator };
+                self.in_inlined_scope = scope_is_inlined(self.body, term.source_info.scope);
                 self.terminator(&term.kind, term.source_info, loc);
             }
         }
@@ -361,7 +376,7 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 self.assign(*place, rvalue, si, loc);
             }
             StatementKind::StorageDead(local) => {
-                if let Some(name) = self.names.get(local).cloned() {
+                if let Some(name) = self.name_of(*local) {
                     let ty = self.mono(self.body.local_decls[*local].ty);
                     let place = Place::from(*local);
                     self.emit(OwnershipKind::StorageDead, si, loc, Some(name), None, Some(ty), None, &[place]);
@@ -447,12 +462,13 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         let callee = callee.map(str::to_owned);
         match op {
             Operand::Copy(p) | Operand::Move(p) => {
-                // Optimised MIR turns a value's last use into `copy` even for types that are not
-                // `Copy` (`Config { name: copy _1, .. }`); in the source that is a move.
-                let is_copy_type = self.tcx.type_is_copy_modulo_regions(self.env, ty);
-                let kind = match op {
-                    Operand::Copy(_) if is_copy_type => OwnershipKind::Copy,
-                    _ => OwnershipKind::Move,
+                // Move or copy follows the type, as in the source: optimised MIR writes `copy`
+                // for the last use of a value that is not `Copy` (`Config { name: copy _1, .. }`,
+                // a move in the source) and `move` for temporaries of `Copy` types (a copy).
+                let kind = if self.tcx.type_is_copy_modulo_regions(self.env, ty) {
+                    OwnershipKind::Copy
+                } else {
+                    OwnershipKind::Move
                 };
                 let src = self.place_text(*p);
                 let mut all = places.to_vec();
@@ -715,7 +731,12 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 }
             }
         }
-        value.retain(|l, _| count.get(l) == Some(&1) && !self.names.contains_key(l) && *l != mir::RETURN_PLACE);
+        value.retain(|l, _| {
+            count.get(l) == Some(&1)
+                && !self.names.contains_key(l)
+                && !self.inlined_names.contains_key(l)
+                && *l != mir::RETURN_PLACE
+        });
         value
     }
 
@@ -734,9 +755,17 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         self.render_place(place, 0).text()
     }
 
+    /// The debug name of a local, as the statement being walked may see it.
+    fn name_of(&self, local: Local) -> Option<String> {
+        self.names
+            .get(&local)
+            .or_else(|| if self.in_inlined_scope { self.inlined_names.get(&local) } else { None })
+            .cloned()
+    }
+
     fn render_local(&self, local: Local, depth: u32) -> Rendered {
-        if let Some(name) = self.names.get(&local) {
-            return Rendered::Place(name.clone());
+        if let Some(name) = self.name_of(local) {
+            return Rendered::Place(name);
         }
         if local == mir::RETURN_PLACE {
             return Rendered::Place("return".to_owned());
@@ -857,6 +886,11 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     }
 }
 
+fn scope_is_inlined(body: &Body<'_>, scope: SourceScope) -> bool {
+    let data = &body.source_scopes[scope];
+    data.inlined.is_some() || data.inlined_parent_scope.is_some()
+}
+
 fn assign_const_entry(map: &mut HashMap<Local, bool>, l: Local) -> &mut bool {
     map.entry(l).or_insert(true)
 }
@@ -900,11 +934,18 @@ fn capture_name(tcx: TyCtxt<'_>, closure: DefId, index: usize) -> String {
         .unwrap_or_else(|| index.to_string())
 }
 
+/// Longest literal text kept; const aggregates can print as kilobytes.
+const MAX_LITERAL_CHARS: usize = 96;
+
 /// A constant's text as the source would write it: `"alpha"`, `3`, `0`.
 fn const_text(c: &mir::ConstOperand<'_>) -> String {
     let s = with_no_trimmed_paths!(c.to_string());
     let s = s.strip_prefix("const ").unwrap_or(&s).to_owned();
-    strip_int_suffix(&s).unwrap_or(s)
+    let s = strip_int_suffix(&s).unwrap_or(s);
+    match s.char_indices().nth(MAX_LITERAL_CHARS) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s,
+    }
 }
 
 /// `3_u32` → `3`, `-1_isize` → `-1`.

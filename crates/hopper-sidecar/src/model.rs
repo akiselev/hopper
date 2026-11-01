@@ -113,8 +113,33 @@ impl fmt::Display for Span {
 /// Two file names name the same file when one is a path-component suffix of the other: the
 /// sidecar keeps the path rustc saw, DWARF joins it with the compilation directory, and users
 /// type `main.rs`.
+/// Both are compared after lexical normalisation (`a/./b` and `a/x/../b` are `a/b`).
 pub fn files_match(a: &str, b: &str) -> bool {
-    hopper_core::source::file_suffix_match(a, b) || hopper_core::source::file_suffix_match(b, a)
+    use hopper_core::source::file_suffix_match;
+    if file_suffix_match(a, b) || file_suffix_match(b, a) {
+        return true;
+    }
+    let (a, b) = (normalize_path(a), normalize_path(b));
+    file_suffix_match(&a, &b) || file_suffix_match(&b, &a)
+}
+
+/// Remove `.` components and resolve `..` against the preceding component, without touching the
+/// file system. A leading `..` that cannot be resolved is kept.
+pub fn normalize_path(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|p| *p != "..") => {
+                parts.pop();
+            }
+            ".." if absolute => {}
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    if absolute { format!("/{joined}") } else { joined }
 }
 
 /// One step of an inline chain: `callee`'s body was inlined at `call_site`.
@@ -363,6 +388,16 @@ mod tests {
         assert!(!s.contains(&SourceLoc::new("/w/src/lib.rs", 13)));
         // An empty span still contains its start.
         assert!(span(19, 1, 19, 1).contains(&SourceLoc { file: "main.rs".into(), line: 19, column: Some(1) }));
+    }
+
+    #[test]
+    fn paths_normalise_lexically() {
+        assert_eq!(normalize_path("/a/b/../c/./main.rs"), "/a/c/main.rs");
+        assert_eq!(normalize_path("../x/./y"), "../x/y");
+        assert_eq!(normalize_path("/../a"), "/a");
+        assert!(files_match("/w/hopper-build/../fixtures/src/main.rs", "/w/fixtures/src/main.rs"));
+        assert!(files_match("./src/main.rs", "/w/src/main.rs"));
+        assert!(!files_match("/w/a/../b/main.rs", "/w/a/main.rs"));
     }
 
     #[test]

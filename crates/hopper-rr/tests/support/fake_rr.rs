@@ -130,6 +130,7 @@ impl Sim {
             return format!("T00{}", thread_field());
         }
         self.at_exit = false;
+        let start = self.pos;
         loop {
             if self.pos == 0 {
                 return format!("T00{}replaylog:begin;", thread_field());
@@ -139,8 +140,9 @@ impl Sim {
             if step {
                 return format!("T05{}", thread_field());
             }
-            // Running backwards, a watchpoint stops just after the write.
-            if self.watch_hit(leaving) {
+            // Running backwards, a watchpoint stops just after the write; rr reports the last
+            // stop strictly before where the reverse run began.
+            if leaving != start && self.watch_hit(leaving) {
                 self.pos = leaving;
                 return format!("T05{}watch:{WATCHED:x};", thread_field());
             }
@@ -332,6 +334,8 @@ impl FakeRr {
         self.sim.lock().unwrap().breakpoints.clone()
     }
 
+    /// Every packet received since the last call.
+    #[allow(dead_code, reason = "not every test binary inspects packets")]
     pub fn take_packets(&self) -> Vec<String> {
         std::mem::take(&mut self.sim.lock().unwrap().stats.packets)
     }

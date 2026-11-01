@@ -61,14 +61,19 @@ fn measures_sub_where_rr_stopped_and_leaves_the_state_alone() {
 fn counts_steps_both_ways_without_seeking() {
     let (mut r, fake) = replica(6);
     assert_eq!(r.now().unwrap(), expected(6));
-    let vruns = fake.vruns();
     for p in 7..=14 {
+        let vruns = fake.vruns();
         assert_eq!(step(&mut r, Direction::Forward), StopReason::Step);
         assert_eq!(fake.pos(), p);
         assert_eq!(r.now().unwrap(), expected(p), "after a forward step to {p}");
+        if p != 13 {
+            assert_eq!(fake.vruns(), vruns, "the step to {p} was counted, not measured");
+        }
     }
-    // 14 -> 13 stays in ticks 4 (sub 1 -> 0); 13 -> 12 changes the event, so sub must be
-    // measured; that costs a seek.
+    // The step 12 -> 13 completed an event with the tick count unchanged, so sub at 13 was
+    // measured (a seek). 14 -> 13 stays in event 2, ticks 4 (sub 1 -> 0): no seek. 13 -> 12
+    // goes back into event 1, so sub must be measured again.
+    let vruns = fake.vruns();
     assert_eq!(step(&mut r, Direction::Reverse), StopReason::Step);
     assert_eq!(r.now().unwrap(), expected(13));
     assert_eq!(fake.vruns(), vruns, "steps that keep the tick count need no seek");

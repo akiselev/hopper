@@ -1,0 +1,5 @@
+7:16 literal "alpha" -> <String as From<&str>>::from(arg 0) : &str (16) via <std::string::String as std::convert::From<&str>>::from bb0[term]
+7:16 call-return <String as From<&str>>::from(..) -> name : String (24) via <std::string::String as std::convert::From<&str>>::from bb0[term]
+8:5 aggregate -> return : Config (32) bb1[0]
+8:5 move name -> return.name : String (24) bb1[0]
+8:5 literal 3 -> return.retries : u32 (4) bb1[0]

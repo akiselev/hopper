@@ -78,10 +78,15 @@ impl StopReply {
         let body = &text[1..];
         match kind {
             'W' | 'X' => {
-                if body.len() < 2 {
+                // gdbserver sends the status without padding (`W0;process:1f`), rr pads it to
+                // two digits (`W00`).
+                let (num, rest) = match body.find(';') {
+                    Some(i) => body.split_at(i),
+                    None => (body, ""),
+                };
+                if num.is_empty() {
                     return Err(bad());
                 }
-                let (num, rest) = body.split_at(2);
                 let n = parse_sig(num)?;
                 let pid = parse_process_suffix(rest)?;
                 Ok(if kind == 'W' {
@@ -259,6 +264,14 @@ mod tests {
             StopReply::Exited { code: 3, pid: Some(0x21f9) }
         );
         assert_eq!(StopReply::parse(b"X09").unwrap(), StopReply::Killed { signal: 9, pid: None });
+        assert_eq!(
+            StopReply::parse(b"W0;process:2a").unwrap(),
+            StopReply::Exited { code: 0, pid: Some(0x2a) }
+        );
+        assert_eq!(
+            StopReply::parse(b"X9;process:2a").unwrap(),
+            StopReply::Killed { signal: 9, pid: Some(0x2a) }
+        );
         assert!(matches!(StopReply::parse(b"S0b").unwrap(), StopReply::Stopped(s) if s.signal == 11));
         assert!(StopReply::parse(b"W").is_err());
         assert!(StopReply::parse(b"W00;pid:1").is_err());
