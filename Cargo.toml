@@ -35,6 +35,8 @@ hopper-sidecar = { path = "crates/hopper-sidecar" }
 hopper-index = { path = "crates/hopper-index" }
 hopper-engine = { path = "crates/hopper-engine" }
 hopper-fake = { path = "crates/hopper-fake" }
+hopper-mcp = { path = "crates/hopper-mcp" }
+hopper-dap = { path = "crates/hopper-dap" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

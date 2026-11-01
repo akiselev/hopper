@@ -20,6 +20,7 @@ pub mod place;
 pub mod regs;
 pub mod source;
 pub mod target;
+pub mod wire;
 
 pub use error::{HopperError, Result};
 pub use ids::{CheckpointId, FrameId, ProcessId, RecordingId, Tid};

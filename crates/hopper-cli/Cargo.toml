@@ -1,12 +1,21 @@
 [package]
 name = "hopper-cli"
+description = "The hopper command: record, show, an interactive REPL, and the MCP and DAP servers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "hopper"
+path = "src/main.rs"
+
 [dependencies]
 hopper-core.workspace = true
+hopper-fake.workspace = true
+hopper-mcp.workspace = true
+hopper-dap.workspace = true
+clap.workspace = true
 
 [lints]
 workspace = true

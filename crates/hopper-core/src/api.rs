@@ -309,9 +309,11 @@ pub struct CallNode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CallFilter {
-    /// Children of this call; `None` for the roots.
+    /// Children of this call. `None` means the roots, unless `function` is set: then the whole
+    /// tree is searched.
     pub parent: Option<CallId>,
-    /// Only calls of functions whose name contains this text.
+    /// Only calls of functions whose name contains this text. With `parent: None` this searches
+    /// every call in the recording, not just the roots.
     pub function: Option<String>,
     pub tid: Option<Tid>,
     pub process: Option<ProcessId>,
