@@ -234,6 +234,9 @@ impl Kind for RowsKind {
                 return;
             }
             let spans = column_spans(&columns, size.w);
+            // room for triangles only in lists that have them
+            let tree = rows.iter().any(|(_, r)| r.disclosure != Disclosure::None || r.depth > 0);
+            let tri_w = if tree { 14.0 } else { 0.0 };
             for (i, row) in &rows {
                 let y = *i as f32 * ROW_H - scroll;
                 let band = Rect::new(0.0, y, size.w, y + ROW_H);
@@ -261,7 +264,7 @@ impl Kind for RowsKind {
                 for (c, cell) in row.cells.iter().enumerate() {
                     let Some(&(x, w)) = spans.get(c) else { break };
                     // the first column is indented under the triangle
-                    let left = if c == 0 { x + indent + 14.0 } else { x + PAD };
+                    let left = if c == 0 { x + indent + tri_w } else { x + PAD };
                     let right = x + w - PAD;
                     if right <= left {
                         continue;

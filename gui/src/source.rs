@@ -267,7 +267,7 @@ impl Kind for SourceKind {
                 let y = mark.y;
                 if let Some(label) = &mark.label {
                     let st = TextStyle { family: style::MONO_FONT.into(), size: 11.0, weight: 400, italic: false, color: style::HIT_COUNT };
-                    p.draw(list, label, &st, Rect::new(2.0, y, COLUMN_W - 18.0, y + row_h), Align::End, true);
+                    p.draw(list, label, &st, Rect::new(2.0, y, COLUMN_W - 26.0, y + row_h), Align::End, true);
                 }
                 if let Some(a) = mark.arrow {
                     let color = match a {

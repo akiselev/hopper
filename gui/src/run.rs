@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use hopper_core::api::Debugger;
 use skelter::seams::{CompositorApi, DocumentApi};
+
 use skelter::{App, AppConfig, SpawnCompositor};
 use skelter_base::event::{InputEnvelope, WindowEvent};
 use skelter_base::geom::Size;
@@ -184,6 +185,3 @@ pub fn press(h: &mut Harness, chord: &str) -> Result<(), String> {
     settle(h);
     Ok(())
 }
-
-/// The compositor seam is generic in the runner; the harness and the window both use this type.
-pub fn needs_frame<D: DocumentApi, C: CompositorApi>(_app: &App<D, C>) {}

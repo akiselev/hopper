@@ -782,11 +782,11 @@ pub fn value_summary(v: &ValueView) -> (String, Tone) {
         OwnershipState::MovedOut { to, at, .. } => {
             let to = to.as_deref().map(|t| format!(" to {t}")).unwrap_or_default();
             let at = at.as_ref().map(|l| format!(" at {}:{}", short_file(&l.file), l.line)).unwrap_or_default();
-            (format!("{}  (moved out{to}{at})", v.summary), Tone::Muted)
+            (format!("(moved out{to}{at}) {}", v.summary), Tone::Muted)
         }
         OwnershipState::Dropped { at, .. } => {
             let at = at.as_ref().map(|l| format!(" at {}:{}", short_file(&l.file), l.line)).unwrap_or_default();
-            (format!("{}  (dropped{at})", v.summary), Tone::Muted)
+            (format!("(dropped{at}) {}", v.summary), Tone::Muted)
         }
     }
 }

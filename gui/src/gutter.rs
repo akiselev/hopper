@@ -37,8 +37,8 @@ impl HitCounts {
     pub fn take_unasked(&mut self, visible: impl IntoIterator<Item = u32>) -> Vec<u32> {
         let mut out = Vec::new();
         for line in visible {
-            if !self.lines.contains_key(&line) {
-                self.lines.insert(line, HitCount::Pending);
+            if let std::collections::hash_map::Entry::Vacant(e) = self.lines.entry(line) {
+                e.insert(HitCount::Pending);
                 out.push(line);
             }
         }

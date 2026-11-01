@@ -61,6 +61,21 @@ pub const CSS: &str = r#"
 .hop-console { margin: 4px; flex-shrink: 0; }
 "#;
 
+/// hopper's panes are fixed: a tab's close button (or closing the window's last tab) is refused.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FixedPanes;
+
+impl berth_core::Policy for FixedPanes {
+    fn allows(&self, layout: &Layout, cmd: &DockCommand) -> Result<(), (berth_core::ReasonId, berth_core::ReasonArgs)> {
+        let refuse = || Err((berth_core::ReasonId::new("hopper.panes.fixed"), berth_core::ReasonArgs::none()));
+        match cmd {
+            DockCommand::Close { reason: berth_core::CloseReason::User, .. } => refuse(),
+            DockCommand::CloseWindow { window } if !layout.window_pane_ids(window).is_empty() => refuse(),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// The panes' content nodes, mounted into berth's slots.
 #[derive(Debug, Default)]
 pub struct Panes {
@@ -83,10 +98,12 @@ impl PaneHost for Panes {
     }
 }
 
-/// The default layout: source in the centre with locals and the stack to its right, the
-/// timeline under them, the calls and the query pane at the bottom.
-pub fn default_layout() -> Dock {
+/// The default layout: source in the centre with locals and the stack to its right, the calls
+/// and the query pane under them, the timeline along the bottom.
+pub fn default_layout(size: Size) -> Dock {
     let mut dock = Dock::new(Layout::new());
+    let area = berth_core::LogicalSize { w: size.w.max(1.0) as u32, h: (size.h - TOOLBAR_H - STATUS_H).max(1.0) as u32 };
+    dock.set_area_hint(&DockWindow::main(), berth_core::AreaHint { size: area, separator: 2 });
     let p = |s: &str| PaneId::new(s);
     let main = DockWindow::main();
     let group_of = |dock: &Dock, pane: &str| match dock.layout().locate(&PaneId::new(pane)) {
@@ -100,16 +117,16 @@ pub fn default_layout() -> Dock {
     };
     apply(&mut dock, DockCommand::Open { pane: p("source"), at: None, initial_size: None });
     if let Some(g) = group_of(&dock, "source") {
-        apply(&mut dock, DockCommand::Split { group: g, side: Side::Right, pane: Some(p("locals")), initial_size: Some(LogicalPx(420)) });
+        apply(&mut dock, DockCommand::Split { group: g, side: Side::Right, pane: Some(p("locals")), initial_size: Some(LogicalPx(500)) });
     }
     if let Some(g) = group_of(&dock, "locals") {
         apply(&mut dock, DockCommand::Split { group: g, side: Side::Bottom, pane: Some(p("stack")), initial_size: Some(LogicalPx(220)) });
     }
-    apply(&mut dock, DockCommand::Open { pane: p("timeline"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(64)) });
-    apply(&mut dock, DockCommand::Open { pane: p("calls"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(230)) });
+    apply(&mut dock, DockCommand::Open { pane: p("calls"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(300)) });
     if let Some(g) = group_of(&dock, "calls") {
         apply(&mut dock, DockCommand::Split { group: g, side: Side::Right, pane: Some(p("query")), initial_size: Some(LogicalPx(640)) });
     }
+    apply(&mut dock, DockCommand::Open { pane: p("timeline"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(96)) });
     if let Some(g) = group_of(&dock, "source") {
         apply(&mut dock, DockCommand::FocusGroup { window: main, to: berth_core::FocusTarget::Group(g) });
     }
@@ -270,6 +287,17 @@ impl Ui {
         let calls = node(doc, None, w::TABLE, &["hop-fill"], "");
         set(doc, calls, ANCHOR, Value::Str("pane:calls".into()));
         set(doc, calls, ARIA_LABEL, Value::Str("Calls".into()));
+        let column = KindId::of("table-column");
+        let col_prop = |doc: &Document, name: &str| doc.registry().get(column).and_then(|e| e.spec.prop_named(name));
+        for (title, width) in [("Function", 380.0), ("Entry", 120.0), ("Exit", 120.0), ("Thread", 70.0), ("Calls", 60.0)] {
+            let c = node(doc, Some(calls), column, &[], "");
+            if let Some(p) = col_prop(doc, "title") {
+                set(doc, c, p, Value::Str(title.into()));
+            }
+            if let Some(p) = col_prop(doc, "width") {
+                set(doc, c, p, Value::F64(width));
+            }
+        }
         if let Some(s) = signal(doc, w::TABLE, "activated") {
             listen(doc, calls, s);
         }
@@ -293,7 +321,7 @@ impl Ui {
         if let Some(h) = doc.service::<RowsHost>() {
             for (n, cols, empty) in [
                 (stack, vec![Width::Fixed(36.0), Width::Fill, Width::Fill], "No stack yet"),
-                (locals, vec![Width::Fixed(170.0), Width::Fill, Width::Fixed(150.0)], "No locals"),
+                (locals, vec![Width::Fixed(110.0), Width::Fill, Width::Fixed(150.0)], "No locals"),
                 (query, vec![Width::Fixed(170.0), Width::Fill, Width::Fixed(110.0), Width::Fixed(80.0)], ""),
             ] {
                 h.lists.insert(n, RowList { columns: cols, empty: empty.into(), ..RowList::default() });
@@ -304,7 +332,7 @@ impl Ui {
         }
         let theme = skelter_widgets::theme::Theme::dark_modern();
         let measure = Box::new(skelter_text::TextSystem::new(fonts));
-        let view = DockView::new(measure).with_painter(skelter_berth::SkelterChrome::from_theme(&theme)).auto_apply(true);
+        let view = DockView::new(measure).with_painter(skelter_berth::SkelterChrome::from_theme(&theme)).auto_apply(true).with_policy(FixedPanes);
         Ui {
             root,
             dock_space,
@@ -324,7 +352,7 @@ impl Ui {
             console,
             actions,
             panes,
-            dock: default_layout(),
+            dock: default_layout(Size::new(1440.0, 900.0)),
             view,
             epoch: 0,
             url_shown: false,
@@ -334,6 +362,8 @@ impl Ui {
     /// Attaches the call table's model (once the table node exists in a window's tree is fine;
     /// the model service only needs the node id).
     pub fn attach_calls(&self, doc: &mut Document, v: &Viewer) {
+        // skelter's `TableModels` takes an `Arc<dyn RowModel>` and keeps it on the UI thread
+        #[allow(clippy::arc_with_non_send_sync)]
         let model = Arc::new(crate::calls::CallRows::new(v.calls.clone()));
         if let Err(e) = skelter_widgets::table::model::TableModels::attach(doc, self.calls, model) {
             eprintln!("hopper-gui: the call table: {e:?}");
@@ -398,7 +428,9 @@ impl Ui {
         }
         if ch.query {
             let rows = query_rows(&v.query);
-            let last = rows.len().checked_sub(1);
+            // an answer (origin, executions, a call) shows from its heading; console results from the newest
+            let answer = v.query.first().is_some_and(|l| l.cells.first().is_some_and(|c| c.tone == Tone::Heading));
+            let last = if answer { Some(0) } else { rows.len().checked_sub(1) };
             self.set_rows(doc, self.query, rows, None);
             if let Some(h) = doc.service::<RowsHost>()
                 && let Some(l) = h.lists.get_mut(&self.query)
