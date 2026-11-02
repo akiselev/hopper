@@ -250,10 +250,13 @@ impl Kind for SourceKind {
             record_core(cx, |p, list| {
                 raw::fill(list, Rect::new(0.0, 0.0, size.w, size.h), style::BG, 0.0);
                 let st = TextStyle {
-                    family: style::UI_FONT.into(),
-                    size: 12.0,
-                    weight: 400,
-                    italic: true,
+                    font: skelter_text::TextStyle {
+                        family: style::UI_FONT.into(),
+                        size: 12.0,
+                        weight: 400,
+                        italic: true,
+                        ..skelter_text::TextStyle::default()
+                    },
                     color: style::MUTED,
                 };
                 p.draw(
@@ -366,10 +369,13 @@ impl Kind for SourceKind {
                 let y = mark.y;
                 if let Some(label) = &mark.label {
                     let st = TextStyle {
-                        family: style::MONO_FONT.into(),
-                        size: 11.0,
-                        weight: 400,
-                        italic: false,
+                        font: skelter_text::TextStyle {
+                            family: style::MONO_FONT.into(),
+                            size: 11.0,
+                            weight: 400,
+                            italic: false,
+                            ..skelter_text::TextStyle::default()
+                        },
                         color: style::HIT_COUNT,
                     };
                     p.draw(

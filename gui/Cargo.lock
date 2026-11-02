@@ -3610,6 +3610,7 @@ dependencies = [
  "raw-window-handle",
  "skelter-base",
  "skelter-platform",
+ "svelters-abi",
 ]
 
 [[package]]
@@ -3670,7 +3671,9 @@ dependencies = [
  "image",
  "skelter",
  "skelter-base",
+ "skelter-compositor",
  "skelter-core",
+ "skelter-frame",
  "skelter-platform",
  "skelter-render",
  "skelter-text",
@@ -3705,6 +3708,7 @@ dependencies = [
  "skelter-platform",
  "skelter-text",
  "smallvec",
+ "svelters-abi",
  "svelters-style",
  "taffy",
  "unicode-segmentation",

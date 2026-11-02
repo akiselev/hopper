@@ -219,10 +219,13 @@ impl Kind for TimelineKind {
         );
         record_core(cx, |p, list| {
             let st = TextStyle {
-                family: style::UI_FONT.into(),
-                size: 11.0,
-                weight: 400,
-                italic: false,
+                font: skelter_text::TextStyle {
+                    family: style::UI_FONT.into(),
+                    size: 11.0,
+                    weight: 400,
+                    italic: false,
+                    ..skelter_text::TextStyle::default()
+                },
                 color: style::MUTED,
             };
             if !has {

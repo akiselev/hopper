@@ -263,10 +263,13 @@ impl Kind for RowsKind {
             raw::fill(list, Rect::new(0.0, 0.0, size.w, size.h), style::BG, 0.0);
             if rows.is_empty() && !empty.is_empty() {
                 let st = TextStyle {
-                    family: style::UI_FONT.into(),
-                    size: 12.0,
-                    weight: 400,
-                    italic: true,
+                    font: skelter_text::TextStyle {
+                        family: style::UI_FONT.into(),
+                        size: 12.0,
+                        weight: 400,
+                        italic: true,
+                        ..skelter_text::TextStyle::default()
+                    },
                     color: style::MUTED,
                 };
                 p.draw(
@@ -357,10 +360,13 @@ impl Kind for RowsKind {
                     };
                     let weight = if cell.tone == Tone::Heading { 600 } else { 400 };
                     let st = TextStyle {
-                        family: family.into(),
-                        size: 12.0,
-                        weight,
-                        italic: false,
+                        font: skelter_text::TextStyle {
+                            family: family.into(),
+                            size: 12.0,
+                            weight,
+                            italic: false,
+                            ..skelter_text::TextStyle::default()
+                        },
                         color: cell.tone.color(),
                     };
                     p.draw(

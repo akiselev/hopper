@@ -403,8 +403,8 @@ impl DocumentApi for HopperDocument {
     fn take_fast_commits(&mut self) -> Vec<FastCommit> {
         self.core.take_fast_commits()
     }
-    fn take_smooth_scrolls(&mut self) -> Vec<skelter_core::SmoothScrollRequest> {
-        self.core.take_smooth_scrolls()
+    fn take_scroll_motions(&mut self) -> Vec<skelter_core::ScrollMotionRequest> {
+        self.core.take_scroll_motions()
     }
     fn caret_blink(&self) -> Option<Option<skelter_compositor::CaretBlink>> {
         self.core.caret_blink()
