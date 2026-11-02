@@ -458,7 +458,12 @@ fn place_text(p: &hopper_core::Place) -> String {
     match p {
         hopper_core::Place::Memory { addr, len, .. } => format!("{addr:#x}+{len}"),
         hopper_core::Place::Register { frame, reg } => {
-            format!("{} (thread {}, frame {})", reg.name(), frame.tid.0, frame.depth)
+            format!(
+                "{} (thread {}, frame {})",
+                reg.name(),
+                frame.tid.0,
+                frame.depth
+            )
         }
     }
 }
@@ -920,9 +925,10 @@ fn reference_note<'a>(
     out: &mut impl Write,
 ) -> Result<()> {
     let info = d.recording()?;
-    if let Some(r) = &info.reference_run
-        && moments.any(|m| info.is_reference_moment(m))
-    {
+    if let Some(r) = moments.find_map(|m| {
+        info.reference_run_of(m)
+            .filter(|_| info.is_reference_moment(m))
+    }) {
         writeln!(
             out,
             "  (moments of the reference run, {}: not positions in this session)",

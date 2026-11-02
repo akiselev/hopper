@@ -65,8 +65,13 @@ pub struct WriteWindow {
 pub enum WindowState {
     Running,
     /// Logged: `writes` writes over `instructions` instructions.
-    Logged { instructions: u64, writes: u64 },
-    Failed { reason: String },
+    Logged {
+        instructions: u64,
+        writes: u64,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// The session's on-demand windows.

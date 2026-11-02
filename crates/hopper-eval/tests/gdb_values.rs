@@ -525,6 +525,10 @@ fn nesting_matches_gdb_max_depth() {
     for ((name, mine), theirs) in names.iter().zip(&ours).zip(&gdb) {
         assert_eq!(Some(mine), theirs.as_ref(), "{name}");
     }
-    assert!(ours[0].ends_with("{depth: 9, inner: 0}}}}}}}}}"), "{}", ours[0]);
+    assert!(
+        ours[0].ends_with("{depth: 9, inner: 0}}}}}}}}}"),
+        "{}",
+        ours[0]
+    );
     assert!(ours[1].contains("{...}"), "{}", ours[1]);
 }

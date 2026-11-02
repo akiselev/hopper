@@ -1029,18 +1029,18 @@ fn capabilities() -> Value {
     Value::Object(caps)
 }
 
-
 /// When the moments come from a live session's reference run (another run of the program the
 /// session cannot seek to): which run. `null` otherwise.
 fn reference_run<'a>(d: &dyn Debugger, mut moments: impl Iterator<Item = &'a Moment>) -> Value {
     let Ok(info) = d.recording() else {
         return Value::Null;
     };
-    match &info.reference_run {
-        Some(r) if moments.any(|m| info.is_reference_moment(m)) => {
-            json!({"recording": r.id.to_string(), "description": r.description})
-        }
-        _ => Value::Null,
+    match moments.find_map(|m| {
+        info.reference_run_of(m)
+            .filter(|_| info.is_reference_moment(m))
+    }) {
+        Some(r) => json!({"recording": r.id.to_string(), "description": r.description}),
+        None => Value::Null,
     }
 }
 

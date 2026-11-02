@@ -877,7 +877,9 @@ fn caveats_turn_off_pruning() {
 }
 
 /// (kind, src, dst, line, confidence) of a label.
-fn of(l: &hopper_core::api::OwnershipLabel) -> (K, Option<String>, Option<String>, u32, Confidence) {
+fn of(
+    l: &hopper_core::api::OwnershipLabel,
+) -> (K, Option<String>, Option<String>, u32, Confidence) {
     (
         l.kind,
         l.src.clone(),
@@ -1000,7 +1002,13 @@ fn user_level_events_of_the_worked_example() {
             ),
             // The join's own grade: the written place picked the move among the aggregate's
             // field operands.
-            (K::Move, s("name"), s("return.name"), 8, Confidence::Inferred),
+            (
+                K::Move,
+                s("name"),
+                s("return.name"),
+                8,
+                Confidence::Inferred
+            ),
         ]
     );
     // Without a landing the caller's call is still the only one that returns load's value.

@@ -25,8 +25,7 @@ fn recording(hopper_built: bool) -> Option<Arc<StepRecording>> {
             fixture_binary("worked-example")?
         };
         live_binary(&bin)?; // skips without gdbserver
-        let rec = capture(&bin, WindowStart::Line(12), 18, 2_000_000)
-            .expect("capture the window");
+        let rec = capture(&bin, WindowStart::Line(12), 18, 2_000_000).expect("capture the window");
         eprintln!("recorded {} instructions", rec.len());
         Some(Arc::new(rec))
     })

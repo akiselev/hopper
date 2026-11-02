@@ -353,7 +353,15 @@ mod tests {
 
     #[test]
     fn display_round_trips_and_derefs_are_listed() {
-        for src in ["(*n).vec[0]", "**p", "a.b[3].c", "*v[0]", "&a[1]", "(*boxed).x", "-42"] {
+        for src in [
+            "(*n).vec[0]",
+            "**p",
+            "a.b[3].c",
+            "*v[0]",
+            "&a[1]",
+            "(*boxed).x",
+            "-42",
+        ] {
             let e = parse(src).unwrap();
             assert_eq!(e.to_string(), src);
             assert_eq!(parse(&e.to_string()).unwrap(), e);

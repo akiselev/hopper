@@ -215,6 +215,30 @@ single candidate (Projection and StorageDead events write nothing and do not cou
 observed write), `Inferred` when the effect or the call picked one of several, `Heuristic` for a
 move or copy with no machine copy observed (a rename, as in optimised code).
 
+## The source view (summary)
+
+The join labels one PC with the MIR event its instruction carries out, so a chain of machine hops
+through `v.push(c)` reads `c` → `_8` (the argument temporary) and stores inside `Vec::push`. The
+engine lifts each hop to the user-level event it is part of (`hopper_sidecar::source`), then
+collapses consecutive hops with the same event:
+
+- the hop's *user frame* is the innermost frame of origin `source` (`Sidecar::user_frame`; a
+  derive, a std generic and a shim belong to the call that reached them). Hops in the same user
+  frame instance at the same line are one event, decided by the newest of them;
+- a hop inside a callee is what the call did with the bytes, from where they are once the call
+  returns, named in the user frame's places (`Sidecar::call_transfer`): a clone call is its clone
+  event; bytes inside the call's destination are its return value (with its literal arguments
+  underneath); bytes in memory owned by the receiver (argument 0, `&mut v`) are the by-value
+  argument moved into it, named by the element that holds them (`c` → `v[0]`);
+- a store into a user function's return place is the caller's call (`Sidecar::returned_value`):
+  `a` ← `load()`, with the aggregate that built the return place (`Config { name, .. }`, the field
+  the bytes are in shown, the rest elided) and the chosen event (`name` → `return.name`)
+  underneath;
+- a value reached through a reference starts with the write of that reference (the borrow
+  `n = &v[0].name` for `*n`), kept apart from the value's own hops.
+
+The machine hops stay in the chain, each carrying its user-level label.
+
 ## Example
 
 `fixtures/worked-example`, `main` at `-O0` (`hsc-dump target/debug/worked-example.hsc --function

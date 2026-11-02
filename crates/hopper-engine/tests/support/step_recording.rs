@@ -5,6 +5,7 @@ use std::path::Path;
 
 use hopper_core::Result;
 use hopper_core::target::Target;
+#[allow(unused_imports, reason = "each test binary uses a different subset")]
 pub use hopper_engine::stepped::{StepFactory, StepRecording, StepReplica};
 use hopper_engine::stepped::{WindowEnd, WindowStart as Start};
 use hopper_rr::{GdbserverConfig, GdbserverTarget};
@@ -21,7 +22,12 @@ pub enum WindowStart<'a> {
 
 /// Capture `binary` from `from` to the first hit of `main.rs:to`, at most `max_steps`
 /// instructions.
-pub fn capture(binary: &Path, from: WindowStart<'_>, to: u32, max_steps: usize) -> Result<StepRecording> {
+pub fn capture(
+    binary: &Path,
+    from: WindowStart<'_>,
+    to: u32,
+    max_steps: usize,
+) -> Result<StepRecording> {
     // The fixture's addresses, from a run that is stopped at its first instruction.
     let auxv = GdbserverTarget::launch(&GdbserverConfig::default(), binary, &[])?.auxv()?;
     let mut syms = SymbolSet::new();

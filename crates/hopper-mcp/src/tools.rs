@@ -712,13 +712,16 @@ fn reference_run_json<'a>(d: &dyn Debugger, moments: impl Iterator<Item = &'a Mo
         return Value::Null;
     };
     let mut moments = moments;
-    match &info.reference_run {
-        Some(r) if moments.any(|m| info.is_reference_moment(m)) => json!({
+    match moments.find_map(|m| {
+        info.reference_run_of(m)
+            .filter(|_| info.is_reference_moment(m))
+    }) {
+        Some(r) => json!({
             "recording": r.id.to_string(),
             "description": r.description,
             "note": "these moments belong to the reference run and cannot be sought in this session",
         }),
-        _ => Value::Null,
+        None => Value::Null,
     }
 }
 

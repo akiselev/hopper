@@ -135,7 +135,10 @@ pub enum Operand {
     Register(Register),
     /// Bytes read from memory (the effective address with the registers before the
     /// instruction).
-    Memory { addr: u64, len: u64 },
+    Memory {
+        addr: u64,
+        len: u64,
+    },
 }
 
 /// The explicit operands an instruction reads, in operand order: registers it reads (a
@@ -449,10 +452,7 @@ mod tests {
         );
         // imul ecx, edx, 3: reads edx only (ecx is written, 3 is a constant).
         let i = insn(&[0x6b, 0xca, 0x03]);
-        assert_eq!(
-            operands(&i, &r),
-            vec![Operand::Register(Register::EDX)]
-        );
+        assert_eq!(operands(&i, &r), vec![Operand::Register(Register::EDX)]);
         // add dword ptr [rsp+4], eax: the stored sum reads both.
         let i = insn(&[0x01, 0x44, 0x24, 0x04]);
         let r = regs(&[(Reg::RSP, 0x8000)]);

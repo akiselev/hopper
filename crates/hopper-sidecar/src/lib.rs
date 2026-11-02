@@ -35,5 +35,5 @@ pub use model::{
     Header, InlineFrame, LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span,
     TypeInfo, UnitOutput,
 };
-pub use source::{SourceEvent, UserFrame};
 pub use sidecar::{EventRef, Sidecar, build_id_of, read_build_id, sidecar_path};
+pub use source::{SourceEvent, UserFrame};

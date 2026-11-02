@@ -149,14 +149,32 @@ pub fn settle(h: &mut Harness) {
 }
 
 /// Renders the window headlessly (the environment's wgpu adapter, lavapipe in a container) to
-/// `out` as a PNG, after `keys` (debugger shortcuts such as `F10`, `Alt+Left`).
-pub fn shot(dbg: Arc<dyn Debugger>, size: (f32, f32), keys: &[String], out: &Path) -> Result<(), String> {
+/// `out` as a PNG, after `keys` (debugger shortcuts such as `F10`, `Alt+Left`) and, with
+/// `select`, after selecting that local (its origin and history fill the query pane).
+pub fn shot(dbg: Arc<dyn Debugger>, size: (f32, f32), keys: &[String], select: Option<&str>, out: &Path) -> Result<(), String> {
     let mut h = harness(dbg, size);
     for k in keys {
         press(&mut h, k)?;
     }
+    if let Some(name) = select {
+        select_local(&mut h, name)?;
+    }
     let img = h.render().map_err(|e| e.0)?;
     img.save_png(out).map_err(|e| format!("{}: {e}", out.display()))
+}
+
+/// Selects the local named `name` in the locals pane and settles.
+pub fn select_local(h: &mut Harness, name: &str) -> Result<(), String> {
+    let v = &h.state().viewer;
+    let row = v
+        .locals
+        .rows()
+        .iter()
+        .position(|r| matches!(r, crate::tree::Row::Node { key, .. } if v.locals.item(key).is_some_and(|x| x.name == name)))
+        .ok_or_else(|| format!("no local {name:?} at this stop"))?;
+    h.state_mut().viewer.select_local(row);
+    settle(h);
+    Ok(())
 }
 
 /// Presses a key chord like `F10`, `Ctrl+F10`, `Shift+F11`, `Alt+Left` and settles.

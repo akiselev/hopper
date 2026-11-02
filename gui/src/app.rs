@@ -766,9 +766,10 @@ impl Viewer {
     /// A moment as a query-pane cell: its text and tone, and the seek it offers. A moment of a
     /// live session's reference run is another run's: marked, and not offered as a seek.
     pub fn moment_cell(&self, m: Moment) -> (String, Tone, Option<QueryAction>) {
-        match &self.recording {
-            Some(r) if r.is_reference_moment(&m) => (format!("{m} (reference run)"), Tone::Muted, None),
-            _ => (m.to_string(), Tone::Accent, Some(QueryAction::Seek(m))),
+        if other_run(self.recording.as_ref(), &m) {
+            (format!("{m} (reference run)"), Tone::Muted, None)
+        } else {
+            (m.to_string(), Tone::Accent, Some(QueryAction::Seek(m)))
         }
     }
 
@@ -1010,7 +1011,7 @@ impl Viewer {
             None => q.push(QueryLine::text(1, "never returned inside the recording", Tone::Muted)),
         }
         q.push(QueryLine::text(1, format!("{} direct calls, thread {}", c.child_count, c.tid), Tone::Muted));
-        if self.recording.as_ref().is_some_and(|r| r.is_reference_moment(&c.entry)) {
+        if other_run(self.recording.as_ref(), &c.entry) {
             q.push(QueryLine::text(1, "From the reference run (a second run of the program): its moments are not positions in this session.", Tone::Muted));
         } else {
             q.push(QueryLine::text(1, "Double-click a row here to jump; double-click a call to expand it.", Tone::Muted));
@@ -1121,6 +1122,12 @@ fn place_text(p: &hopper_core::Place) -> String {
     }
 }
 
+/// Whether `m` belongs to another run than the open recording (a live session's reference run or
+/// stepped window, which can be listed after the recording info was read): shown, not sought.
+pub fn other_run(recording: Option<&RecordingInfo>, m: &Moment) -> bool {
+    recording.is_some_and(|r| r.id != m.recording)
+}
+
 /// Reads up to `len` bytes at `addr`, fewer when the end of the range is unmapped.
 fn read_some(d: &dyn Debugger, at: Moment, process: ProcessId, addr: u64, len: u64) -> hopper_core::Result<Vec<u8>> {
     let mut n = len;
@@ -1177,10 +1184,10 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recordi
             return q;
         }
     };
-    let seek = |m: Moment| match recording {
-        Some(r) if r.is_reference_moment(&m) => None,
-        _ => Some(QueryAction::Seek(m)),
-    };
+    let seek = |m: Moment| (!other_run(recording, &m)).then_some(QueryAction::Seek(m));
+    if chain.references.iter().chain(&chain.hops).any(|h| other_run(recording, &h.at)) {
+        q.push(QueryLine::text(1, "Traced on another run of the program (a stepped window): its moments are not positions in this session.", Tone::Muted));
+    }
     for (i, group) in source_groups(&chain).iter().enumerate() {
         let first = group[0];
         let loc = first.location.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default();
@@ -1249,10 +1256,7 @@ pub fn history_lines(of: &ValueView, r: hopper_core::Result<Page<(Moment, ValueV
     };
     for (i, (m, view)) in page.items.iter().enumerate() {
         let (summary, tone) = value_summary(view);
-        let action = match recording {
-            Some(r) if r.is_reference_moment(m) => None,
-            _ => Some(QueryAction::Seek(*m)),
-        };
+        let action = (!other_run(recording, m)).then_some(QueryAction::Seek(*m));
         q.push(QueryLine {
             depth: 1,
             cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(summary, tone), RowCell::new(String::new(), Tone::Muted), RowCell::mono(m.to_string(), Tone::Accent)],

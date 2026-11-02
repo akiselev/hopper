@@ -253,6 +253,11 @@ impl StepRecording {
         self.moment(self.states.len() - 1)
     }
 
+    /// Whether the window has no state (never: a capture keeps at least its start).
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.states.len()
     }

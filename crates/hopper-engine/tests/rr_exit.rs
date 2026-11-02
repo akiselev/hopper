@@ -282,8 +282,7 @@ fn rr_m5_six_source_hops_and_a_moved_out_after_its_move() {
                     .any(|e| e.kind == OwnershipKind::Move
                         && e.src == o.src
                         && Some(e.span.lo.line) == line
-                        && (e.dst == o.dst
-                            || e.dst.as_deref().is_some_and(|d| d.ends_with(')')))),
+                        && (e.dst == o.dst || e.dst.as_deref().is_some_and(|d| d.ends_with(')')))),
                 "a move the sidecar does not have: {o:?}"
             );
             assert_ne!(

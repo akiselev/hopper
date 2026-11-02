@@ -16,9 +16,7 @@
 
 use std::sync::Arc;
 
-use hopper_core::api::{
-    Budget, MachineKind, OriginChain, OriginEnd, OriginHop, WriteEvent,
-};
+use hopper_core::api::{Budget, MachineKind, OriginChain, OriginEnd, OriginHop, WriteEvent};
 use hopper_core::target::{
     BreakKind, Breakpoint, Direction, Memory, Resume, StopReason, Target, TargetMemory,
 };
@@ -407,8 +405,12 @@ impl<'a> Reverse<'a> {
         let pc = pc_info(&syms.set, &stack);
         let physical = physical_frames(&stack);
         let user = sidecar.user_frame(&pc);
-        let written_name =
-            self.place_name(&syms, &stack, at, Place::memory(self.shared.process, w.watched, w.len));
+        let written_name = self.place_name(
+            &syms,
+            &stack,
+            at,
+            Place::memory(self.shared.process, w.watched, w.len),
+        );
         let landing = user.and_then(|u| {
             let frame = physical.get(u.depth)?.clone();
             self.landing_name(&syms, &frame, at, w.watched)
@@ -512,8 +514,7 @@ impl<'a> Reverse<'a> {
             }
             let mut next = Vec::new();
             for (name, v) in &level {
-                let behind_reference =
-                    v.type_name.starts_with('&') || v.type_name.starts_with('*');
+                let behind_reference = v.type_name.starts_with('&') || v.type_name.starts_with('*');
                 if behind_reference || v.child_count.unwrap_or(0) == 0 {
                     continue;
                 }
@@ -541,7 +542,12 @@ impl<'a> Reverse<'a> {
     /// Where the bytes a callee wrote are once the user frame at `depth` gets control back:
     /// run forward from the write to the return into that frame and name them there. For
     /// writes into memory the frame does not hold on its stack (a `Vec`'s buffer).
-    fn landing_after_return(&mut self, hop: &OriginHop, site: &WriterSite, depth: usize) -> Option<String> {
+    fn landing_after_return(
+        &mut self,
+        hop: &OriginHop,
+        site: &WriterSite,
+        depth: usize,
+    ) -> Option<String> {
         let user = site.physical.get(depth)?.clone();
         let callee_cfa = site.physical.get(depth.checked_sub(1)?)?.cfa?;
         let Place::Memory { addr, .. } = hop.written else {
@@ -568,7 +574,9 @@ impl<'a> Reverse<'a> {
                         break true;
                     }
                 }
-                StopReason::Breakpoint { .. } | StopReason::Watchpoint { .. } | StopReason::Step => {}
+                StopReason::Breakpoint { .. }
+                | StopReason::Watchpoint { .. }
+                | StopReason::Step => {}
                 _ => break false,
             }
         };
@@ -764,7 +772,12 @@ impl<'a> Reverse<'a> {
 
     /// Follow the writes back from `place`, pushing one hop per write; returns how the chain
     /// ends.
-    fn walk(&mut self, place: Place, budget: Budget, traced: &mut Vec<Traced>) -> Result<OriginEnd> {
+    fn walk(
+        &mut self,
+        place: Place,
+        budget: Budget,
+        traced: &mut Vec<Traced>,
+    ) -> Result<OriginEnd> {
         let Place::Memory { process, .. } = place else {
             return Err(HopperError::Unsupported(
                 "the origin of a value held in a register".into(),

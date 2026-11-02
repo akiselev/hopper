@@ -473,16 +473,8 @@ fn hopper_requests_answer_in_the_response_body() {
     assert_eq!(refs[0]["machine"], "Arithmetic");
     assert_eq!(refs[0]["operands"][0]["Register"]["reg"], 6);
     assert_eq!(chain["hops"][3]["inner"][0]["kind"], "Aggregate");
-    assert!(
-        refs[0]["at"]
-            .as_str()
-            .unwrap()
-            .starts_with("hopper://")
-    );
-    assert_eq!(
-        refs[0]["written"]["Memory"]["addr"],
-        "0x7ffc8a3e1e78"
-    );
+    assert!(refs[0]["at"].as_str().unwrap().starts_with("hopper://"));
+    assert_eq!(refs[0]["written"]["Memory"]["addr"], "0x7ffc8a3e1e78");
     assert_eq!(t.ok(origin)["value"]["summary"], "\"alpha\"");
     assert_eq!(
         t.ok(origin_at)["chain"]["end"]["Unknown"]["reason"],

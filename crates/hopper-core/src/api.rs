@@ -35,12 +35,13 @@ pub struct RecordingInfo {
     pub start: Option<Moment>,
     pub end: Option<Moment>,
     pub processes: Vec<ProcessInfo>,
-    /// A second run of the same program that answers the omniscient queries of a session whose
-    /// own run cannot (a live process, which runs forward only, is indexed on a reference run).
-    /// Moments in those answers carry the reference run's recording id, not [`Self::id`]: they
-    /// name states of the other run, cannot be sought here, and are shown as such.
+    /// Other runs of the same program that answer the omniscient queries of a session whose own
+    /// run cannot: a live process runs forward only, so its call tree and line hits come from an
+    /// indexed reference run, and its origins from stepped windows of further runs. Moments in
+    /// those answers carry the other run's recording id, not [`Self::id`]: they name states of
+    /// that run, cannot be sought here, and are shown as such.
     #[serde(default)]
-    pub reference_run: Option<ReferenceRun>,
+    pub reference_runs: Vec<ReferenceRun>,
 }
 
 /// A run, other than the session's own, whose index answers the session's queries.
@@ -48,14 +49,19 @@ pub struct RecordingInfo {
 pub struct ReferenceRun {
     /// The recording id the reference run's moments carry.
     pub id: RecordingId,
-    /// What the run is ("gdbserver run of <program>, same arguments").
+    /// What the run is ("a second gdbserver run of <program> with the same arguments").
     pub description: String,
 }
 
 impl RecordingInfo {
-    /// Whether `m` is a moment of the reference run rather than of this recording.
+    /// Whether `m` is a moment of a reference run rather than of this recording.
     pub fn is_reference_moment(&self, m: &Moment) -> bool {
-        self.reference_run.as_ref().is_some_and(|r| r.id == m.recording) && m.recording != self.id
+        m.recording != self.id && self.reference_run_of(m).is_some()
+    }
+
+    /// The reference run `m` belongs to.
+    pub fn reference_run_of(&self, m: &Moment) -> Option<&ReferenceRun> {
+        self.reference_runs.iter().find(|r| r.id == m.recording)
     }
 }
 

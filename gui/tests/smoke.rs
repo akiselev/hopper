@@ -309,3 +309,38 @@ fn the_origin_view_puts_the_borrow_first_and_groups_machine_hops() {
     assert!(text.iter().any(|t| t.contains("Config { name, .. }")), "the aggregate under load's return: {text:?}");
     assert!(text.iter().any(|t| t.contains("computed from rbp")), "the borrow's operand: {text:?}");
 }
+
+/// `hopper-gui --live`: a real process under gdbserver. The calls pane and hit counts come from
+/// the session's reference run, marked as its moments, and selecting a local traces its origin
+/// on a stepped window of another run. Skips without gdbserver.
+#[test]
+fn a_live_session_shows_calls_hits_and_an_origin() {
+    if std::process::Command::new("gdbserver").arg("--version").output().is_err() {
+        eprintln!("skipping: gdbserver is not installed");
+        return;
+    }
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/fixtures/worked-example/debug/worked-example");
+    if !bin.is_file() {
+        eprintln!("skipping: {} is not built (scripts/build-fixtures.sh)", bin.display());
+        return;
+    }
+    let dbg = hopper_cli::open_live(&[bin.into_os_string()]).expect("a live session");
+    let mut h = harness(dbg, (1440.0, 900.0));
+    while line(&h) != 17 {
+        press(&mut h, "F10").unwrap();
+    }
+    hopper_gui::run::select_local(&mut h, "b").unwrap();
+    let v = &h.state().viewer;
+    let text: Vec<String> = v.query.iter().flat_map(|l| l.cells.iter().map(|c| c.text.clone())).collect();
+    assert!(text.iter().any(|t| t.starts_with("Where did b")), "{text:?}");
+    assert!(text.iter().any(|t| t.starts_with("History of b")), "{text:?}");
+    assert!(v.query.iter().filter(|l| l.depth == 1).count() > 2, "{text:?}");
+    // the hops are the window's moments: shown, never offered as seeks in this session
+    assert!(v.query.iter().filter(|l| l.depth >= 1).all(|l| l.action.is_none()), "{:?}", v.query);
+    assert!(text.iter().any(|t| t.contains("another run of the program")), "{text:?}");
+    assert!(v.recording.as_ref().is_some_and(|r| !r.reference_runs.is_empty()));
+    // the calls pane's call of `load` is the reference run's
+    let calls = h.state().viewer.calls.borrow().len();
+    assert!(calls > 0, "the reference run's call tree arrived");
+    assert!(v.machine.registers.is_some() && !v.machine.instructions.is_empty());
+}

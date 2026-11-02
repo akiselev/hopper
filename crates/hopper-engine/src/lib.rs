@@ -6,7 +6,12 @@
 //!   worker thread ([`hopper_rr::ReplicaPool`]).
 //! - [`Session::live`] runs a program under gdbserver: forward only, a pool of one. Moving
 //!   backwards is [`HopperError::Unsupported`]; a question about a moment the process has left is
-//!   answered from what the session read while it was there, or refused honestly.
+//!   answered from what the session read while it was there, or refused honestly. Omniscient
+//!   queries use other runs of the same program, whose moments carry those runs' recording ids
+//!   ([`hopper_core::api::RecordingInfo::reference_runs`]): calls, line hits and allocations come
+//!   from phase A on a reference run started with the session ([`LiveIndexPolicy`]); `origin`,
+//!   `last_write` and `value_history` from a stepped window of a further run that ends in the
+//!   live process's state ([`stepped`]).
 //!
 //! State at a moment is read cache first ([`cache::MomentCache`]: memory chunks, registers and
 //! stacks by moment), then from the cursor replica when it is at that moment, then from a
@@ -186,6 +191,8 @@ pub(crate) struct Shared {
     pub main_symbols: Option<SymbolSet>,
     /// Phase-B windows started on demand.
     pub write_windows: writes::WriteWindows,
+    /// A live session's stepped windows, by the moment they end at.
+    pub live_windows: Mutex<HashMap<Moment, Arc<stepped::StepRecording>>>,
     /// A live session's reference-run index; why not otherwise.
     pub reference: std::result::Result<indexed::ReferenceIndex, indexed::NoIndex>,
     start: Stop,
@@ -489,6 +496,7 @@ impl Session {
             index,
             main_symbols: main_syms.as_ref().ok().cloned(),
             write_windows: writes::WriteWindows::default(),
+            live_windows: Mutex::new(HashMap::new()),
             reference,
             start: start.clone(),
             rr_version: open.rr_version,
@@ -535,10 +543,7 @@ impl Session {
     /// A live session's reference run and the range asked, in its moments: an open range, or
     /// one bounded by the reference run's own moments. A range bounded by the live run's
     /// moments has no counterpart there (`None`).
-    fn reference_for(
-        &self,
-        range: MomentRange,
-    ) -> Option<(&indexed::ReferenceIndex, MomentRange)> {
+    fn reference_for(&self, range: MomentRange) -> Option<(&indexed::ReferenceIndex, MomentRange)> {
         let r = self.inner.reference.as_ref().ok()?;
         let ours = |m: &Option<Moment>| m.is_none_or(|m| m.recording == r.run.id);
         (ours(&range.start) && ours(&range.end)).then_some((r, range))
@@ -902,7 +907,25 @@ impl Debugger for Session {
             start: Some(s.start.at),
             end,
             processes,
-            reference_run: s.reference.as_ref().ok().map(|r| r.run.clone()),
+            reference_runs: s
+                .reference
+                .as_ref()
+                .ok()
+                .map(|r| r.run.clone())
+                .into_iter()
+                .chain(
+                    lock(&s.live_windows)
+                        .iter()
+                        .map(|(at, w)| hopper_core::api::ReferenceRun {
+                            id: w.recording(),
+                            description: format!(
+                                "a stepped window of another run of {}, ending in this session's \
+                             state at {at}",
+                                s.exe.display(),
+                            ),
+                        }),
+                )
+                .collect(),
         })
     }
 
@@ -1211,23 +1234,14 @@ impl Debugger for Session {
         range: MomentRange,
         page: PageReq,
     ) -> Result<Page<(Moment, ValueView)>> {
-        if self.is_live() {
-            return Err(self.inner.live_refusal("a value's history"));
-        }
         queries::value_history(self.shared(), value, range, page)
     }
 
     fn last_write(&self, place: Place, before: Moment) -> Result<Option<WriteEvent>> {
-        if self.is_live() {
-            return Err(self.inner.live_refusal("finding the last write"));
-        }
         queries::last_write(self.shared(), place, before)
     }
 
     fn origin(&self, value: &ValueHandle, budget: Budget) -> Result<OriginChain> {
-        if self.is_live() {
-            return Err(self.inner.live_refusal("following a value's origin"));
-        }
         queries::origin(self.shared(), value, budget)
     }
 

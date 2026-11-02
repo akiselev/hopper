@@ -177,9 +177,7 @@ impl Sidecar {
         }
         let by_value: Vec<&OwnershipEvent> = arguments
             .iter()
-            .filter(|(i, e)| {
-                *i > 0 && matches!(e.kind, OwnershipKind::Move | OwnershipKind::Copy)
-            })
+            .filter(|(i, e)| *i > 0 && matches!(e.kind, OwnershipKind::Move | OwnershipKind::Copy))
             .map(|(_, e)| *e)
             .collect();
         let (taken, confidence) = match by_value.as_slice() {
@@ -305,10 +303,7 @@ mod tests {
     #[test]
     fn argument_indices_and_receivers() {
         assert_eq!(argument_index("Vec::<Config>::push(arg 1)"), Some(1));
-        assert_eq!(
-            argument_index("<Config as Clone>::clone(arg 0)"),
-            Some(0)
-        );
+        assert_eq!(argument_index("<Config as Clone>::clone(arg 0)"), Some(0));
         assert_eq!(argument_index("v[0]"), None);
         assert_eq!(borrowed_place("&mut v"), "v");
         assert_eq!(borrowed_place("&v"), "v");

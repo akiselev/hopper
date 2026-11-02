@@ -146,8 +146,14 @@ pub fn assert_six_source_hops(chain: &hopper_core::api::OriginChain) {
         assert_eq!(h.inner.len(), inner.len(), "{shown:#?}");
         for (i, (kind, src, dst, line)) in h.inner.iter().zip(inner) {
             assert_eq!(i.kind, *kind, "{shown:#?}");
-            assert!(i.src.as_deref().is_some_and(|s| s.contains(src)), "{shown:#?}");
-            assert!(i.dst.as_deref().is_some_and(|d| d.ends_with(dst)), "{shown:#?}");
+            assert!(
+                i.src.as_deref().is_some_and(|s| s.contains(src)),
+                "{shown:#?}"
+            );
+            assert!(
+                i.dst.as_deref().is_some_and(|d| d.ends_with(dst)),
+                "{shown:#?}"
+            );
             assert_eq!(i.span.as_ref().map(|l| l.line), Some(*line), "{shown:#?}");
         }
     }

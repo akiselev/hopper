@@ -377,7 +377,7 @@ impl Ui {
                 (stack, vec![Width::Fixed(36.0), Width::Fill, Width::Fill], "No stack yet"),
                 (locals, vec![Width::Fixed(110.0), Width::Fill, Width::Fixed(150.0)], "No locals"),
                 (query, vec![Width::Fixed(170.0), Width::Fill, Width::Fixed(110.0), Width::Fixed(80.0)], ""),
-                (disassembly, vec![Width::Fixed(18.0), Width::Fixed(130.0), Width::Fill, Width::Fixed(110.0)], "No code"),
+                (disassembly, vec![Width::Fixed(22.0), Width::Fixed(130.0), Width::Fill, Width::Fixed(110.0)], "No code"),
                 (registers, vec![Width::Fixed(64.0), Width::Fill, Width::Fill], "No registers"),
                 (memory, vec![Width::Fixed(130.0), Width::Fill, Width::Fixed(150.0)], "No memory read"),
             ] {
@@ -646,7 +646,7 @@ fn disassembly_rows(v: &Viewer) -> (Vec<RowLine>, Option<usize>) {
                 depth: 0,
                 disclosure: Disclosure::None,
                 cells: vec![
-                    RowCell::new(if here { "▶" } else { "" }, Tone::Warning),
+                    RowCell::mono(if here { ">" } else { "" }, Tone::Warning),
                     RowCell::mono(format!("{:#x}", insn.addr), Tone::Muted),
                     RowCell::mono(insn.text.clone(), if here { Tone::Heading } else { Tone::Normal }),
                     RowCell::new(loc, Tone::Muted),

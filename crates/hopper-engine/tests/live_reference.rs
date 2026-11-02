@@ -26,7 +26,8 @@ fn calls_line_hits_and_allocations_come_from_the_reference_run() {
     };
     let d = Session::live(&bin, &[], SessionOptions::default()).expect("live session");
     let info = d.recording().unwrap();
-    let reference = info.reference_run.clone().expect("a reference run");
+    assert_eq!(info.reference_runs.len(), 1, "{info:?}");
+    let reference = info.reference_runs[0].clone();
     assert_ne!(reference.id, info.id, "the reference run is another run");
 
     let deadline = Instant::now() + Duration::from_secs(300);
@@ -34,13 +35,18 @@ fn calls_line_hits_and_allocations_come_from_the_reference_run() {
         let st = d.index_status();
         assert!(st.error.is_none(), "{st:?}");
         assert!(
-            st.phases.iter().all(|(p, _)| p.ends_with("(reference run)")),
+            st.phases
+                .iter()
+                .all(|(p, _)| p.ends_with("(reference run)")),
             "{st:?}"
         );
         if st.done {
             break;
         }
-        assert!(Instant::now() < deadline, "the reference run did not finish: {st:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the reference run did not finish: {st:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 
@@ -101,4 +107,52 @@ fn calls_line_hits_and_allocations_come_from_the_reference_run() {
         .expect("the reference run allocated it");
     assert!(addr >= alloc.addr && addr < alloc.addr + alloc.size);
     assert!(info.is_reference_moment(&alloc.allocated));
+}
+
+/// `origin` in a live session: a stepped window of another run, from `main`'s entry to the live
+/// process's state, answers it with the same six source hops as a recording; its moments are the
+/// window's run's, listed as a reference run.
+#[test]
+fn live_origin_comes_from_a_stepped_window_of_another_run() {
+    let Some(bin) = hopper_built_worked_example() else {
+        return;
+    };
+    let Some(d) = live_binary(&bin) else { return };
+    let s = run_to_line(&d, "main.rs", 18);
+    let n = d.eval(s.at, top(&s), "*n").unwrap();
+    let chain = d
+        .origin(&n.handle, hopper_core::api::Budget::default())
+        .expect("a live origin");
+    assert_eq!(chain.end, hopper_core::api::OriginEnd::Literal, "{chain:?}");
+    assert_six_source_hops(&chain);
+    let info = d.recording().unwrap();
+    assert!(
+        chain
+            .hops
+            .iter()
+            .chain(&chain.references)
+            .all(|h| info.is_reference_moment(&h.at)),
+        "{info:?}"
+    );
+    // the cursor did not move, and the same window answers `last_write`
+    assert_eq!(d.cursor().unwrap().at, s.at);
+    let b = d.eval(s.at, top(&s), "b.retries").unwrap();
+    let w = d.last_write(b.place.unwrap(), s.at).unwrap().unwrap();
+    assert_eq!(w.location.map(|l| l.line), Some(13));
+    assert_eq!(w.value, 3u32.to_le_bytes());
+    // and `value_history`: b changed once in the window, at the move
+    let hist = d
+        .value_history(
+            &b.handle,
+            hopper_core::MomentRange::all(),
+            PageReq::first(10),
+        )
+        .unwrap();
+    assert!(hist.items.iter().any(|(_, v)| v.summary == "3"), "{hist:?}");
+    assert!(hist.items.iter().all(|(m, _)| info.is_reference_moment(m)) || hist.items.is_empty());
+    assert_eq!(
+        d.recording().unwrap().reference_runs.len(),
+        1,
+        "one window per moment, reused (the session's reference run is off)"
+    );
 }

@@ -12,7 +12,7 @@ use hopper_core::target::Direction;
 use hopper_core::{MomentRange, SourceLoc};
 use hopper_engine::writes::WindowState;
 use hopper_engine::{IndexPolicy, Session, SessionOptions};
-use support::step_recording::{StepFactory, StepRecording, WindowStart, capture};
+use support::step_recording::{StepFactory, WindowStart, capture};
 use support::*;
 
 /// Wait for phase A to finish (it runs on its own thread).

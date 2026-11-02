@@ -429,10 +429,7 @@ fn origin_is_the_six_hop_chain() {
     for w in source.windows(2) {
         assert!(w[1].at < w[0].at, "hops go back in time");
     }
-    let allocs: Vec<Option<u64>> = source
-        .iter()
-        .map(|h| h.allocation.map(|a| a.0))
-        .collect();
+    let allocs: Vec<Option<u64>> = source.iter().map(|h| h.allocation.map(|a| a.0)).collect();
     assert_eq!(allocs, [None, Some(3), Some(2), None, None, Some(1)]);
     // The last hop read the literal from .rodata.
     let last = chain.hops.last().unwrap();

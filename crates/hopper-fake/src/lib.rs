@@ -571,7 +571,7 @@ impl Debugger for FakeDebugger {
                 executable: EXECUTABLE.into(),
                 threads: vec![TID],
             }],
-            reference_run: None,
+            reference_runs: Vec::new(),
         })
     }
 

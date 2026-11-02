@@ -21,6 +21,7 @@ use hopper_symbols::{StackFrame, SymbolSet};
 
 use crate::ownership::{self, LineHit};
 use crate::provenance::Reverse;
+use crate::stepped::{StepRecording, StepReplica, WindowEnd, WindowStart};
 use crate::view::MomentView;
 use crate::{Mode, Session, Shared, at_moment, lock, watch_pieces};
 
@@ -598,6 +599,18 @@ pub fn last_write(
             }
         }
     }
+    if shared.is_live() {
+        let window = live_window(shared, before)?;
+        let mut t = StepReplica::new(window.clone());
+        t.seek(&window.end())?;
+        let mut r = Reverse {
+            t: &mut t,
+            shared,
+            steps: 0,
+            budget: shared.options.query_budget,
+        };
+        return Ok(r.last_write(place)?.ok().map(|w| w.event));
+    }
     let lease = shared.pool.lease()?;
     let s = shared.clone();
     lease.run(move |t| -> Result<Option<WriteEvent>> {
@@ -618,10 +631,7 @@ pub fn last_write(
 /// it (a 16-byte store over a 4-byte field reports the field's 4). `None` when the write did not
 /// cover the whole place (its other bytes are older): reverse execution answers then.
 fn narrowed(ev: WriteEvent, place: Place) -> Option<WriteEvent> {
-    let (
-        Place::Memory { addr: wa, .. },
-        Place::Memory { addr, len, .. },
-    ) = (ev.place, place)
+    let (Place::Memory { addr: wa, .. }, Place::Memory { addr, len, .. }) = (ev.place, place)
     else {
         return None;
     };
@@ -646,32 +656,124 @@ pub fn origin(shared: &Arc<Shared>, value: &ValueHandle, budget: Budget) -> Resu
         .filter(|p| matches!(p, Place::Memory { .. }))
         .collect();
     let at = value.at;
+    if shared.is_live() {
+        // A live process cannot reverse: a stepped window of another run, ending in the same
+        // state, can.
+        let window = live_window(shared, at)?;
+        let mut t = StepReplica::new(window.clone());
+        return origin_on(&mut t, shared, window.end(), place, &pointers, budget);
+    }
     let lease = shared.pool.lease()?;
     let s = shared.clone();
-    lease.run(move |t| -> Result<OriginChain> {
-        if t.now().ok() != Some(at) {
-            t.seek(&at)?;
+    lease.run(move |t| origin_on(t, &s, at, place, &pointers, budget))?
+}
+
+/// The origin chain of `place` on a replica that can seek to `at` and reverse from there.
+fn origin_on(
+    t: &mut dyn Target,
+    shared: &Shared,
+    at: Moment,
+    place: Place,
+    pointers: &[Place],
+    budget: Budget,
+) -> Result<OriginChain> {
+    if t.now().ok() != Some(at) {
+        t.seek(&at)?;
+    }
+    let mut r = Reverse {
+        t,
+        shared,
+        steps: 0,
+        budget: budget.max_steps,
+    };
+    let mut chain = r.origin(place, budget)?;
+    for p in pointers {
+        if r.t.now().ok() != Some(at) {
+            r.t.seek(&at)?;
         }
-        let mut r = Reverse {
-            t,
-            shared: &s,
-            steps: 0,
-            budget: budget.max_steps,
+        r.steps = 0;
+        match r.reference_hop(*p) {
+            Ok(Some(hop)) => chain.references.push(hop),
+            Ok(None) | Err(HopperError::BudgetExhausted { .. }) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(chain)
+}
+
+/// Most instructions a live session's stepped window may take.
+const LIVE_WINDOW_STEPS: usize = 2_000_000;
+
+/// A live session's stepped window ending in the state the process had at `at` (see
+/// [`crate::stepped`]), made once per moment. It starts at the entry of the stopped thread's
+/// outermost frame in the user's own source (the program's `main`, normally), so history
+/// before that is not in it.
+pub fn live_window(shared: &Arc<Shared>, at: Moment) -> Result<Arc<StepRecording>> {
+    if let Some(w) = lock(&shared.live_windows).get(&at) {
+        return Ok(w.clone());
+    }
+    let Mode::Live { program, args } = &shared.mode else {
+        return Err(HopperError::Unsupported(
+            "stepped windows are for live sessions".into(),
+        ));
+    };
+    let s = shared.clone();
+    let (regs, entry, cfa) = at_moment(shared, at, move |v| {
+        let stack = v.stack(at.tid)?;
+        let regs = v.registers(at.tid)?;
+        let syms = v.symbols()?;
+        // The user's own code: a sidecar record of origin `Source` when there is a sidecar;
+        // otherwise a Rust function (a path: rustc's C `main` shim is not one) whose file is not
+        // std's (`/rustc/…`, or the toolchain's `rustlib/src` for generics instantiated in the
+        // user's crate) or a registry crate's.
+        let sidecar = s.sidecar.clone();
+        let rust_path = |f: &StackFrame| {
+            f.frame
+                .function
+                .as_deref()
+                .is_some_and(|n| n.contains("::"))
         };
-        let mut chain = r.origin(place, budget)?;
-        for p in pointers {
-            if r.t.now().ok() != Some(at) {
-                r.t.seek(&at)?;
+        let user_source = |f: &&StackFrame| match &sidecar {
+            Some(sc) => {
+                rust_path(f)
+                    && syms
+                        .set
+                        .function_at(f.lookup_pc)
+                        .and_then(|func| sc.function_named(&func.linkage_name.unwrap_or(func.name)))
+                        .is_some_and(|i| {
+                            sc.function(i).origin == hopper_sidecar::FunctionOrigin::Source
+                        })
             }
-            r.steps = 0;
-            match r.reference_hop(p) {
-                Ok(Some(hop)) => chain.references.push(hop),
-                Ok(None) | Err(HopperError::BudgetExhausted { .. }) => {}
-                Err(e) => return Err(e),
+            None => {
+                rust_path(f)
+                    && f.frame.location.as_ref().is_some_and(|l| {
+                        !l.file.starts_with("/rustc/")
+                            && !l.file.contains("/rustlib/src/")
+                            && !l.file.contains("/.cargo/registry/")
+                    })
             }
-        }
-        Ok(chain)
-    })?
+        };
+        let frame = stack
+            .iter()
+            .rev()
+            .find(user_source)
+            .or(stack.first())
+            .ok_or_else(|| HopperError::NotFound("a frame to start the window at".into()))?;
+        let key = FrameKey::of(&syms.set, frame).ok_or_else(|| {
+            HopperError::NotFound("the outermost user frame's function and CFA".into())
+        })?;
+        Ok((regs, key.entry, key.cfa))
+    })?;
+    let window = Arc::new(StepRecording::capture(
+        &shared.options.gdbserver,
+        program,
+        args,
+        WindowStart::FrameEntry { entry, cfa },
+        &WindowEnd::Registers(regs),
+        LIVE_WINDOW_STEPS,
+    )?);
+    lock(&shared.live_windows).insert(at, window.clone());
+    Ok(window)
 }
 
 /// The handles of the pointers a value is reached through, nearest the value first: the
@@ -723,109 +825,37 @@ pub fn value_history(
     };
     crate::writes::request(shared, place, value.at);
     let (pieces, whole) = watch_pieces(addr, len.min(32));
-    let lease = shared.pool.lease()?;
-    let s = shared.clone();
-    let h = value.clone();
-    let (items, complete) = lease.run(move |t| -> Result<(Vec<(Moment, ValueView)>, bool)> {
-        let mut spend = Spend::new(s.options.query_budget);
-        if t.now().ok() != Some(h.at) {
-            t.seek(&h.at)?;
-        }
-        // The caller's return address ends a local's history.
-        let ret = match &key {
-            Some(k) => {
-                let mut v = MomentView::on(&s, h.at, &mut *t);
-                let stack = v.stack(k.tid)?;
-                stack
-                    .iter()
-                    .find(|f| f.cfa.is_some_and(|c| c > k.cfa))
-                    .map(|f| f.frame.pc)
-            }
-            None => None,
+    let ask = HistoryAsk {
+        place,
+        ty,
+        name,
+        key,
+        range,
+        pieces,
+    };
+    let (items, complete) = if shared.is_live() {
+        // A live process cannot go back to the frame's entry: a stepped window of another run,
+        // ending in the same state, can. Its thread has its own id.
+        let window = live_window(shared, value.at)?;
+        let mut t = StepReplica::new(window.clone());
+        let tid = t.current_thread()?;
+        let ask = HistoryAsk {
+            key: ask.key.map(|k| FrameKey { tid, ..k }),
+            range: MomentRange::all(),
+            ..ask
         };
-        match (&key, range.start) {
-            (_, Some(start)) => {
-                t.seek(&start)?;
-            }
-            (Some(k), None) => {
-                if !reverse_to_entry(t, k, &mut spend)? {
-                    to_start(&s, t)?;
-                }
-            }
-            (None, None) => to_start(&s, t)?,
-        }
-        let view_here = |t: &mut dyn Target| -> Option<(Moment, ValueView)> {
-            let at = t.now().ok()?;
-            let mut v = MomentView::on(&s, at, t);
-            let frame = FrameId {
-                tid: h.at.tid,
-                depth: 0,
-            };
-            let handle = ValueHandle {
-                at,
-                process: h.process,
-                frame: None,
-                target: ValueTarget::Place { place, ty },
-                path: Vec::new(),
-            };
-            let mut view = v.with_eval(frame, |ev, cx| ev.view(cx, &handle)).ok()?;
-            view.name = name.clone();
-            Some((at, view))
+        let h = ValueHandle {
+            at: window.end(),
+            ..value.clone()
         };
-        let mut items: Vec<(Moment, ValueView)> = Vec::new();
-        let push = |items: &mut Vec<(Moment, ValueView)>, x: Option<(Moment, ValueView)>| {
-            if let Some((m, v)) = x
-                && items.last().is_none_or(|(_, p)| p.summary != v.summary)
-            {
-                items.push((m, v));
-            }
-        };
-        push(&mut items, view_here(t));
-        let mut ins = Inserted::new(t);
-        for (a, l) in &pieces {
-            ins.add(Breakpoint {
-                kind: BreakKind::WriteWatch,
-                addr: *a,
-                len: *l,
-            })?;
-        }
-        if let Some(r) = ret {
-            ins.add(Breakpoint::code(r))?;
-        }
-        let complete = loop {
-            let reason = match spend.resume(ins.t, Resume::Continue, Direction::Forward) {
-                Ok(r) => r,
-                Err(HopperError::BudgetExhausted { .. }) => break false,
-                Err(e) => return Err(e),
-            };
-            match reason {
-                StopReason::Watchpoint { .. } => {
-                    let now = ins.t.now()?;
-                    if range.end.is_some_and(|e| !now.is_before(&e)) {
-                        break true;
-                    }
-                    let x = view_here(ins.t);
-                    push(&mut items, x);
-                }
-                StopReason::Breakpoint { addr } if Some(addr) == ret => {
-                    let back_in_caller = match &key {
-                        Some(k) => {
-                            let tid = ins.t.current_thread()?;
-                            tid == k.tid && ins.t.registers(tid)?.sp() == Some(k.cfa)
-                        }
-                        None => true,
-                    };
-                    if back_in_caller {
-                        break true;
-                    }
-                }
-                StopReason::HistoryEnd | StopReason::Exited { .. } => break true,
-                _ => {}
-            }
-        };
-        Ok((items, complete && whole))
-    })??;
-    let completeness = if complete {
+        history_on(&mut t, shared, &h, &ask)?
+    } else {
+        let lease = shared.pool.lease()?;
+        let s = shared.clone();
+        let h = value.clone();
+        lease.run(move |t| history_on(t, &s, &h, &ask))??
+    };
+    let completeness = if complete && whole {
         Completeness::Complete
     } else {
         Completeness::Partial {
@@ -836,4 +866,131 @@ pub fn value_history(
         }
     };
     Ok(page_of(&items, page, completeness))
+}
+
+/// What `value_history` asks a replica.
+struct HistoryAsk {
+    place: Place,
+    ty: hopper_core::api::TypeKey,
+    name: String,
+    key: Option<FrameKey>,
+    range: MomentRange,
+    pieces: Vec<(u64, u64)>,
+}
+
+/// A value's history on a replica that can seek to `h.at` and reverse: its value at the frame's
+/// entry (or the range's start) and after every write until the frame returns or the range ends;
+/// whether the replay finished within the budget.
+fn history_on(
+    t: &mut dyn Target,
+    s: &Shared,
+    h: &ValueHandle,
+    ask: &HistoryAsk,
+) -> Result<(Vec<(Moment, ValueView)>, bool)> {
+    let HistoryAsk {
+        place,
+        ty,
+        name,
+        key,
+        range,
+        pieces,
+    } = ask;
+    let (place, ty, range) = (*place, *ty, *range);
+    let mut spend = Spend::new(s.options.query_budget);
+    if t.now().ok() != Some(h.at) {
+        t.seek(&h.at)?;
+    }
+    // The caller's return address ends a local's history.
+    let ret = match &key {
+        Some(k) => {
+            let mut v = MomentView::on(s, h.at, &mut *t);
+            let stack = v.stack(k.tid)?;
+            stack
+                .iter()
+                .find(|f| f.cfa.is_some_and(|c| c > k.cfa))
+                .map(|f| f.frame.pc)
+        }
+        None => None,
+    };
+    match (&key, range.start) {
+        (_, Some(start)) => {
+            t.seek(&start)?;
+        }
+        (Some(k), None) => {
+            if !reverse_to_entry(t, k, &mut spend)? {
+                to_start(s, t)?;
+            }
+        }
+        (None, None) => to_start(s, t)?,
+    }
+    let view_here = |t: &mut dyn Target| -> Option<(Moment, ValueView)> {
+        let at = t.now().ok()?;
+        let mut v = MomentView::on(s, at, t);
+        let frame = FrameId {
+            tid: h.at.tid,
+            depth: 0,
+        };
+        let handle = ValueHandle {
+            at,
+            process: h.process,
+            frame: None,
+            target: ValueTarget::Place { place, ty },
+            path: Vec::new(),
+        };
+        let mut view = v.with_eval(frame, |ev, cx| ev.view(cx, &handle)).ok()?;
+        view.name = name.clone();
+        Some((at, view))
+    };
+    let mut items: Vec<(Moment, ValueView)> = Vec::new();
+    let push = |items: &mut Vec<(Moment, ValueView)>, x: Option<(Moment, ValueView)>| {
+        if let Some((m, v)) = x
+            && items.last().is_none_or(|(_, p)| p.summary != v.summary)
+        {
+            items.push((m, v));
+        }
+    };
+    push(&mut items, view_here(t));
+    let mut ins = Inserted::new(t);
+    for (a, l) in pieces {
+        ins.add(Breakpoint {
+            kind: BreakKind::WriteWatch,
+            addr: *a,
+            len: *l,
+        })?;
+    }
+    if let Some(r) = ret {
+        ins.add(Breakpoint::code(r))?;
+    }
+    let complete = loop {
+        let reason = match spend.resume(ins.t, Resume::Continue, Direction::Forward) {
+            Ok(r) => r,
+            Err(HopperError::BudgetExhausted { .. }) => break false,
+            Err(e) => return Err(e),
+        };
+        match reason {
+            StopReason::Watchpoint { .. } => {
+                let now = ins.t.now()?;
+                if range.end.is_some_and(|e| !now.is_before(&e)) {
+                    break true;
+                }
+                let x = view_here(ins.t);
+                push(&mut items, x);
+            }
+            StopReason::Breakpoint { addr } if Some(addr) == ret => {
+                let back_in_caller = match &key {
+                    Some(k) => {
+                        let tid = ins.t.current_thread()?;
+                        tid == k.tid && ins.t.registers(tid)?.sp() == Some(k.cfa)
+                    }
+                    None => true,
+                };
+                if back_in_caller {
+                    break true;
+                }
+            }
+            StopReason::HistoryEnd | StopReason::Exited { .. } => break true,
+            _ => {}
+        }
+    };
+    Ok((items, complete))
 }

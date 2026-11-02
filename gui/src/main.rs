@@ -1,7 +1,8 @@
 //! `hopper-gui <trace>` opens an rr trace (through `hopper_cli::open_debugger`, as the CLI, MCP
 //! and DAP do); `hopper-gui --live -- <prog> [args]` debugs a program live under gdbserver,
 //! forward only; `hopper-gui --fake` opens the scripted worked example.
-//! `--shot <out.png> [--size <w>x<h>] [--keys F10,Alt+Left]` renders the window headlessly.
+//! `--shot <out.png> [--size <w>x<h>] [--keys F10,Alt+Left] [--select <local>]` renders the window
+//! headlessly.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use std::sync::Arc;
 
 use hopper_core::api::Debugger;
 
-const USAGE: &str = "usage: hopper-gui (--fake | <trace-dir> | --live) [--shot <out.png> [--size <w>x<h>] [--keys <chord>,...]] [-- <prog> [args] (with --live)]";
+const USAGE: &str = "usage: hopper-gui (--fake | <trace-dir> | --live) [--shot <out.png> [--size <w>x<h>] [--keys <chord>,...] [--select <local>]] [-- <prog> [args] (with --live)]";
 
 #[derive(Debug, Default)]
 struct Args {
@@ -21,6 +22,8 @@ struct Args {
     shot: Option<PathBuf>,
     size: Option<(f32, f32)>,
     keys: Vec<String>,
+    /// `--select`: a local to select before the shot.
+    select: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -44,6 +47,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 let (w, h) = v.split_once('x').ok_or("--size needs <w>x<h>")?;
                 a.size = Some((w.parse().map_err(|_| "bad --size")?, h.parse().map_err(|_| "bad --size")?));
             }
+            "--select" => a.select = Some(it.next().ok_or("--select needs a local's name")?.clone()),
             "--keys" => a.keys = it.next().ok_or("--keys needs a list")?.split(',').map(str::to_owned).collect(),
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => a.trace = Some(s.into()),
@@ -91,7 +95,7 @@ fn main() -> ExitCode {
         }
     };
     let result = match &args.shot {
-        Some(out) => hopper_gui::run::shot(dbg, args.size.unwrap_or((1440.0, 900.0)), &args.keys, out),
+        Some(out) => hopper_gui::run::shot(dbg, args.size.unwrap_or((1440.0, 900.0)), &args.keys, args.select.as_deref(), out),
         None => hopper_gui::run::run(dbg),
     };
     match result {
