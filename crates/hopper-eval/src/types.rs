@@ -535,7 +535,7 @@ fn parse_aggregate(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef, is_union: b
                 }
                 fields.push(member(dwarf, unit, e));
             }
-            gimli::DW_TAG_template_type_param => {
+            gimli::DW_TAG_template_type_parameter => {
                 if let (Some(n), Some(t)) = (
                     dwarf.attr_str(unit, e, gimli::DW_AT_name),
                     e.attr_value(gimli::DW_AT_type).and_then(|v| dwarf.attr_ref(unit, v)),

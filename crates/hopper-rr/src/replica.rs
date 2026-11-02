@@ -237,7 +237,7 @@ impl<C: Connection> RrReplica<C> {
                 return Ok(reply);
             }
         }
-        self.remote.resume_raw(req)
+        self.remote.resume(req)
     }
 
     /// Seek to (event, thread, ticks) with `sub` 0, without inserting breakpoints again.

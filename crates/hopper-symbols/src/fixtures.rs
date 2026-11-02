@@ -91,6 +91,29 @@ pub fn core_at(name: &str, location: &str) -> Option<(PathBuf, PathBuf)> {
     Some((binary, core))
 }
 
+/// The directory with Rust's gdb pretty printers (`<sysroot>/lib/rustlib/etc`), which the
+/// binaries' `.debug_gdb_scripts` section names.
+fn rust_gdb_scripts() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let out = Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
+        let root = String::from_utf8(out.stdout).ok()?;
+        let dir = Path::new(root.trim()).join("lib/rustlib/etc");
+        dir.join("gdb_lookup.py").exists().then_some(dir)
+    })
+    .clone()
+}
+
+/// gdb arguments that load Rust's pretty printers, as `rust-gdb` does.
+fn pretty_printer_args(cmd: &mut Command) {
+    cmd.args(["-iex", "set auto-load safe-path /"]);
+    if let Some(dir) = rust_gdb_scripts() {
+        let d = dir.display();
+        cmd.args(["-iex", &format!("directory {d}")]);
+        cmd.args(["-iex", &format!("python import sys; sys.path.insert(0, '{d}')")]);
+    }
+}
+
 /// How gdb should print values.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GdbPrinting {
@@ -112,9 +135,11 @@ pub fn gdb_print(
     let mut cmd = Command::new("gdb");
     cmd.args(["-batch", "-nx", "-iex", "set debuginfod enabled off"]);
     match printing {
-        GdbPrinting::PrettyPrinters => cmd.args(["-iex", "set auto-load safe-path /"]),
-        GdbPrinting::Raw => cmd.args(["-iex", "set auto-load python-scripts off"]),
-    };
+        GdbPrinting::PrettyPrinters => pretty_printer_args(&mut cmd),
+        GdbPrinting::Raw => {
+            cmd.args(["-iex", "set auto-load python-scripts off"]);
+        }
+    }
     cmd.args(["-ex", "set pagination off", "-ex", "set print elements 1000", "-ex", "set width 0"]);
     cmd.args(["-ex", &format!("frame {frame}")]);
     for (i, e) in exprs.iter().enumerate() {
@@ -138,7 +163,8 @@ pub fn gdb_print(
 /// gdb's raw output for `commands` on `binary` (and `core`, when given).
 pub fn gdb_output(binary: &Path, core: Option<&Path>, commands: &[&str]) -> String {
     let mut cmd = Command::new("gdb");
-    cmd.args(["-batch", "-nx", "-iex", "set debuginfod enabled off", "-iex", "set auto-load safe-path /"]);
+    cmd.args(["-batch", "-nx", "-iex", "set debuginfod enabled off"]);
+    pretty_printer_args(&mut cmd);
     cmd.args(["-ex", "set pagination off", "-ex", "set width 0"]);
     for c in commands {
         cmd.args(["-ex", c]);

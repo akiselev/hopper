@@ -114,6 +114,7 @@ impl Evaluator {
     /// (optimised out, unreadable memory) is still listed, with its reason as the summary.
     pub fn locals(&self, cx: &mut EvalContext<'_>) -> Result<Vec<ValueView>> {
         let env = self.frame_env(cx)?;
+        let origin = Origin::of(cx);
         let scope = env
             .scope
             .clone()
@@ -132,7 +133,7 @@ impl Evaluator {
             };
             let view = match loaded {
                 Ok(v) => {
-                    let handle = handle(cx, target(Some(&v), &s), Vec::new());
+                    let handle = handle(&origin, target(Some(&v), &s), Vec::new());
                     view_of(&mut s, &v, var.name.clone(), handle, cx.process, cx.frame.id)
                 }
                 Err(e) => {
@@ -141,7 +142,7 @@ impl Evaluator {
                         .and_then(|t| s.ty(&TypeId::Die(t)).ok())
                         .map_or_else(|| "?".to_string(), |t| t.name.clone());
                     ValueView {
-                        handle: handle(cx, target(None, &s), Vec::new()),
+                        handle: handle(&origin, target(None, &s), Vec::new()),
                         name: var.name.clone(),
                         type_name,
                         summary: view::error_text(&e),
@@ -158,7 +159,7 @@ impl Evaluator {
 
     /// Evaluate `expr` in the frame.
     pub fn eval(&self, cx: &mut EvalContext<'_>, expr: &str) -> Result<ValueView> {
-        let handle = handle(cx, ValueTarget::Expr(expr.to_string()), Vec::new());
+        let handle = handle(&Origin::of(cx), ValueTarget::Expr(expr.to_string()), Vec::new());
         self.view(cx, &handle)
     }
 
@@ -168,7 +169,7 @@ impl Evaluator {
         let mut s = Session::new(cx.symbols, env.module, &self.types, &mut *cx.memory, cx.frame.regs, rustc)?;
         let root = root_value(&mut s, &env, cx.frame.regs, cx.frame.cfa, cx.process, &h.target)?;
         let v = view::select_path(&root, &mut s, &h.path)?;
-        let name = display_name(&h.target, &h.path);
+        let name = child_name(&root, &mut s, &h.target, &h.path);
         let mut handle = h.clone();
         handle.at = cx.at;
         Ok(view_of(&mut s, &v, name, handle, cx.process, cx.frame.id))
@@ -272,8 +273,22 @@ impl Evaluator {
     }
 }
 
-fn handle(cx: &EvalContext<'_>, target: ValueTarget, path: Vec<PathElem>) -> ValueHandle {
-    ValueHandle { at: cx.at, process: cx.process, frame: cx.frame.id, target, path }
+/// What every handle made in one evaluation shares.
+#[derive(Copy, Clone, Debug)]
+struct Origin {
+    at: Moment,
+    process: ProcessId,
+    frame: Option<FrameId>,
+}
+
+impl Origin {
+    fn of(cx: &EvalContext<'_>) -> Origin {
+        Origin { at: cx.at, process: cx.process, frame: cx.frame.id }
+    }
+}
+
+fn handle(o: &Origin, target: ValueTarget, path: Vec<PathElem>) -> ValueHandle {
+    ValueHandle { at: o.at, process: o.process, frame: o.frame, target, path }
 }
 
 fn display_name(target: &ValueTarget, path: &[PathElem]) -> String {
@@ -306,6 +321,17 @@ fn display_name(target: &ValueTarget, path: &[PathElem]) -> String {
         };
     }
     name
+}
+
+/// The name a value has as its parent's child: what `children` would call it (a map entry is
+/// `["key"]`, not `[0]`).
+fn child_name(root: &Value, s: &mut Session<'_>, target: &ValueTarget, path: &[PathElem]) -> String {
+    let fallback = display_name(target, path);
+    let Some(PathElem::Index(i)) = path.last() else { return fallback };
+    let parent_path = &path[..path.len() - 1];
+    let Ok(parent) = view::select_path(root, s, parent_path) else { return fallback };
+    let Ok(sh) = view::shape(&parent, s) else { return fallback };
+    view::child_at(&sh, s, &display_name(target, parent_path), *i).map_or(fallback, |c| c.name)
 }
 
 fn place_of(v: &Value, s: &Session<'_>, process: ProcessId, frame: Option<FrameId>) -> Option<Place> {
@@ -410,6 +436,10 @@ fn eval_expr(s: &mut Session<'_>, env: &FrameEnv, regs: &RegisterSet, cfa: Optio
         Expr::Field(base, field) => {
             let mut cur = eval_expr(s, env, regs, cfa, base)?;
             for _ in 0..=AUTO_DEREF {
+                // A raw field first (`nums.len`, `rc.ptr`), then the logical child (`rc.value`).
+                if let Some(v) = raw_field(&cur, s, field)? {
+                    return Ok(v);
+                }
                 match view::select(&cur, s, &[PathElem::Field(field.clone())]) {
                     Ok((v, _)) => return Ok(v),
                     Err(err) => match view::select(&cur, s, &[PathElem::Deref]) {
@@ -455,6 +485,19 @@ fn eval_expr(s: &mut Session<'_>, env: &FrameEnv, regs: &RegisterSet, cfa: Optio
             let id = TypeId::PointerTo(Box::new(v.ty.id.clone()));
             s.from_bytes(&id, addr.to_le_bytes().to_vec())
         }
+    }
+}
+
+/// The struct or union member `name` of `v` (also `0` for `__0`), ignoring std interpretation.
+fn raw_field(v: &Value, s: &mut Session<'_>, name: &str) -> Result<Option<Value>> {
+    let ty = s.strip(&v.ty)?;
+    let field = match &ty.kind {
+        types::TypeKind::Struct(st) | types::TypeKind::Union(st) => st.field(name).cloned(),
+        _ => None,
+    };
+    match field {
+        Some(f) => Ok(Some(Value { ty, loc: v.loc.clone() }.field(s, &f)?)),
+        None => Ok(None),
     }
 }
 

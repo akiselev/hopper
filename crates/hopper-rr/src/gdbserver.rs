@@ -158,7 +158,7 @@ impl<C: Connection> Target for GdbserverTarget<C> {
             return Err(HopperError::Unsupported("reverse execution on a live gdbserver".into()));
         }
         let req = self.remote.request_for(how, dir);
-        let reply = self.remote.resume_raw(req)?;
+        let reply = self.remote.resume(req)?;
         let stepped = matches!(how, Resume::Step { .. });
         if stepped {
             self.steps += 1;

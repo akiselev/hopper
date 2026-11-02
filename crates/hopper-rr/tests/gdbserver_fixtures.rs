@@ -81,6 +81,7 @@ fn lists_the_threads_fixture_threads() {
     let elf = Elf::open(&exe);
     let mut t = launch(&exe, &[]);
     t.client().record_transcript();
+    t.client().connection().set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
     assert_eq!(t.threads().unwrap().len(), 1);
     eprintln!("A {}", t.client().take_transcript());
     let bump = runtime_addr(&mut t, &elf, "threads::bump");
@@ -89,7 +90,9 @@ fn lists_the_threads_fixture_threads() {
     let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
     eprintln!("C {}", t.client().take_transcript());
     assert_eq!(ev.reason, StopReason::Breakpoint { addr: bump });
-    let threads = t.threads().unwrap();
+    let threads = t.threads();
+    eprintln!("D {}", t.client().take_transcript());
+    let threads = threads.unwrap();
     assert!(threads.len() >= 2, "{threads:?}");
     assert!(threads.contains(&ev.tid));
     assert!(threads.contains(&hopper_core::Tid(t.info().process.pid)), "the main thread");

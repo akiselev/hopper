@@ -12,6 +12,7 @@ hopper-symbols.workspace = true
 gimli.workspace = true
 
 [dev-dependencies]
+hopper-symbols = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

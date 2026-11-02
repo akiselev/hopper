@@ -161,7 +161,7 @@ impl<C: Connection> Remote<C> {
         }
     }
 
-    /// Send a resume and wait for its stop reply.
+    /// Send a resume as it is and wait for its stop reply.
     pub fn resume_raw(&mut self, req: ResumeRequest) -> Result<StopReply> {
         self.check_alive()?;
         self.forget_selection();
@@ -172,6 +172,62 @@ impl<C: Connection> Remote<C> {
             self.note_thread(t);
         }
         Ok(reply)
+    }
+
+    /// Resume forward or backward. A forward resume of a thread that sits on one of hopper's
+    /// code breakpoints first steps it over that breakpoint (remove, single-step, insert again),
+    /// the way gdb drives a remote stub: gdbserver does not step over a client's breakpoint by
+    /// itself and would report it again at once (with several threads it spins, re-trapping).
+    pub fn resume(&mut self, req: ResumeRequest) -> Result<StopReply> {
+        if let Some(reply) = self.step_over_breakpoint(req)? {
+            return Ok(reply);
+        }
+        self.resume_raw(req)
+    }
+
+    /// When `req` resumes a thread from a code breakpoint, step it past: returns the step's
+    /// reply when that already answers `req` (it was a step, or the step stopped for another
+    /// reason), `None` when `req` should now be sent.
+    fn step_over_breakpoint(&mut self, req: ResumeRequest) -> Result<Option<StopReply>> {
+        let thread = match req {
+            ResumeRequest::Continue => match self.current {
+                Some(t) => t,
+                None => return Ok(None),
+            },
+            ResumeRequest::Step(t) => t,
+            ResumeRequest::ReverseContinue | ResumeRequest::ReverseStep(_) => return Ok(None),
+        };
+        let here: Vec<Breakpoint> = {
+            let pc = self.registers(thread.tid)?.pc();
+            self.breakpoints
+                .iter()
+                .filter(|b| {
+                    matches!(b.kind, BreakKind::Software | BreakKind::Hardware)
+                        && Some(b.addr) == pc
+                })
+                .copied()
+                .collect()
+        };
+        if here.is_empty() {
+            return Ok(None);
+        }
+        for bp in &here {
+            self.client.remove_breakpoint(bp.kind, bp.addr, bp.len)?;
+        }
+        let reply = self.resume_raw(ResumeRequest::Step(thread))?;
+        if matches!(reply, StopReply::Stopped(_)) {
+            for bp in &here {
+                self.client.insert_breakpoint(bp.kind, bp.addr, bp.len)?;
+            }
+        }
+        let plain_step = matches!(
+            &reply,
+            StopReply::Stopped(s) if s.cause == StopCause::Unspecified && s.signal == GDB_SIGTRAP
+        );
+        Ok(match req {
+            ResumeRequest::Continue if plain_step => None,
+            _ => Some(reply),
+        })
     }
 
     fn pc_of(&mut self, tid: Tid, stop: &hopper_rsp::SignalStop) -> Result<u64> {
