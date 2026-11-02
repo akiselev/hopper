@@ -3,9 +3,6 @@
 
 mod support;
 
-/// An ownership label as (kind, source, destination, line).
-type Label = (OwnershipKind, Option<String>, Option<String>, Option<u32>);
-
 use std::sync::{Arc, OnceLock};
 
 use hopper_core::Place;
@@ -14,7 +11,7 @@ use hopper_core::api::{
 };
 use hopper_core::target::Direction;
 use hopper_engine::{Session, SessionOptions};
-use support::step_recording::{StepFactory, StepRecording, WindowStart};
+use support::step_recording::{StepFactory, StepRecording, WindowStart, capture};
 use support::*;
 
 fn recording(hopper_built: bool) -> Option<Arc<StepRecording>> {
@@ -28,7 +25,7 @@ fn recording(hopper_built: bool) -> Option<Arc<StepRecording>> {
             fixture_binary("worked-example")?
         };
         live_binary(&bin)?; // skips without gdbserver
-        let rec = StepRecording::capture(&bin, WindowStart::Line(12), 18, 2_000_000)
+        let rec = capture(&bin, WindowStart::Line(12), 18, 2_000_000)
             .expect("capture the window");
         eprintln!("recorded {} instructions", rec.len());
         Some(Arc::new(rec))
@@ -202,7 +199,7 @@ fn ownership_by_replaying_the_frame() {
         return;
     }
     let rec = Arc::new(
-        StepRecording::capture(
+        capture(
             &bin,
             WindowStart::FunctionEntry("worked_example::main"),
             18,
@@ -263,9 +260,9 @@ fn ownership_is_unknown_when_the_frame_began_before_the_recording() {
     );
 }
 
-/// The value `*n` (the String in the Vec), not its bytes: the machine chain follows its words
-/// back through the Vec push, the clone, the move from `a` and `load`'s return to `String::from`,
-/// and the source view names the ownership events in order.
+/// M5 on the step recording: the value `*n` (the String in the Vec), not its bytes. The machine
+/// chain follows its words back through the Vec push, the clone, the move from `a` and `load`'s
+/// return to `String::from`; the source view reads as the plan's six-hop table.
 #[test]
 fn origin_of_the_string_names_the_ownership_events() {
     let Some(bin) = hopper_built_worked_example() else {
@@ -275,7 +272,7 @@ fn origin_of_the_string_names_the_ownership_events() {
         return;
     }
     let rec = Arc::new(
-        StepRecording::capture(
+        capture(
             &bin,
             WindowStart::FunctionEntry("worked_example::main"),
             18,
@@ -288,50 +285,23 @@ fn origin_of_the_string_names_the_ownership_events() {
     let n = d.eval(end.at, top(&end), "*n").unwrap();
     let chain = d.origin(&n.handle, Budget::default()).unwrap();
     assert_eq!(chain.end, OriginEnd::Literal, "{chain:?}");
-    let labels: Vec<Label> = hopper_engine::source_hops(&chain)
-        .iter()
-        .map(|h| {
-            let o = h.ownership.as_ref().unwrap();
-            (
-                o.kind,
-                o.src.clone(),
-                o.dst.clone(),
-                o.span.as_ref().map(|s| s.line),
-            )
-        })
-        .collect();
-    let find = |kind: OwnershipKind, src: &str, dst: &str, line: u32| {
-        labels
-            .iter()
-            .position(|l| {
-                l.0 == kind
-                    && l.1.as_deref().is_some_and(|s| s.contains(src))
-                    && l.2.as_deref() == Some(dst)
-                    && l.3 == Some(line)
-            })
-            .unwrap_or_else(|| panic!("no {kind:?} {src} -> {dst} at {line} in {labels:?}"))
-    };
-    let into_push = find(OwnershipKind::Move, "c", "_8", 16);
-    let clone = find(OwnershipKind::Clone, "b", "c", 14);
-    let moved = find(OwnershipKind::Move, "a", "b", 13);
-    let from = find(OwnershipKind::CallReturn, "String as From", "name", 7);
-    assert!(
-        into_push < clone && clone < moved && moved < from,
-        "{labels:?}"
-    );
-    // The move a -> b is a whole-place copy at -O0: an exact label.
-    let exact = hopper_engine::source_hops(&chain)
-        .into_iter()
-        .find(|h| {
-            h.ownership
-                .as_ref()
-                .is_some_and(|o| o.kind == OwnershipKind::Move && o.dst.as_deref() == Some("b"))
-        })
-        .unwrap();
-    assert_eq!(
-        exact.ownership.unwrap().confidence,
-        hopper_core::api::Confidence::Exact
-    );
+    for h in hopper_engine::source_hops(&chain) {
+        eprintln!("{}", source_hop_text(&h));
+    }
+    assert_six_source_hops(&chain);
+    // The machine hops stay: more of them than source hops, each still a copy with its PC, and
+    // each reading what the next older one wrote.
+    assert!(chain.hops.len() > 5, "{chain:?}");
+    for w in chain.hops.windows(2) {
+        assert_eq!(w[0].read, Some(w[1].written), "{chain:?}");
+        assert!(w[1].at.is_before(&w[0].at));
+    }
+    // The borrow wrote `n` itself, so it is a reference hop, not one of the value's.
+    assert_eq!(chain.references.len(), 1);
+    let n_place = d.eval(end.at, top(&end), "n").unwrap().place.unwrap();
+    assert_eq!(chain.references[0].written, n_place);
+    // `n` is stored by the last instruction of line 17, so its write ends at the window's end.
+    assert!(!end.at.is_before(&chain.references[0].at));
 }
 
 /// M4's second half on the step recording: an agent reproduces the chain through MCP from

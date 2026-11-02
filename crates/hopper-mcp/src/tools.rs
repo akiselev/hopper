@@ -448,12 +448,15 @@ fn hop_json(h: &OriginHop) -> Value {
         "written": place_json(&h.written),
         "machine": wire::to_json(&h.machine),
         "ownership": h.ownership.as_ref().map(label_json),
+        "inner": h.inner.iter().map(label_json).collect::<Vec<_>>(),
+        "operands": h.operands.iter().map(place_json).collect::<Vec<_>>(),
         "allocation": h.allocation.map(|a| a.0),
     })
 }
 
 fn chain_json(c: &OriginChain) -> Value {
     json!({
+        "references": c.references.iter().map(hop_json).collect::<Vec<_>>(),
         "hops": c.hops.iter().map(hop_json).collect::<Vec<_>>(),
         "end": wire::to_json(&c.end),
     })
@@ -698,7 +701,25 @@ fn calls(d: &dyn Debugger, args: &Args) -> Result<Value> {
         "calls": page.items.iter().map(call_json).collect::<Vec<_>>(),
         "total": page.total,
         "completeness": completeness_json(&page.completeness),
+        "reference_run": reference_run_json(d, page.items.iter().map(|c| &c.entry)),
     }))
+}
+
+/// When the moments come from a live session's reference run (another run of the program,
+/// which the session cannot seek to): which run, so an agent does not pass them to `seek`.
+fn reference_run_json<'a>(d: &dyn Debugger, moments: impl Iterator<Item = &'a Moment>) -> Value {
+    let Ok(info) = d.recording() else {
+        return Value::Null;
+    };
+    let mut moments = moments;
+    match &info.reference_run {
+        Some(r) if moments.any(|m| info.is_reference_moment(m)) => json!({
+            "recording": r.id.to_string(),
+            "description": r.description,
+            "note": "these moments belong to the reference run and cannot be sought in this session",
+        }),
+        _ => Value::Null,
+    }
 }
 
 fn line_hits(d: &dyn Debugger, args: &Args) -> Result<Value> {
@@ -709,6 +730,7 @@ fn line_hits(d: &dyn Debugger, args: &Args) -> Result<Value> {
         "moments": page.items.iter().map(moment_json).collect::<Vec<_>>(),
         "total": page.total,
         "completeness": completeness_json(&page.completeness),
+        "reference_run": reference_run_json(d, page.items.iter()),
     }))
 }
 

@@ -168,7 +168,15 @@ fn agent_reproduces_the_origin_chain_using_only_moments() {
     )]);
     let chain = ok(&r[0]).clone();
     assert_eq!(chain["value"], "\"alpha\"");
-    let hops = chain["hops"].as_array().unwrap();
+    // The borrow that made `n` comes first, as a reference hop, then the value's own hops.
+    let hops: Vec<serde_json::Value> = chain["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(chain["hops"].as_array().unwrap())
+        .cloned()
+        .collect();
+    assert_eq!(chain["references"].as_array().map(Vec::len), Some(1));
     let kinds: Vec<&str> = hops
         .iter()
         .map(|h| h["ownership"]["kind"].as_str().unwrap())
@@ -188,6 +196,10 @@ fn agent_reproduces_the_origin_chain_using_only_moments() {
     assert!(hops.iter().all(|h| h["ownership"]["confidence"] == "Exact"));
     assert_eq!(hops[1]["allocation"], 3);
     assert_eq!(hops[5]["machine"], "Copy");
+    // The borrow is an address computation from rbp; load's return has its aggregate under it.
+    assert_eq!(hops[0]["machine"], "Arithmetic");
+    assert_eq!(hops[0]["operands"][0]["register"], "rbp");
+    assert_eq!(hops[4]["inner"][0]["src"], "Config { name, .. }");
 
     // The literal's bytes at the last hop's moment are "alpha".
     let lit = &hops[5];

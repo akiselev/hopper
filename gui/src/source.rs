@@ -1,6 +1,6 @@
 //! `hopper-source`: the source pane. A read-only quire editor (skelter_quire's `SkelterEditor`
 //! over a quire `Document`) with hopper's own gutter column to its left, drawn by this kind:
-//! hit counts and the execution arrow, in step with the editor's scroll because both are recorded
+//! hit counts, breakpoints and the execution arrow, in step with the editor's scroll because both are recorded
 //! from the same scroll offset in the same pass. The stopped line gets a whole-line band (quire
 //! draws its current-line band only while focused, and has no host line decorations).
 //!
@@ -31,7 +31,7 @@ use skelter_quire::theme::EditorTheme;
 use skelter_widgets::paint::{Align, raw};
 use skelter_widgets::table::text_painter::{TextStyle, record_core};
 
-use crate::gutter::{Arrow, ArrowAt, HitCounts, marks};
+use crate::gutter::{Arrow, ArrowAt, GutterZone, HitCounts, marks, zone_at};
 use crate::style;
 
 pub const KIND: KindId = KindId::of("hopper-source");
@@ -50,17 +50,22 @@ pub struct SourcePane {
     pub message: String,
     pub arrows: Vec<ArrowAt>,
     pub hits: HitCounts,
+    /// The 1-based lines with a user breakpoint.
+    pub breakpoints: Vec<u32>,
     /// Centre this 1-based line on the next frame.
     pub reveal: Option<u32>,
     /// Out: the 1-based lines the editor showed in its last layout.
     pub visible: Vec<u32>,
+    /// Out: the 1-based line of the editor's caret, while the editor has focus and the user has
+    /// placed the caret.
+    pub caret_line: Option<u32>,
 }
 
 /// What the user did in a source pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent {
-    /// A press in hopper's column on a 1-based line.
-    GutterClick { node: NodeId, line: u32 },
+    /// A press in hopper's column on a 1-based line, in one of its zones.
+    GutterClick { node: NodeId, line: u32, zone: GutterZone },
     /// The editor asked to copy its selection.
     Copy { text: String },
 }
@@ -104,6 +109,8 @@ struct Inner {
     generation: u64,
     view: EditorView,
     editor: SkelterEditor,
+    /// The view's selection version when it was made: the caret counts once the user moved it.
+    initial_selection: u64,
 }
 
 /// The kind.
@@ -137,7 +144,8 @@ impl SourceKind {
                 let options = EditorOptions { read_only: true, inlay_hints: true, ..EditorOptions::default() };
                 let editor = SkelterEditor::new(host.fonts.clone(), host.theme.clone(), options);
                 let view = EditorView::new(&doc.borrow());
-                *self.inner.get_mut() = Some(Inner { doc: doc.clone(), generation: pane.generation, view, editor });
+                let initial_selection = view.selection_version();
+                *self.inner.get_mut() = Some(Inner { doc: doc.clone(), generation: pane.generation, view, editor, initial_selection });
             }
             Some(_) => {}
         }
@@ -182,8 +190,15 @@ impl Kind for SourceKind {
                 i.editor.layout(&doc, &mut i.view, size, scale);
             }
             pane.visible = i.editor.visible_lines().map(|l| l as u32 + 1).collect();
+            let placed = i.view.selection_version() != i.initial_selection;
+            pane.caret_line = (i.editor.is_focused() && placed).then(|| {
+                let sel = i.view.selection();
+                let head = sel.ranges()[sel.primary_index()].head;
+                doc.text().byte_to_line(head) as u32 + 1
+            });
         } else {
             pane.visible.clear();
+            pane.caret_line = None;
         }
         host.panes.insert(node, pane);
     }
@@ -191,9 +206,9 @@ impl Kind for SourceKind {
     fn record(&self, cx: &mut RecordCx) {
         let size = cx.node.size();
         let node = cx.node.id();
-        let (arrows, hits, message) = match cx.service::<SourceHost>().and_then(|h| h.panes.get(&node)) {
-            Some(p) => (p.arrows.clone(), p.hits.clone(), p.message.clone()),
-            None => (Vec::new(), HitCounts::default(), String::new()),
+        let (arrows, hits, breakpoints, message) = match cx.service::<SourceHost>().and_then(|h| h.panes.get(&node)) {
+            Some(p) => (p.arrows.clone(), p.hits.clone(), p.breakpoints.clone(), p.message.clone()),
+            None => (Vec::new(), HitCounts::default(), Vec::new(), String::new()),
         };
         let mut slot = self.inner.borrow_mut();
         let Some(i) = slot.as_mut() else {
@@ -259,7 +274,7 @@ impl Kind for SourceKind {
         drop(doc);
         drop(slot);
         // hopper's column
-        let m = marks(&rows, &hits, &arrows);
+        let m = marks(&rows, &hits, &arrows, &breakpoints);
         record_core(cx, |p, list| {
             raw::fill(list, Rect::new(0.0, 0.0, COLUMN_W, size.h), style::GUTTER_BG, 0.0);
             raw::fill(list, Rect::new(COLUMN_W - 1.0, 0.0, COLUMN_W, size.h), style::BORDER, 0.0);
@@ -268,6 +283,10 @@ impl Kind for SourceKind {
                 if let Some(label) = &mark.label {
                     let st = TextStyle { family: style::MONO_FONT.into(), size: 11.0, weight: 400, italic: false, color: style::HIT_COUNT };
                     p.draw(list, label, &st, Rect::new(2.0, y, COLUMN_W - 26.0, y + row_h), Align::End, true);
+                }
+                if mark.breakpoint {
+                    let c = Point::new(COLUMN_W - 13.0, y + row_h / 2.0);
+                    raw::fill(list, Rect::new(c.x - 5.5, c.y - 5.5, c.x + 5.5, c.y + 5.5), style::BREAKPOINT, 5.5);
                 }
                 if let Some(a) = mark.arrow {
                     let color = match a {
@@ -295,7 +314,7 @@ impl Kind for SourceKind {
                 doc.text().byte_to_line(pos) as u32 + 1
             });
             if let (Some(line), Some(h)) = (line, cx.service::<SourceHost>()) {
-                h.events.push(SourceEvent::GutterClick { node, line });
+                h.events.push(SourceEvent::GutterClick { node, line, zone: zone_at(p.local.x, COLUMN_W) });
             }
             cx.request_paint();
             return Handled::Yes;

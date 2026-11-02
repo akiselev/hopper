@@ -18,6 +18,7 @@ use skelter_base::time::{Clock, Time};
 use skelter_core::{Document, JsEvent, KindId, KindRegistry, Value};
 
 use crate::app::Viewer;
+use crate::gutter::GutterZone;
 use crate::nav::command_for_key;
 use crate::rows::{RowsEvent, RowsHost};
 use crate::source::{SourceEvent, SourceHost};
@@ -128,6 +129,7 @@ impl HopperDocument {
                 (Action::Command(c), Some("clicked")) => self.viewer.command(c),
                 (Action::UrlSubmit, Some("submit")) => self.viewer.open_url(&text),
                 (Action::UrlSubmit, Some("cancel")) => self.viewer.close_url_box(),
+                (Action::MemorySubmit, Some("submit")) => self.viewer.memory_address(&text),
                 (Action::ConsoleSubmit, Some("submit")) => {
                     self.viewer.eval(&text);
                     let _ = self.core.doc.set_prop(self.ui.console, w::TEXT, Value::Str("".into()));
@@ -199,7 +201,8 @@ impl HopperDocument {
         let source = self.core.doc.service::<SourceHost>().map(|h| std::mem::take(&mut h.events)).unwrap_or_default();
         for e in source {
             match e {
-                SourceEvent::GutterClick { line, .. } => self.viewer.line_executions(line),
+                SourceEvent::GutterClick { line, zone: GutterZone::HitCount, .. } => self.viewer.line_executions(line),
+                SourceEvent::GutterClick { line, zone: GutterZone::Marker, .. } => self.viewer.toggle_breakpoint(line),
                 SourceEvent::Copy { text } => self.viewer.copy = Some(text),
             }
         }
@@ -211,8 +214,9 @@ impl HopperDocument {
 
     /// After the document's frame: what the panes reported in layout.
     fn after_frame(&mut self, window: WindowId) {
-        let visible = self.core.doc.service::<SourceHost>().and_then(|h| h.panes.get(&self.ui.source)).map(|p| p.visible.clone());
-        if let Some(v) = visible {
+        let pane = self.core.doc.service::<SourceHost>().and_then(|h| h.panes.get(&self.ui.source)).map(|p| (p.visible.clone(), p.caret_line));
+        if let Some((v, caret)) = pane {
+            self.viewer.source.caret_line = caret;
             self.viewer.lines_shown(&v);
         }
         let changed = self.core.doc.service::<TimelineHost>().is_some_and(|h| std::mem::take(&mut h.changed));

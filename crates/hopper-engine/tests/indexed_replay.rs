@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use hopper_core::api::{CallFilter, Completeness, Debugger, OwnershipState, PageReq, Until};
 use hopper_core::target::Direction;
 use hopper_core::{MomentRange, SourceLoc};
+use hopper_engine::writes::WindowState;
 use hopper_engine::{IndexPolicy, Session, SessionOptions};
-use support::step_recording::{StepFactory, StepRecording, WindowStart};
+use support::step_recording::{StepFactory, StepRecording, WindowStart, capture};
 use support::*;
 
 /// Wait for phase A to finish (it runs on its own thread).
@@ -37,7 +38,7 @@ fn queries_answer_from_the_index() {
         return;
     }
     let rec = Arc::new(
-        StepRecording::capture(
+        capture(
             &bin,
             WindowStart::FunctionEntry("__rust_begin_short_backtrace"),
             18,
@@ -112,4 +113,56 @@ fn queries_answer_from_the_index() {
     // The origin chain names it.
     let chain = d.origin(&byte.handle, Default::default()).unwrap();
     assert_eq!(chain.hops[0].allocation, Some(alloc.id), "{chain:?}");
+
+    // Phase B on demand: the origin query asked about a moment the write log did not cover, so
+    // a window ending there was logged in the background, from the entry of the call around it
+    // (main's, from phase A's call tree).
+    wait_for_index(&d);
+    let windows = d.write_windows();
+    assert_eq!(windows.len(), 1, "{windows:?}");
+    assert_eq!(windows[0].end, end.at);
+    let main_call = d
+        .calls(
+            CallFilter {
+                function: Some("worked_example::main".into()),
+                ..CallFilter::default()
+            },
+            PageReq::first(1),
+        )
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(windows[0].start, Some(main_call.entry), "{windows:?}");
+    assert!(
+        matches!(windows[0].state, WindowState::Logged { writes, .. } if writes > 0),
+        "{windows:?}"
+    );
+    let status = d.index_status();
+    assert!(
+        status
+            .phases
+            .iter()
+            .any(|(p, f)| p == hopper_engine::writes::PHASE && *f == 1.0),
+        "{status:?}"
+    );
+    // `last_write` inside the window now answers from the log, agreeing with reverse execution
+    // on the writing instruction and the bytes; the window already covers it, so no new one.
+    let b = d.eval(end.at, top(&end), "b.retries").unwrap();
+    let logged = d.last_write(b.place.unwrap(), end.at).unwrap().unwrap();
+    let replayed = Session::replay(
+        StepFactory(rec.clone()),
+        1,
+        "the same recording without an index",
+        SessionOptions {
+            index: IndexPolicy::Off,
+            ..SessionOptions::default()
+        },
+    )
+    .unwrap()
+    .last_write(b.place.unwrap(), end.at)
+    .unwrap()
+    .unwrap();
+    assert_eq!((logged.pc, &logged.value), (replayed.pc, &replayed.value));
+    assert_eq!(logged.location.map(|l| l.line), Some(13));
+    assert_eq!(d.write_windows().len(), 1);
 }

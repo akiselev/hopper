@@ -173,6 +173,7 @@ pub fn press(h: &mut Harness, chord: &str) -> Result<(), String> {
             "Left" => key = Some(Key::ArrowLeft),
             "Right" => key = Some(Key::ArrowRight),
             "F5" => key = Some(Key::F5),
+            "F9" => key = Some(Key::F9),
             "F10" => key = Some(Key::F10),
             "F11" => key = Some(Key::F11),
             "L" => key = Some(Key::L),

@@ -12,12 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hopper_core::api::{
-    Budget, CallFilter, CallId, Debugger, Frame, IndexStatus, OriginChain, OriginEnd, OwnershipKind, OwnershipState,
-    Page, RecordingInfo, Stop, StopCause, TimelineEvent, Until, ValueHandle, ValueView,
+    BreakLocation, Budget, CallFilter, CallId, Debugger, Frame, IndexStatus, Instruction, OriginChain, OriginEnd,
+    OriginHop, OwnershipKind, OwnershipLabel, OwnershipState, Page, RecordingInfo, Stop, StopCause, TimelineEvent,
+    Until, UserBreakpoint, ValueHandle, ValueView,
 };
 use hopper_core::api::{Completeness, Confidence, MachineKind, PageReq};
 use hopper_core::target::Direction;
-use hopper_core::{FrameId, HopperError, Moment, MomentRange, PositionUrl, SourceLoc};
+use hopper_core::{FrameId, HopperError, Moment, MomentRange, Place, PositionUrl, ProcessId, Reg, RegisterSet, SourceLoc};
 
 use crate::calls::CallTree;
 use crate::gutter::{Arrow, ArrowAt, HitCount, HitCounts};
@@ -31,6 +32,14 @@ use crate::tree::{Fetch, LazyTree};
 pub const PAGE: u32 = 100;
 /// How often the index status is polled while the index builds.
 pub const INDEX_POLL: Duration = Duration::from_millis(300);
+/// Instructions the disassembly pane shows from the selected frame's PC.
+pub const DISASM_COUNT: u32 = 32;
+/// Bytes the memory pane reads.
+pub const MEMORY_BYTES: u64 = 256;
+/// The memory pane's label while it follows the stack pointer.
+pub const STACK_POINTER: &str = "the stack pointer";
+/// Entries of a value's history the query pane shows.
+pub const HISTORY_LIMIT: u32 = 200;
 
 pub type LocalsTree = LazyTree<ValueHandle, ValueView>;
 
@@ -45,11 +54,25 @@ pub struct Changed {
     pub query: bool,
     pub status: bool,
     pub url_box: bool,
+    /// The disassembly and registers panes.
+    pub machine: bool,
+    pub memory: bool,
 }
 
 impl Changed {
     pub fn all() -> Self {
-        Changed { source: true, stack: true, locals: true, calls: true, timeline: true, query: true, status: true, url_box: true }
+        Changed {
+            source: true,
+            stack: true,
+            locals: true,
+            calls: true,
+            timeline: true,
+            query: true,
+            status: true,
+            url_box: true,
+            machine: true,
+            memory: true,
+        }
     }
     pub fn any(&self) -> bool {
         *self != Changed::default()
@@ -89,8 +112,39 @@ pub struct SourceView {
     pub arrows: Vec<ArrowAt>,
     /// Hit counts per file.
     pub hits: HashMap<String, HitCounts>,
+    /// The editor's caret line while it has focus (F9 toggles a breakpoint there).
+    pub caret_line: Option<u32>,
     texts: HashMap<String, Arc<str>>,
     loading: Option<String>,
+}
+
+/// The disassembly and registers panes: the selected frame's code from its PC, and the stopped
+/// thread's registers.
+#[derive(Debug, Default)]
+pub struct MachineView {
+    pub pc: Option<u64>,
+    pub instructions: Vec<Instruction>,
+    pub registers: Option<RegisterSet>,
+    pub message: Option<String>,
+}
+
+/// The memory pane: bytes from an address at the cursor.
+#[derive(Debug, Default)]
+pub struct MemoryView {
+    pub addr: Option<u64>,
+    pub bytes: Vec<u8>,
+    /// What the address is ("the stack pointer", a local's name).
+    pub label: String,
+    pub message: Option<String>,
+}
+
+/// The query pane while it shows a selected local: its origin and its history, which arrive
+/// separately.
+#[derive(Debug)]
+struct LocalQuery {
+    id: u64,
+    origin: Vec<QueryLine>,
+    history: Vec<QueryLine>,
 }
 
 /// The position-URL box.
@@ -131,6 +185,11 @@ pub struct Viewer {
     seek_in_flight: bool,
     seek_next: Option<Moment>,
     pub query: Vec<QueryLine>,
+    local_query: Option<LocalQuery>,
+    query_id: u64,
+    pub breakpoints: Vec<UserBreakpoint>,
+    pub machine: MachineView,
+    pub memory: MemoryView,
     pub index: Option<IndexStatus>,
     pub message: Option<(String, Tone)>,
     pub url_box: UrlBox,
@@ -169,6 +228,11 @@ impl Viewer {
             seek_in_flight: false,
             seek_next: None,
             query: vec![QueryLine::text(0, "Click a value in Locals to see where it came from.", Tone::Muted)],
+            local_query: None,
+            query_id: 0,
+            breakpoints: Vec::new(),
+            machine: MachineView::default(),
+            memory: MemoryView::default(),
             index: None,
             message: None,
             url_box: UrlBox::Closed,
@@ -233,6 +297,7 @@ impl Viewer {
         );
         let fetch = self.calls.borrow_mut().reset();
         self.fetch_calls(fetch);
+        self.refresh_breakpoints();
         self.poll_index(None);
     }
 
@@ -265,6 +330,19 @@ impl Viewer {
                 self.url_box = UrlBox::Open(url);
                 self.changed.url_box = true;
             }
+            Command::ToggleBreakpoint => {
+                let file = self.source.file.clone();
+                let stopped = self
+                    .stop
+                    .as_ref()
+                    .and_then(|s| s.location.as_ref())
+                    .filter(|l| Some(l.file.as_str()) == file.as_deref())
+                    .map(|l| l.line);
+                match self.source.caret_line.or(stopped) {
+                    Some(line) => self.toggle_breakpoint(line),
+                    None => self.say("No source line to put a breakpoint on", Tone::Warning),
+                }
+            }
             Command::CopyUrl => match &self.stop {
                 Some(s) => {
                     let url = s.at.url().to_string();
@@ -288,7 +366,7 @@ impl Viewer {
                     NavRequest::Command(Command::Continue { dir }) => d.run(dir, Until::Breakpoints).map(Some),
                     NavRequest::Command(Command::Back) => d.back(),
                     NavRequest::Command(Command::Forward) => d.forward(),
-                    NavRequest::Command(Command::OpenUrlBox | Command::CopyUrl) => Ok(None),
+                    NavRequest::Command(Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint) => Ok(None),
                     NavRequest::Seek(m) => d.seek(m).map(Some),
                 }
             },
@@ -407,6 +485,7 @@ impl Viewer {
                     v.frames = frames;
                     v.changed.stack = true;
                     v.load_locals();
+                    v.load_machine();
                 }
                 Err(e) => {
                     v.say(format!("frames: {}", err_text(&e)), Tone::Error);
@@ -427,6 +506,7 @@ impl Viewer {
         let loc = self.frames[i].location.clone();
         self.show_location(loc.as_ref(), if i == 0 { Arrow::Execution } else { Arrow::Frame });
         self.load_locals();
+        self.load_machine();
     }
 
     fn arrows(&self) -> Vec<ArrowAt> {
@@ -551,6 +631,7 @@ impl Viewer {
         let Some(file) = self.source.file.clone() else { return };
         let loc = SourceLoc::new(file, line);
         let l2 = loc.clone();
+        self.local_query = None;
         self.jobs.submit(Lane::Replay, move |d| d.line_hits(l2, MomentRange::all(), PageReq::first(500)), move |v, r| {
             v.query.clear();
             match r {
@@ -559,10 +640,11 @@ impl Viewer {
                     let partial = if matches!(page.completeness, Completeness::Partial { .. }) { " (index still building)" } else { "" };
                     v.query.push(QueryLine::text(0, format!("Executions of {loc}: {total}{partial}"), Tone::Heading));
                     for (i, m) in page.items.iter().enumerate() {
+                        let (text, tone, action) = v.moment_cell(*m);
                         v.query.push(QueryLine {
                             depth: 1,
-                            cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(m.to_string(), Tone::Accent)],
-                            action: Some(QueryAction::Seek(*m)),
+                            cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(text, tone)],
+                            action,
                         });
                     }
                     if page.items.is_empty() {
@@ -630,7 +712,8 @@ impl Viewer {
         });
     }
 
-    /// Selects locals row `i` and asks where its value came from.
+    /// Selects locals row `i`: where its value came from and how it changed, in the query pane,
+    /// and its bytes in the memory pane.
     pub fn select_local(&mut self, i: usize) {
         self.locals_selected = Some(i);
         self.changed.locals = true;
@@ -641,12 +724,203 @@ impl Viewer {
             return;
         };
         let Some(view) = self.locals.item(&key).cloned() else { return };
-        self.query = vec![QueryLine::text(0, format!("Where did {} come from?", view.name), Tone::Heading), QueryLine::text(1, "tracing…", Tone::Muted)];
-        self.changed.query = true;
-        self.jobs.submit(Lane::Replay, move |d| d.origin(&key, Budget::default()), move |v, r| {
-            v.query = origin_lines(&view, r);
-            v.changed.query = true;
+        self.query_id += 1;
+        let id = self.query_id;
+        self.local_query = Some(LocalQuery {
+            id,
+            origin: vec![QueryLine::text(0, format!("Where did {} come from?", view.name), Tone::Heading), QueryLine::text(1, "tracing…", Tone::Muted)],
+            history: vec![QueryLine::text(0, format!("History of {}", view.name), Tone::Heading), QueryLine::text(1, "loading…", Tone::Muted)],
         });
+        self.show_local_query();
+        if let Some(Place::Memory { addr, .. }) = view.place {
+            self.show_memory(addr, view.name.clone());
+        }
+        let (k2, v2) = (key.clone(), view.clone());
+        self.jobs.submit(Lane::Replay, move |d| d.origin(&key, Budget::default()), move |v, r| {
+            let lines = origin_lines(&view, r, v.recording.as_ref());
+            if let Some(q) = v.local_query.as_mut().filter(|q| q.id == id) {
+                q.origin = lines;
+                v.show_local_query();
+            }
+        });
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.value_history(&k2, MomentRange::all(), PageReq::first(HISTORY_LIMIT)),
+            move |v, r| {
+                let lines = history_lines(&v2, r, v.recording.as_ref());
+                if let Some(q) = v.local_query.as_mut().filter(|q| q.id == id) {
+                    q.history = lines;
+                    v.show_local_query();
+                }
+            },
+        );
+    }
+
+    fn show_local_query(&mut self) {
+        if let Some(q) = &self.local_query {
+            self.query = q.origin.iter().chain(&q.history).cloned().collect();
+            self.changed.query = true;
+        }
+    }
+
+    /// A moment as a query-pane cell: its text and tone, and the seek it offers. A moment of a
+    /// live session's reference run is another run's: marked, and not offered as a seek.
+    pub fn moment_cell(&self, m: Moment) -> (String, Tone, Option<QueryAction>) {
+        match &self.recording {
+            Some(r) if r.is_reference_moment(&m) => (format!("{m} (reference run)"), Tone::Muted, None),
+            _ => (m.to_string(), Tone::Accent, Some(QueryAction::Seek(m))),
+        }
+    }
+
+    // ---------------------------------------------------------------- breakpoints
+
+    fn refresh_breakpoints(&mut self) {
+        self.jobs.submit(Lane::Replay, |d| d.breakpoints(), |v, r| match r {
+            Ok(bps) => {
+                v.breakpoints = bps;
+                v.changed.source = true;
+            }
+            Err(e) => v.say(format!("breakpoints: {}", err_text(&e)), Tone::Error),
+        });
+    }
+
+    /// The 1-based lines of the shown file that have a user breakpoint.
+    pub fn breakpoint_lines(&self) -> Vec<u32> {
+        let Some(file) = self.source.file.as_deref() else { return Vec::new() };
+        self.breakpoints
+            .iter()
+            .filter_map(|b| match &b.location {
+                BreakLocation::Source(l) if l.file == file || l.file_matches(file) => Some(l.line),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Adds a breakpoint on `line` of the shown file, or removes the one there.
+    pub fn toggle_breakpoint(&mut self, line: u32) {
+        let Some(file) = self.source.file.clone() else { return };
+        let existing = self.breakpoints.iter().find(|b| match &b.location {
+            BreakLocation::Source(l) => l.line == line && (l.file == file || l.file_matches(&file)),
+            _ => false,
+        });
+        match existing.map(|b| b.id) {
+            Some(id) => self.jobs.submit(Lane::Replay, move |d| d.remove_breakpoint(id), move |v, r| {
+                match r {
+                    Ok(()) => v.say(format!("Removed the breakpoint on line {line}"), Tone::Muted),
+                    Err(e) => v.say(format!("breakpoint: {}", err_text(&e)), Tone::Error),
+                }
+                v.refresh_breakpoints();
+            }),
+            None => {
+                let loc = SourceLoc::new(file, line);
+                self.jobs.submit(Lane::Replay, move |d| d.add_breakpoint(BreakLocation::Source(loc)), move |v, r| {
+                    match r {
+                        Ok(b) => v.say(format!("Breakpoint {} on line {line}", b.id.0), Tone::Muted),
+                        Err(e) => v.say(format!("breakpoint on line {line}: {}", err_text(&e)), Tone::Error),
+                    }
+                    v.refresh_breakpoints();
+                });
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- machine state
+
+    fn process(&self) -> Option<ProcessId> {
+        self.recording.as_ref().and_then(|r| r.processes.first()).map(|p| p.id)
+    }
+
+    /// The selected frame's code from its PC, and the stopped thread's registers.
+    fn load_machine(&mut self) {
+        let Some(stop) = &self.stop else { return };
+        let (at, tid) = (stop.at, stop.tid);
+        let pc = self.frames.get(self.selected_frame).map(|f| f.pc).unwrap_or(stop.pc);
+        self.machine.pc = Some(pc);
+        self.changed.machine = true;
+        let generation = self.generation;
+        match self.process() {
+            Some(process) => self.jobs.submit(Lane::Replay, move |d| d.disassemble(at, process, pc, DISASM_COUNT), move |v, r| {
+                if v.generation != generation {
+                    return;
+                }
+                match r {
+                    Ok(insns) => {
+                        v.machine.instructions = insns;
+                        v.machine.message = None;
+                    }
+                    Err(e) => {
+                        v.machine.instructions.clear();
+                        v.machine.message = Some(format!("disassembly: {}", err_text(&e)));
+                    }
+                }
+                v.changed.machine = true;
+            }),
+            None => self.machine.message = Some("no process to disassemble".into()),
+        }
+        self.jobs.submit(Lane::Replay, move |d| d.registers(at, tid), move |v, r| {
+            if v.generation != generation {
+                return;
+            }
+            match r {
+                Ok(regs) => {
+                    // the memory pane shows the stack pointer until a local or an address is chosen
+                    if let Some(sp) = regs.sp()
+                        && (v.memory.addr.is_none() || v.memory.label == STACK_POINTER)
+                    {
+                        v.show_memory(sp, STACK_POINTER.into());
+                    }
+                    v.machine.registers = Some(regs);
+                }
+                Err(e) => {
+                    v.machine.registers = None;
+                    v.machine.message = Some(format!("registers: {}", err_text(&e)));
+                }
+            }
+            v.changed.machine = true;
+        });
+        // the memory pane follows the cursor (the stack pointer is read again with the registers)
+        if let Some(addr) = self.memory.addr.filter(|_| self.memory.label != STACK_POINTER) {
+            let label = self.memory.label.clone();
+            self.show_memory(addr, label);
+        }
+    }
+
+    /// Reads [`MEMORY_BYTES`] at `addr` at the cursor into the memory pane.
+    pub fn show_memory(&mut self, addr: u64, label: String) {
+        let (Some(stop), Some(process)) = (&self.stop, self.process()) else { return };
+        let at = stop.at;
+        self.memory.addr = Some(addr);
+        self.memory.label = label;
+        self.changed.memory = true;
+        self.jobs.submit(Lane::Replay, move |d| read_some(d, at, process, addr, MEMORY_BYTES), move |v, r| {
+            if v.memory.addr != Some(addr) {
+                return;
+            }
+            match r {
+                Ok(bytes) => {
+                    v.memory.bytes = bytes;
+                    v.memory.message = None;
+                }
+                Err(e) => {
+                    v.memory.bytes.clear();
+                    v.memory.message = Some(err_text(&e));
+                }
+            }
+            v.changed.memory = true;
+        });
+    }
+
+    /// The memory pane's address box: a hex (`0x…`) or decimal address.
+    pub fn memory_address(&mut self, text: &str) {
+        let t = text.trim();
+        let parsed = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            Some(hex) => u64::from_str_radix(hex, 16).ok(),
+            None => t.parse().ok(),
+        };
+        match parsed {
+            Some(addr) => self.show_memory(addr, format!("{addr:#x}")),
+            None => self.say(format!("not an address: {t:?}"), Tone::Error),
+        }
     }
 
     /// The query pane's row `i` was activated.
@@ -662,6 +936,7 @@ impl Viewer {
         if expr.is_empty() {
             return;
         }
+        self.local_query = None;
         let Some(stop) = &self.stop else { return };
         let at = stop.at;
         let frame = self.frames.get(self.selected_frame).map(|f| f.id).unwrap_or(FrameId { tid: stop.tid, depth: 0 });
@@ -725,13 +1000,22 @@ impl Viewer {
         if let Some(l) = &c.location {
             q.push(QueryLine::text(1, format!("at {l}"), Tone::Muted));
         }
-        q.push(QueryLine { depth: 1, cells: vec![RowCell::new("entry", Tone::Normal), RowCell::mono(c.entry.to_string(), Tone::Accent)], action: Some(QueryAction::Seek(c.entry)) });
+        let (entry, tone, action) = self.moment_cell(c.entry);
+        q.push(QueryLine { depth: 1, cells: vec![RowCell::new("entry", Tone::Normal), RowCell::mono(entry, tone)], action });
         match c.exit {
-            Some(x) => q.push(QueryLine { depth: 1, cells: vec![RowCell::new("exit", Tone::Normal), RowCell::mono(x.to_string(), Tone::Accent)], action: Some(QueryAction::Seek(x)) }),
+            Some(x) => {
+                let (exit, tone, action) = self.moment_cell(x);
+                q.push(QueryLine { depth: 1, cells: vec![RowCell::new("exit", Tone::Normal), RowCell::mono(exit, tone)], action });
+            }
             None => q.push(QueryLine::text(1, "never returned inside the recording", Tone::Muted)),
         }
         q.push(QueryLine::text(1, format!("{} direct calls, thread {}", c.child_count, c.tid), Tone::Muted));
-        q.push(QueryLine::text(1, "Double-click a row here to jump; double-click a call to expand it.", Tone::Muted));
+        if self.recording.as_ref().is_some_and(|r| r.is_reference_moment(&c.entry)) {
+            q.push(QueryLine::text(1, "From the reference run (a second run of the program): its moments are not positions in this session.", Tone::Muted));
+        } else {
+            q.push(QueryLine::text(1, "Double-click a row here to jump; double-click a call to expand it.", Tone::Muted));
+        }
+        self.local_query = None;
         self.query = q;
         self.changed.query = true;
     }
@@ -837,10 +1121,54 @@ fn place_text(p: &hopper_core::Place) -> String {
     }
 }
 
-/// The query pane's rows for an origin answer: one row per hop (its ownership label and
-/// confidence, or the machine copy when the sidecar labelled none), a machine detail row under
-/// it, and how the chain ended. Each hop row seeks to its moment.
-pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>) -> Vec<QueryLine> {
+/// Reads up to `len` bytes at `addr`, fewer when the end of the range is unmapped.
+fn read_some(d: &dyn Debugger, at: Moment, process: ProcessId, addr: u64, len: u64) -> hopper_core::Result<Vec<u8>> {
+    let mut n = len;
+    loop {
+        match d.memory(at, process, addr, n) {
+            Ok(b) => return Ok(b),
+            Err(e) if n <= 16 => return Err(e),
+            Err(_) => n /= 2,
+        }
+    }
+}
+
+fn flow(o: &OwnershipLabel) -> String {
+    match (&o.dst, &o.src) {
+        (Some(d), Some(s)) => format!("{d} ← {s}"),
+        (Some(d), None) => d.clone(),
+        (None, Some(s)) => format!("← {s}"),
+        (None, None) => String::new(),
+    }
+}
+
+fn label_loc(o: &OwnershipLabel) -> String {
+    o.span.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default()
+}
+
+/// The hops of a chain as the source sees them: the references first, then the value's own
+/// hops, consecutive hops of one ownership event (same label) grouped. Each group keeps its
+/// machine hops.
+pub fn source_groups(chain: &OriginChain) -> Vec<Vec<&OriginHop>> {
+    let mut groups: Vec<Vec<&OriginHop>> = Vec::new();
+    for h in chain.references.iter().chain(&chain.hops) {
+        let same = |g: &Vec<&OriginHop>| match (&g[0].ownership, &h.ownership) {
+            (Some(a), Some(b)) => (a.kind, &a.src, &a.dst, &a.span) == (b.kind, &b.src, &b.dst, &b.span),
+            _ => false,
+        };
+        match groups.last_mut() {
+            Some(g) if same(g) => g.push(h),
+            _ => groups.push(vec![h]),
+        }
+    }
+    groups
+}
+
+/// The query pane's rows for an origin answer: one row per source-level hop (its ownership
+/// label and confidence, or the machine copy when the sidecar labelled none), the events
+/// underneath it, then its machine hops (with an arithmetic hop's operands), and how the chain
+/// ended. Each row seeks to its moment.
+pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recording: Option<&RecordingInfo>) -> Vec<QueryLine> {
     let mut q = vec![QueryLine::text(0, format!("Where did {} = {} come from?", of.name, of.summary), Tone::Heading)];
     let chain = match r {
         Ok(c) => c,
@@ -849,36 +1177,53 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>) -> Vec<
             return q;
         }
     };
-    for (i, hop) in chain.hops.iter().enumerate() {
-        let loc = hop.location.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default();
-        let cells = match &hop.ownership {
+    let seek = |m: Moment| match recording {
+        Some(r) if r.is_reference_moment(&m) => None,
+        _ => Some(QueryAction::Seek(m)),
+    };
+    for (i, group) in source_groups(&chain).iter().enumerate() {
+        let first = group[0];
+        let loc = first.location.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default();
+        let cells = match &first.ownership {
             Some(o) => {
-                let flow = match (&o.dst, &o.src) {
-                    (Some(d), Some(s)) => format!("{d} ← {s}"),
-                    (Some(d), None) => d.clone(),
-                    (None, Some(s)) => format!("← {s}"),
-                    (None, None) => String::new(),
-                };
                 let (conf, tone) = confidence(o.confidence);
                 vec![
                     RowCell::new(format!("{}  {}", i + 1, ownership_kind(o.kind)), Tone::Heading),
-                    RowCell::mono(flow, Tone::Normal),
-                    RowCell::new(loc, Tone::Muted),
+                    RowCell::mono(flow(o), Tone::Normal),
+                    RowCell::new(label_loc(o), Tone::Muted),
                     RowCell::new(conf, tone),
                 ]
             }
             None => vec![
-                RowCell::new(format!("{}  {}", i + 1, machine(hop.machine)), Tone::Normal),
-                RowCell::mono(format!("{} ← {}", place_text(&hop.written), hop.read.as_ref().map(place_text).unwrap_or_else(|| "?".into())), Tone::Normal),
+                RowCell::new(format!("{}  {}", i + 1, machine(first.machine)), Tone::Normal),
+                RowCell::mono(format!("{} ← {}", place_text(&first.written), first.read.as_ref().map(place_text).unwrap_or_else(|| "?".into())), Tone::Normal),
                 RowCell::new(loc, Tone::Muted),
                 RowCell::new("machine", Tone::Muted),
             ],
         };
-        q.push(QueryLine { depth: 1, cells, action: Some(QueryAction::Seek(hop.at)) });
-        let func = hop.function.clone().unwrap_or_else(|| format!("{:#x}", hop.pc));
-        let alloc = hop.allocation.map(|a| format!(", allocation #{}", a.0)).unwrap_or_default();
-        let detail = format!("{} in {func}: wrote {}{alloc} at {}", machine(hop.machine), place_text(&hop.written), hop.at);
-        q.push(QueryLine { depth: 2, cells: vec![RowCell::mono(detail, Tone::Muted)], action: Some(QueryAction::Seek(hop.at)) });
+        q.push(QueryLine { depth: 1, cells, action: seek(first.at) });
+        for inner in &first.inner {
+            q.push(QueryLine {
+                depth: 2,
+                cells: vec![
+                    RowCell::new(format!("↳ {}", ownership_kind(inner.kind)), Tone::Normal),
+                    RowCell::mono(flow(inner), Tone::Normal),
+                    RowCell::new(label_loc(inner), Tone::Muted),
+                    RowCell::new(confidence(inner.confidence).0, Tone::Muted),
+                ],
+                action: seek(first.at),
+            });
+        }
+        for hop in group {
+            let func = hop.function.clone().unwrap_or_else(|| format!("{:#x}", hop.pc));
+            let alloc = hop.allocation.map(|a| format!(", allocation #{}", a.0)).unwrap_or_default();
+            let mut from = hop.read.as_ref().map(|r| format!(" from {}", place_text(r))).unwrap_or_default();
+            if !hop.operands.is_empty() {
+                from.push_str(&format!(" computed from {}", hop.operands.iter().map(place_text).collect::<Vec<_>>().join(", ")));
+            }
+            let detail = format!("{} in {func}: wrote {}{from}{alloc} at {}", machine(hop.machine), place_text(&hop.written), hop.at);
+            q.push(QueryLine { depth: 2, cells: vec![RowCell::mono(detail, Tone::Muted)], action: seek(hop.at) });
+        }
     }
     let end = match &chain.end {
         OriginEnd::Literal => "ends at a literal (read-only data)".to_string(),
@@ -890,4 +1235,117 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>) -> Vec<
     };
     q.push(QueryLine::text(1, end, Tone::Muted));
     q
+}
+
+/// The query pane's rows for a value's history: one row per change, each seeking to it.
+pub fn history_lines(of: &ValueView, r: hopper_core::Result<Page<(Moment, ValueView)>>, recording: Option<&RecordingInfo>) -> Vec<QueryLine> {
+    let mut q = vec![QueryLine::text(0, format!("History of {}", of.name), Tone::Heading)];
+    let page = match r {
+        Ok(p) => p,
+        Err(e) => {
+            q.push(QueryLine::text(1, err_text(&e), Tone::Error));
+            return q;
+        }
+    };
+    for (i, (m, view)) in page.items.iter().enumerate() {
+        let (summary, tone) = value_summary(view);
+        let action = match recording {
+            Some(r) if r.is_reference_moment(m) => None,
+            _ => Some(QueryAction::Seek(*m)),
+        };
+        q.push(QueryLine {
+            depth: 1,
+            cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(summary, tone), RowCell::new(String::new(), Tone::Muted), RowCell::mono(m.to_string(), Tone::Accent)],
+            action,
+        });
+    }
+    if page.items.is_empty() {
+        q.push(QueryLine::text(1, "no changes in range", Tone::Muted));
+    }
+    if let Completeness::Partial { .. } = page.completeness {
+        q.push(QueryLine::text(1, "(partial: the search budget ran out)", Tone::Muted));
+    }
+    q
+}
+
+/// Registers in the order the registers pane lists them, with their DWARF numbers.
+pub const REGISTER_ORDER: [Reg; 24] = [
+    Reg::RIP,
+    Reg::RSP,
+    Reg::RBP,
+    Reg::RAX,
+    Reg::RBX,
+    Reg::RCX,
+    Reg::RDX,
+    Reg::RSI,
+    Reg::RDI,
+    Reg::R8,
+    Reg(9),
+    Reg(10),
+    Reg(11),
+    Reg(12),
+    Reg(13),
+    Reg(14),
+    Reg::R15,
+    Reg::RFLAGS,
+    Reg::CS,
+    Reg::SS,
+    Reg::DS,
+    Reg::ES,
+    Reg::FS_BASE,
+    Reg::GS_BASE,
+];
+
+/// The registers pane's rows: (name, value in hex, value in decimal) for each register the set
+/// has, in [`REGISTER_ORDER`].
+pub fn register_rows(regs: &RegisterSet) -> Vec<(&'static str, String, String)> {
+    REGISTER_ORDER
+        .iter()
+        .filter_map(|r| {
+            let v = regs.get(*r)?;
+            let width = r.size().min(8) * 2;
+            Some((r.name(), format!("{v:#0w$x}", w = width + 2), v.to_string()))
+        })
+        .collect()
+}
+
+/// The memory pane's rows: 16 bytes each, as (address, hex bytes, printable text).
+pub fn memory_rows(addr: u64, bytes: &[u8]) -> Vec<(String, String, String)> {
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+            let (lo, hi) = hex.split_at(hex.len().min(8));
+            let text: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
+            (format!("{:#014x}", addr + 16 * i as u64), format!("{}  {}", lo.join(" "), hi.join(" ")).trim_end().to_string(), text)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_rows_are_sixteen_bytes_with_text() {
+        let bytes: Vec<u8> = b"alpha\0\x01ABCDEFGHIJKLMNOP".to_vec();
+        let rows = memory_rows(0x1000, &bytes);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "0x000000001000");
+        assert_eq!(rows[0].1, "61 6c 70 68 61 00 01 41  42 43 44 45 46 47 48 49");
+        assert_eq!(rows[0].2, "alpha..ABCDEFGHI");
+        assert_eq!(rows[1].0, "0x000000001010");
+        assert_eq!(rows[1].2, "JKLMNOP");
+    }
+
+    #[test]
+    fn registers_list_in_order_with_hex_and_decimal() {
+        let mut regs = RegisterSet::default();
+        regs.set(Reg::RAX, 42);
+        regs.set(Reg::RIP, 0x5555_5555_4000);
+        let rows = register_rows(&regs);
+        assert_eq!(rows[0], ("rip", "0x0000555555554000".into(), "93824992231424".into()));
+        assert_eq!(rows[1], ("rax", "0x000000000000002a".into(), "42".into()));
+    }
 }

@@ -93,3 +93,28 @@ fn live_repl_breaks_steps_and_prints() {
     );
     assert!(replies[9].contains("[exited 0]"), "{}", replies[9]);
 }
+
+/// `hopper live` indexes a reference run of the program: calls and line hits answer, marked as
+/// the other run's moments.
+#[test]
+fn live_repl_answers_calls_and_hits_from_the_reference_run() {
+    let Some(bin) = worked_example() else { return };
+    let bin = bin.display().to_string();
+    let script = "index wait\nhits main.rs:13\ncalls worked_example::load\nq\n";
+    let out = run_args(&["hopper", "live", "--", &bin], script);
+    let replies: Vec<&str> = out.split("(hopper) ").collect();
+    assert!(replies[1].contains("(reference run)"), "{}", replies[1]);
+    assert!(replies[1].contains("done"), "{}", replies[1]);
+    assert!(replies[2].trim_start().starts_with("hopper://"), "{}", replies[2]);
+    assert!(
+        replies[2].contains("moments of the reference run"),
+        "{}",
+        replies[2]
+    );
+    assert!(replies[3].contains("worked_example::load #"), "{}", replies[3]);
+    assert!(
+        replies[3].contains("moments of the reference run"),
+        "{}",
+        replies[3]
+    );
+}

@@ -1,5 +1,5 @@
 use hopper_core::PositionUrl;
-use hopper_core::api::{OwnershipKind, OwnershipState};
+use hopper_core::api::{MachineKind, OwnershipKind, OwnershipState};
 
 use super::*;
 
@@ -402,8 +402,10 @@ fn origin_is_the_six_hop_chain() {
     let at = at_line(&d, "main", 18);
     let n = d.eval(at, main_frame(), "*n").unwrap();
     let chain = d.origin(&n.handle, Budget::default()).unwrap();
-    let kinds: Vec<OwnershipKind> = chain
-        .hops
+    // The borrow wrote `n`, the reference `*n` is reached through: a reference hop, first.
+    assert_eq!(chain.references.len(), 1);
+    let source: Vec<&OriginHop> = chain.references.iter().chain(&chain.hops).collect();
+    let kinds: Vec<OwnershipKind> = source
         .iter()
         .map(|h| h.ownership.as_ref().unwrap().kind)
         .collect();
@@ -418,18 +420,16 @@ fn origin_is_the_six_hop_chain() {
             OwnershipKind::Literal,
         ]
     );
-    let spans: Vec<u32> = chain
-        .hops
+    let spans: Vec<u32> = source
         .iter()
         .map(|h| h.ownership.as_ref().unwrap().span.as_ref().unwrap().line)
         .collect();
     assert_eq!(spans, [17, 16, 14, 13, 12, 7]);
     assert_eq!(chain.end, OriginEnd::Literal);
-    for w in chain.hops.windows(2) {
+    for w in source.windows(2) {
         assert!(w[1].at < w[0].at, "hops go back in time");
     }
-    let allocs: Vec<Option<u64>> = chain
-        .hops
+    let allocs: Vec<Option<u64>> = source
         .iter()
         .map(|h| h.allocation.map(|a| a.0))
         .collect();
@@ -443,8 +443,19 @@ fn origin_is_the_six_hop_chain() {
         d.memory(at, ProcessId::new(PID), addr, len).unwrap(),
         b"alpha"
     );
+    // The borrow is an arithmetic node (an address computation) with its operand; `a`'s hop has
+    // load's aggregate underneath it.
+    assert_eq!(chain.references[0].machine, MachineKind::Arithmetic);
+    assert_eq!(chain.references[0].operands.len(), 1);
+    let inner: Vec<OwnershipKind> = chain.hops[3].inner.iter().map(|l| l.kind).collect();
+    assert_eq!(inner, [OwnershipKind::Aggregate, OwnershipKind::Move]);
+    // The origin of `n` itself is the borrow alone.
+    let n_ref = d.eval(at, main_frame(), "n").unwrap();
+    let own = d.origin(&n_ref.handle, Budget::default()).unwrap();
+    assert!(own.references.is_empty());
+    assert_eq!(own.hops, chain.references);
     // Every hop's written place really was written at that moment.
-    for hop in &chain.hops {
+    for hop in &source {
         let w = d.last_write(hop.written, hop.at).unwrap().unwrap();
         assert_eq!(w.at, hop.at);
         assert_eq!(w.pc, hop.pc);
@@ -486,7 +497,7 @@ fn allocations_live_and_freed() {
     let p = ProcessId::new(PID);
     let n = d.eval(at_line(&d, "main", 18), main_frame(), "*n").unwrap();
     let chain = d.origin(&n.handle, Budget::default()).unwrap();
-    let vec_hop = &chain.hops[1];
+    let vec_hop = &chain.hops[0];
     let Place::Memory { addr, .. } = vec_hop.written else {
         panic!()
     };

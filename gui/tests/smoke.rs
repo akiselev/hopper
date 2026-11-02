@@ -185,3 +185,127 @@ fn index_progress_is_polled_until_the_index_completes() {
     assert!(v.index.as_ref().is_some_and(|i| i.done), "{:?}", v.index);
     assert_eq!(v.index_text(), "index complete");
 }
+
+/// A press in the gutter's marker zone adds a breakpoint on that line and a second press removes
+/// it; F9 toggles one on the stopped line; continue stops at a breakpoint.
+#[test]
+fn breakpoints_from_the_gutter_and_f9_and_continue_stops_there() {
+    let mut h = window();
+    // the stopped line is revealed at the pane's centre: press the marker zone there
+    let source = h.state().ui.source;
+    let r = h.state().doc().world_rect(source).expect("the source pane is laid out");
+    let p = Point::new(r.min.x + hopper_gui::source::COLUMN_W - 10.0, (r.min.y + r.max.y) / 2.0);
+    h.click_at(p);
+    settle(&mut h);
+    let bps = h.state().viewer.breakpoints.clone();
+    assert_eq!(bps.len(), 1, "{:?}", h.state().viewer.message);
+    let lines = h.state().viewer.breakpoint_lines();
+    assert_eq!(lines.len(), 1);
+    // the source pane draws it
+    let shown = h
+        .state_mut()
+        .doc_mut()
+        .service::<hopper_gui::source::SourceHost>()
+        .and_then(|s| s.panes.get(&source).map(|p| p.breakpoints.clone()))
+        .unwrap();
+    assert_eq!(shown, lines);
+    h.click_at(p);
+    settle(&mut h);
+    assert!(h.state().viewer.breakpoints.is_empty(), "the second press removed it");
+
+    // F9 on the stopped line (the source has no caret yet), then continue from the start stops
+    // there after stepping past it.
+    for _ in 0..3 {
+        press(&mut h, "F10").unwrap();
+    }
+    let at = line(&h);
+    press(&mut h, "F9").unwrap();
+    assert_eq!(h.state().viewer.breakpoint_lines(), vec![at], "{:?} caret {:?}", h.state().viewer.message, h.state().viewer.source.caret_line);
+    press(&mut h, "F10").unwrap();
+    press(&mut h, "F10").unwrap();
+    assert_ne!(line(&h), at);
+    press(&mut h, "Shift+F5").unwrap();
+    assert_eq!(line(&h), at, "reverse continue stops at the breakpoint");
+    assert!(matches!(h.state().viewer.stop.as_ref().unwrap().cause, hopper_core::api::StopCause::Breakpoint { .. }));
+    press(&mut h, "F9").unwrap();
+    assert!(h.state().viewer.breakpoints.is_empty());
+}
+
+/// The disassembly pane shows the code from the frame's PC with the PC marked, the registers pane
+/// the stopped thread's registers, and the memory pane the stack, then a chosen local's bytes.
+#[test]
+fn disassembly_registers_and_memory_follow_the_cursor() {
+    let mut h = window();
+    press(&mut h, "F10").unwrap();
+    let v = &h.state().viewer;
+    let pc = v.stop.as_ref().unwrap().pc;
+    assert_eq!(v.machine.pc, Some(pc));
+    assert!(!v.machine.instructions.is_empty(), "{:?}", v.machine.message);
+    assert_eq!(v.machine.instructions[0].addr, pc);
+    let regs = v.machine.registers.as_ref().expect("registers");
+    assert_eq!(regs.pc(), Some(pc));
+    let sp = regs.sp().unwrap();
+    assert_eq!(v.memory.addr, Some(sp), "memory starts at the stack pointer");
+    assert!(!v.memory.bytes.is_empty(), "{:?}", v.memory.message);
+    let rows = hopper_gui::app::register_rows(regs);
+    assert_eq!(rows[0].0, "rip");
+
+    // selecting a local shows its bytes, its origin and its history
+    for _ in 0..8 {
+        press(&mut h, "F10").unwrap();
+    }
+    let v = &h.state().viewer;
+    let (row, view) = v
+        .locals
+        .rows()
+        .iter()
+        .enumerate()
+        .find_map(|(i, r)| match r {
+            Row::Node { key, .. } => v.locals.item(key).filter(|x| x.name == "b").map(|x| (i, x.clone())),
+            _ => None,
+        })
+        .expect("b is a local");
+    let locals = h.state().ui.locals;
+    click_row(&mut h, locals, row, 60.0);
+    let v = &h.state().viewer;
+    let Some(hopper_core::Place::Memory { addr, .. }) = view.place else { panic!("b is in memory") };
+    assert_eq!(v.memory.addr, Some(addr));
+    assert_eq!(v.memory.label, "b");
+    let q = &v.query;
+    let heading = |t: &str| q.iter().position(|l| l.depth == 0 && l.cells[0].text.starts_with(t));
+    let origin = heading("Where did b").expect("the origin");
+    let history = heading("History of b").expect("the history");
+    assert!(origin < history);
+    let changes: Vec<_> = q[history + 1..].iter().filter(|l| l.action.is_some()).collect();
+    assert!(!changes.is_empty(), "b's history has its changes: {q:?}");
+
+    // the address box reads another address
+    let other = sp + 16;
+    h.state_mut().viewer.memory_address(&format!("{other:#x}"));
+    settle(&mut h);
+    assert_eq!(h.state().viewer.memory.addr, Some(other));
+}
+
+/// The origin of `*n` reads as the plan's table: the borrow of `n` first, then the value's own
+/// hops, each source hop with its machine hops and the events underneath it.
+#[test]
+fn the_origin_view_puts_the_borrow_first_and_groups_machine_hops() {
+    use hopper_core::api::Budget;
+    let d = hopper_fake::FakeDebugger::shared();
+    let mut at = d.cursor().unwrap();
+    while at.location.as_ref().is_none_or(|l| l.line != 18) {
+        at = d.step(hopper_core::api::StepKind::Over, hopper_core::api::Direction::Forward).unwrap();
+    }
+    let n = d.eval(at.at, hopper_core::FrameId { tid: at.tid, depth: 0 }, "*n").unwrap();
+    let chain = d.origin(&n.handle, Budget::default()).unwrap();
+    let groups = hopper_gui::app::source_groups(&chain);
+    assert_eq!(groups.len(), 6);
+    assert_eq!(groups[0][0].ownership.as_ref().unwrap().kind, hopper_core::api::OwnershipKind::SharedBorrow);
+    let lines = hopper_gui::app::origin_lines(&n, Ok(chain.clone()), None);
+    let hops: Vec<String> = lines.iter().filter(|l| l.depth == 1 && l.action.is_some()).map(|l| l.cells[0].text.clone()).collect();
+    assert_eq!(hops[0], "1  shared borrow");
+    assert_eq!(hops.len(), 6, "{hops:?}");
+    let text: Vec<String> = lines.iter().flat_map(|l| l.cells.iter().map(|c| c.text.clone())).collect();
+    assert!(text.iter().any(|t| t.contains("Config { name, .. }")), "the aggregate under load's return: {text:?}");
+    assert!(text.iter().any(|t| t.contains("computed from rbp")), "the borrow's operand: {text:?}");
+}

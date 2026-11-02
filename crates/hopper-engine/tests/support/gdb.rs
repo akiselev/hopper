@@ -145,54 +145,11 @@ fn top_level_items(s: &str) -> Option<Vec<String>> {
     Some(items)
 }
 
-/// Whether `theirs` starting at byte `i` begins with one balanced expression; its end.
-fn balanced_end(theirs: &str, i: usize, stop: Option<char>) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut in_str = false;
-    for (k, c) in theirs[i..].char_indices() {
-        if depth == 0 && !in_str && Some(c) == stop && k > 0 {
-            return Some(i + k);
-        }
-        match c {
-            '"' => in_str = !in_str,
-            '{' | '(' | '[' if !in_str => depth += 1,
-            '}' | ')' | ']' if !in_str => {
-                depth -= 1;
-                if depth < 0 {
-                    return Some(i + k);
-                }
-            }
-            _ => {}
-        }
-    }
-    (depth == 0).then_some(theirs.len())
-}
-
-/// hopper's text equals gdb's, where each `{...}` hopper wrote (it stops nesting at a smaller
-/// depth than gdb) stands for one balanced value in gdb's.
-fn matches_with_elisions(mine: &str, theirs: &str) -> bool {
-    let pieces: Vec<&str> = mine.split("{...}").collect();
-    let mut at = 0usize;
-    for (k, piece) in pieces.iter().enumerate() {
-        if !theirs[at..].starts_with(piece) {
-            return false;
-        }
-        at += piece.len();
-        if k + 1 < pieces.len() {
-            let stop = pieces[k + 1].chars().next();
-            match balanced_end(theirs, at, stop) {
-                Some(e) if e > at => at = e,
-                _ => return false,
-            }
-        }
-    }
-    at == theirs.len()
-}
-
-/// The same value: equal text, up to hopper's depth elisions, with a HashMap's entries compared
-/// as a set (each process seeds its hasher at random, so iteration order differs between runs).
+/// The same value: equal text (hopper elides nested values where gdb's `print max-depth` does),
+/// with a HashMap's entries compared as a set (each process seeds its hasher at random, so
+/// iteration order differs between runs).
 pub fn same_value(mine: &str, theirs: &str) -> bool {
-    if matches_with_elisions(mine, theirs) {
+    if mine == theirs {
         return true;
     }
     if mine.starts_with("HashMap(") && theirs.starts_with("HashMap(") {

@@ -762,9 +762,11 @@ pub(crate) fn worked_example() -> Script {
             machine,
             ownership: Some(ownership),
             allocation,
+            inner: Vec::new(),
+            operands: Vec::new(),
         }
     };
-    let hops = Hops {
+    let mut hops = Hops {
         borrow_n: hop(
             &b,
             borrow_step,
@@ -838,6 +840,16 @@ pub(crate) fn worked_example() -> Script {
             None,
         ),
     };
+    // `lea rdi, [rbp-0x90]`: the borrow computes the address from rbp.
+    hops.borrow_n.operands = vec![Place::Register {
+        frame: hopper_core::FrameId { tid: TID, depth: 0 },
+        reg: hopper_core::Reg::RBP,
+    }];
+    // `a` is load's return value, built by the aggregate with `name` moved in (line 8).
+    hops.load_return.inner = vec![
+        exact(OwnershipKind::Aggregate, "Config { name, .. }", "return", 8),
+        exact(OwnershipKind::Move, "name", "return.name", 8),
+    ];
     b.finish(hops)
 }
 

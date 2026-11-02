@@ -907,8 +907,11 @@ where
             tid: arg_i64(args, "threadId").map(|t| Tid(t as i32)),
             process: None,
         };
-        let page = self.dbg()?.calls(filter, page_req(args))?;
-        Ok(wire::to_json(&page))
+        let d = self.dbg()?;
+        let page = d.calls(filter, page_req(args))?;
+        let mut out = wire::to_json(&page);
+        out["referenceRun"] = reference_run(d.as_ref(), page.items.iter().map(|c| &c.entry));
+        Ok(out)
     }
 
     fn line_hits(&mut self, args: &Value) -> Answer {
@@ -924,8 +927,11 @@ where
                 SourceLoc::new(path, u32::try_from(line).map_err(|_| invalid("bad line"))?)
             }
         };
-        let page = self.dbg()?.line_hits(loc, range(args)?, page_req(args))?;
-        Ok(wire::to_json(&page))
+        let d = self.dbg()?;
+        let page = d.line_hits(loc, range(args)?, page_req(args))?;
+        let mut out = wire::to_json(&page);
+        out["referenceRun"] = reference_run(d.as_ref(), page.items.iter());
+        Ok(out)
     }
 
     fn origin(&mut self, args: &Value) -> Answer {
@@ -1021,6 +1027,21 @@ fn capabilities() -> Value {
         ]),
     );
     Value::Object(caps)
+}
+
+
+/// When the moments come from a live session's reference run (another run of the program the
+/// session cannot seek to): which run. `null` otherwise.
+fn reference_run<'a>(d: &dyn Debugger, mut moments: impl Iterator<Item = &'a Moment>) -> Value {
+    let Ok(info) = d.recording() else {
+        return Value::Null;
+    };
+    match &info.reference_run {
+        Some(r) if moments.any(|m| info.is_reference_moment(m)) => {
+            json!({"recording": r.id.to_string(), "description": r.description})
+        }
+        _ => Value::Null,
+    }
 }
 
 #[cfg(test)]

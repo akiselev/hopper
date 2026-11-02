@@ -875,3 +875,137 @@ fn caveats_turn_off_pruning() {
     ));
     assert!(j.prunable(&sc));
 }
+
+/// (kind, src, dst, line, confidence) of a label.
+fn of(l: &hopper_core::api::OwnershipLabel) -> (K, Option<String>, Option<String>, u32, Confidence) {
+    (
+        l.kind,
+        l.src.clone(),
+        l.dst.clone(),
+        l.span.as_ref().unwrap().line,
+        l.confidence,
+    )
+}
+
+/// The user-level events of the worked example's chain: what each call did with the bytes, from
+/// where they are once it returns, and a returned value as the caller's call.
+#[test]
+fn user_level_events_of_the_worked_example() {
+    let sc = worked_example();
+
+    // The store inside `Vec::push` lands in `v[0]`, memory the receiver `v` owns: `c` moved in.
+    let push = pc(
+        FrameInfo::new("_RNvMs_push_mut", std_at(STD_VEC, 1920, 41)),
+        vec![
+            FrameInfo::new("_RNvMs_push", std_at(STD_VEC, 1004, 17)),
+            FrameInfo::new("_RNvCs_main", at(16, 7)),
+        ],
+        effect(wrote(None, 8), wrote(None, 8)),
+    );
+    let user = sc.user_frame(&push).expect("main is the user frame");
+    assert_eq!(user.depth, 2);
+    let moved = sc.call_transfer(&push, user.depth, Some("v[0]")).unwrap();
+    assert_eq!(
+        of(&moved.label),
+        (K::Move, s("c"), s("v[0]"), 16, Confidence::Exact)
+    );
+    // Landing in the call's destination, or nowhere the call explains.
+    assert_eq!(sc.call_transfer(&push, 2, Some("v")), None);
+    assert_eq!(sc.call_transfer(&push, 2, Some("b")), None);
+    assert_eq!(sc.call_transfer(&push, 2, None), None);
+
+    // Inside the derived clone (a macro expansion): the user frame is main, and the call is the
+    // clone of `b` into `c` wherever its bytes landed.
+    let clone = pc(
+        FrameInfo::new("_RNvXs_to_vec", std_at(STD_SLICE, 454, 36)),
+        vec![
+            FrameInfo::new(
+                "<alloc::string::String as core::clone::Clone>::clone",
+                std_at(STD_STRING, 2120, 9),
+            ),
+            FrameInfo::new("_RNvXs_clone", at(4, 17)),
+            FrameInfo::new("_RNvCs_main", at(14, 15)),
+        ],
+        effect(wrote(None, 5), wrote(None, 5)),
+    );
+    let user = sc.user_frame(&clone).unwrap();
+    assert_eq!(user.depth, 3);
+    let cloned = sc.call_transfer(&clone, 3, None).unwrap();
+    assert_eq!(
+        of(&cloned.label),
+        (K::Clone, s("b"), s("c"), 14, Confidence::Exact)
+    );
+
+    // String::from's copy lands in `name`'s buffer: the call's return value, with its literal
+    // argument underneath.
+    let from = pc(
+        FrameInfo::new("_RNvXs_to_vec", std_at(STD_SLICE, 454, 36)),
+        vec![
+            FrameInfo::new("_RNvXs_from", std_at(STD_STRING, 2950, 9)),
+            FrameInfo::new("_RNvCs_load", at(7, 16)),
+        ],
+        effect(wrote(None, 5), wrote(None, 5)),
+    );
+    let user = sc.user_frame(&from).unwrap();
+    assert_eq!(user.depth, 2);
+    let built = sc.call_transfer(&from, 2, Some("name.vec[0]")).unwrap();
+    assert_eq!(
+        of(&built.label),
+        (
+            K::CallReturn,
+            s("String::from(..)"),
+            s("name"),
+            7,
+            Confidence::Exact
+        )
+    );
+    assert_eq!(
+        built.inner.iter().map(of).collect::<Vec<_>>(),
+        vec![(
+            K::Literal,
+            s("\"alpha\""),
+            s("String::from(arg 0)"),
+            7,
+            Confidence::Exact
+        )]
+    );
+
+    // `load`'s store of `name` into its return place is main's `a` ← `load()`, built by the
+    // aggregate with `name` moved in.
+    let ret = pc(
+        FrameInfo::new("_RNvCs_load", at(8, 5)),
+        vec![FrameInfo::new("_RNvCs_main", at(12, 13))],
+        effect(wrote(Some("name"), 24), wrote(Some("return.name"), 24)),
+    );
+    let join = sc.join(&ret);
+    let callee = sc.user_frame(&ret).unwrap();
+    assert_eq!(callee.depth, 0);
+    let value = sc
+        .returned_value(&ret, callee, join.event(), join.label().unwrap(), Some("a"))
+        .unwrap();
+    assert_eq!(
+        of(&value.label),
+        (K::CallReturn, s("load(..)"), s("a"), 12, Confidence::Exact)
+    );
+    let inner: Vec<_> = value.inner.iter().map(of).collect();
+    assert_eq!(
+        inner,
+        vec![
+            (
+                K::Aggregate,
+                s("Config { name, .. }"),
+                s("return"),
+                8,
+                Confidence::Exact
+            ),
+            // The join's own grade: the written place picked the move among the aggregate's
+            // field operands.
+            (K::Move, s("name"), s("return.name"), 8, Confidence::Inferred),
+        ]
+    );
+    // Without a landing the caller's call is still the only one that returns load's value.
+    let unlanded = sc
+        .returned_value(&ret, callee, join.event(), join.label().unwrap(), None)
+        .unwrap();
+    assert_eq!(unlanded.label.confidence, Confidence::Inferred);
+}

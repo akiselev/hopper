@@ -8,9 +8,6 @@
 
 mod support;
 
-/// An ownership label as (kind, source, destination, line).
-type Label = (OwnershipKind, Option<String>, Option<String>, Option<u32>);
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -233,13 +230,8 @@ fn rr_m4_origin_reaches_the_rodata_literal_and_mcp_reproduces_it() {
 
 /// M5: "The worked example, built at -O0, yields exactly the six source hops in the table above,
 /// with `a` reported MovedOut after line 11; a release build degrades to graded labels and never
-/// shows a wrong move." The fixture's lines are the plan's plus two.
-///
-/// Expected to fail on its first PMU run in the six-hop part: on the step recording of the same
-/// program (tests/step_recording.rs) the source view has the clone, the move from `a` and
-/// `String::from` in order, but its first hops are labelled `CallReturn Vec::push` and
-/// `Move c -> _8` (the push argument) rather than the plan's borrow of `n` and move into
-/// `v[0]`, and `load`'s return shows as `Move name -> return.name`.
+/// shows a wrong move." The fixture's lines are the plan's plus two. The step recording of the
+/// same program (tests/step_recording.rs) asserts the same six hops without rr.
 #[test]
 #[ignore = "needs rr and a PMU"]
 fn rr_m5_six_source_hops_and_a_moved_out_after_its_move() {
@@ -257,36 +249,7 @@ fn rr_m5_six_source_hops_and_a_moved_out_after_its_move() {
     let n = d.eval(s.at, top(&s), "*n").unwrap();
     let chain = d.origin(&n.handle, Budget::default()).unwrap();
     assert_eq!(chain.end, OriginEnd::Literal, "{chain:?}");
-    let hops: Vec<Label> = source_hops(&chain)
-        .iter()
-        .map(|h| {
-            let o = h.ownership.as_ref().unwrap();
-            (
-                o.kind,
-                o.src.clone(),
-                o.dst.clone(),
-                o.span.as_ref().map(|l| l.line),
-            )
-        })
-        .collect();
-    let plan: [(OwnershipKind, &str, &str, u32); 6] = [
-        (OwnershipKind::SharedBorrow, "v[0].name", "n", 17),
-        (OwnershipKind::Move, "c", "v[0]", 16),
-        (OwnershipKind::Clone, "b", "c", 14),
-        (OwnershipKind::Move, "a", "b", 13),
-        (OwnershipKind::CallReturn, "load", "a", 12),
-        (OwnershipKind::CallReturn, "String", "name", 7),
-    ];
-    assert_eq!(hops.len(), 6, "{hops:?}");
-    for (got, want) in hops.iter().zip(plan) {
-        assert_eq!(got.0, want.0, "{hops:?}");
-        assert!(
-            got.1.as_deref().is_some_and(|s| s.contains(want.1)),
-            "{hops:?}"
-        );
-        assert_eq!(got.2.as_deref(), Some(want.2), "{hops:?}");
-        assert_eq!(got.3, Some(want.3), "{hops:?}");
-    }
+    assert_six_source_hops(&chain);
 
     // Release: graded labels, and every move the chain names is one the sidecar has.
     let release = binary
@@ -308,12 +271,19 @@ fn rr_m5_six_source_hops_and_a_moved_out_after_its_move() {
     for h in source_hops(&chain) {
         let o = h.ownership.unwrap();
         if o.kind == OwnershipKind::Move {
+            // The sidecar has the move, at its line: as written (`a` -> `b`), or as the call
+            // argument a receiver took (`c` -> `push(arg 1)`, shown as `c` -> `v[0]`).
+            let line = o.span.as_ref().map(|l| l.line);
             assert!(
                 sidecar
                     .functions()
                     .iter()
                     .flat_map(|f| &f.events)
-                    .any(|e| e.kind == OwnershipKind::Move && e.src == o.src && e.dst == o.dst),
+                    .any(|e| e.kind == OwnershipKind::Move
+                        && e.src == o.src
+                        && Some(e.span.lo.line) == line
+                        && (e.dst == o.dst
+                            || e.dst.as_deref().is_some_and(|d| d.ends_with(')')))),
                 "a move the sidecar does not have: {o:?}"
             );
             assert_ne!(

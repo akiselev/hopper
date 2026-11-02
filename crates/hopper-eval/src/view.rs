@@ -21,8 +21,10 @@ use crate::value::{Session, Value};
 
 /// Collections longer than this are cut short in summaries (gdb's default `print elements`).
 pub const SUMMARY_ELEMENTS: usize = 200;
-/// Summaries stop nesting below this depth (`{...}`).
-pub const SUMMARY_DEPTH: usize = 8;
+/// Aggregates nested this deep are elided as `{...}` in summaries; scalars, pointers and text
+/// are always shown. This is gdb's `print max-depth` (20 by default), so a summary reads the same
+/// as rust-gdb's print of the value.
+pub const SUMMARY_DEPTH: usize = 20;
 /// Summaries are cut at about this many characters.
 pub const SUMMARY_CHARS: usize = 4000;
 /// Strings are read up to this many bytes for a summary.
@@ -1104,10 +1106,6 @@ fn render(v: &Value, s: &mut Session<'_>, depth: usize, out: &mut String) {
     if out.len() > SUMMARY_CHARS {
         return;
     }
-    if depth > SUMMARY_DEPTH {
-        out.push_str("{...}");
-        return;
-    }
     let sh = match shape(v, s) {
         Ok(sh) => sh,
         Err(e) => {
@@ -1115,8 +1113,28 @@ fn render(v: &Value, s: &mut Session<'_>, depth: usize, out: &mut String) {
             return;
         }
     };
+    if depth >= SUMMARY_DEPTH && is_aggregate(&sh) {
+        out.push_str("{...}");
+        return;
+    }
     if let Err(e) = render_shape(v, &sh, s, depth, out) {
         out.push_str(&error_text(&e));
+    }
+}
+
+/// Whether gdb's max-depth elides a value of this shape: anything with members (structs, enums
+/// with a payload, arrays, collections, wrappers), not scalars, pointers or text.
+fn is_aggregate(sh: &Shape) -> bool {
+    match sh {
+        Shape::Scalar | Shape::Pointer { .. } | Shape::Text { .. } | Shape::Number(_) => false,
+        Shape::Struct { st, .. } => !st.fields.is_empty(),
+        Shape::Enum { .. }
+        | Shape::Array { .. }
+        | Shape::Seq { .. }
+        | Shape::Hash { .. }
+        | Shape::BTree { .. }
+        | Shape::Shared { .. }
+        | Shape::Wrapper { .. } => true,
     }
 }
 

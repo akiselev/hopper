@@ -198,3 +198,99 @@ pub fn frame_hits(
     hits.sort_by_key(|h| h.at.order_key());
     Some(hits)
 }
+
+/// Whether a live session indexes a second run of its program.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum LiveIndexPolicy {
+    /// Run the program a second time under its own gdbserver, with the same arguments, and
+    /// run phase A on that run in the background. The program's side effects happen twice.
+    #[default]
+    ReferenceRun,
+    /// No reference run: calls and line hits are what the cursor has seen.
+    Off,
+}
+
+/// The index of a live session's reference run: a second run of the same program, whose call
+/// tree, line hits and allocations answer for the live process (which cannot be replayed).
+///
+/// Its moments are the reference run's own: they carry its recording id
+/// ([`hopper_core::api::ReferenceRun::id`]), not the live session's, so a front end can show
+/// them as moments of the other run and never seek to them. A deterministic program executes
+/// the same calls and lines in both runs, and gdbserver disables address randomisation, so its
+/// heap addresses match too; a program that reads input or races threads can differ.
+#[derive(Debug)]
+pub struct ReferenceIndex {
+    pub indexed: Indexed,
+    pub run: hopper_core::api::ReferenceRun,
+    /// The directory the session made for the index, removed when the session ends.
+    temporary: Option<PathBuf>,
+}
+
+impl Drop for ReferenceIndex {
+    fn drop(&mut self) {
+        self.indexed.control.cancel();
+        if let Some(d) = &self.temporary {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
+
+/// Launch the reference run of `program` and start phase A on it in its own thread.
+pub fn start_reference_run(
+    policy: &IndexPolicy,
+    config: &hopper_rr::GdbserverConfig,
+    program: &std::path::Path,
+    args: &[std::ffi::OsString],
+) -> std::result::Result<ReferenceIndex, NoIndex> {
+    let failed = |what: &str, e: hopper_core::HopperError| NoIndex::Failed(format!("{what}: {e}"));
+    let mut t = hopper_rr::GdbserverTarget::launch(config, program, args)
+        .map_err(|e| failed("the reference run did not start", e))?;
+    let recording = t.info().recording;
+    let binary = hopper_symbols::Binary::open(program).map_err(|e| failed("its binary", e))?;
+    let build_ids = binary.build_id().map(|b| b.to_hex()).into_iter().collect();
+    let auxv = t.auxv().map_err(|e| failed("its auxv", e))?;
+    let module = hopper_symbols::Module::main_from_auxv(binary, &auxv)
+        .map_err(|e| failed("its main module", e))?;
+    let mut main = SymbolSet::new();
+    main.add(module);
+    let (dir, temporary) = match policy {
+        IndexPolicy::Dir(d) => (d.clone(), None),
+        IndexPolicy::BesideTrace | IndexPolicy::Off => {
+            let d = std::env::temp_dir().join(format!("hopper-reference-run-{recording}"));
+            (d.clone(), Some(d))
+        }
+    };
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NoIndex::Failed(format!("index directory {}: {e}", dir.display())))?;
+    let indexed = Indexed::open(
+        &dir,
+        RecordingMeta {
+            recording,
+            build_ids,
+        },
+    )
+    .map_err(|e| failed("its index", e))?;
+    let (index, control) = (indexed.index.clone(), indexed.control.clone());
+    std::thread::Builder::new()
+        .name("hopper-index-reference-run".into())
+        .spawn(move || {
+            if let Err(e) = PhaseA::new(main, IndexConfig::default()).run(&mut t, &index, &control)
+            {
+                control.finish(Some(e.to_string()));
+            }
+            // Dropping the target ends the reference run's gdbserver.
+            drop(t);
+        })
+        .map_err(|e| NoIndex::Failed(format!("cannot start the reference run's thread: {e}")))?;
+    Ok(ReferenceIndex {
+        indexed,
+        run: hopper_core::api::ReferenceRun {
+            id: recording,
+            description: format!(
+                "a second gdbserver run of {} with the same arguments",
+                program.display()
+            ),
+        },
+        temporary,
+    })
+}

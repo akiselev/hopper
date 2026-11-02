@@ -24,7 +24,13 @@ pub fn live_binary(binary: &Path) -> Option<Session> {
         eprintln!("skipping: gdbserver is not installed");
         return None;
     }
-    Some(Session::live(binary, &[], SessionOptions::default()).expect("start a live session"))
+    // Tests of a live session's own behaviour skip the reference run (tests/live_reference.rs
+    // covers it), which would run each fixture a second time.
+    let options = SessionOptions {
+        live_index: hopper_engine::LiveIndexPolicy::Off,
+        ..SessionOptions::default()
+    };
+    Some(Session::live(binary, &[], options).expect("start a live session"))
 }
 
 /// Break at `file:line` and run to it.
@@ -92,6 +98,78 @@ pub fn hopper_built_worked_example() -> Option<PathBuf> {
         );
         None
     }
+}
+
+/// The plan's six source hops of the worked example's click on `*n` at line 18 (the plan's table,
+/// at the fixture's lines, which are the plan's plus two), as hopper-engine's source view must
+/// produce them: (kind, text the source contains, destination, line, confidence), and the events
+/// underneath each as (kind, text the source contains, destination, line).
+pub fn assert_six_source_hops(chain: &hopper_core::api::OriginChain) {
+    use hopper_core::api::{Confidence::Exact, OwnershipKind as K};
+    type Inner = &'static [(K, &'static str, &'static str, u32)];
+    let plan: [(K, &str, &str, u32, Inner); 6] = [
+        (K::SharedBorrow, "v[0].name", "n", 17, &[]),
+        (K::Move, "c", "v[0]", 16, &[]),
+        (K::Clone, "b", "c", 14, &[]),
+        (K::Move, "a", "b", 13, &[]),
+        (
+            K::CallReturn,
+            "load",
+            "a",
+            12,
+            &[
+                (K::Aggregate, "Config { name, .. }", "return", 8),
+                (K::Move, "name", "return.name", 8),
+            ],
+        ),
+        (
+            K::CallReturn,
+            "String as From",
+            "name",
+            7,
+            &[(K::Literal, "\"alpha\"", "(arg 0)", 7)],
+        ),
+    ];
+    let hops = hopper_engine::source_hops(chain);
+    let shown: Vec<String> = hops.iter().map(source_hop_text).collect();
+    assert_eq!(hops.len(), 6, "{shown:#?}");
+    for (h, (kind, src, dst, line, inner)) in hops.iter().zip(plan) {
+        let o = h.ownership.as_ref().expect("source hops are labelled");
+        assert_eq!(o.kind, kind, "{shown:#?}");
+        assert!(
+            o.src.as_deref().is_some_and(|s| s.contains(src)),
+            "{src}: {shown:#?}"
+        );
+        assert_eq!(o.dst.as_deref(), Some(dst), "{shown:#?}");
+        assert_eq!(o.span.as_ref().map(|l| l.line), Some(line), "{shown:#?}");
+        assert_eq!(o.confidence, Exact, "{shown:#?}");
+        assert_eq!(h.inner.len(), inner.len(), "{shown:#?}");
+        for (i, (kind, src, dst, line)) in h.inner.iter().zip(inner) {
+            assert_eq!(i.kind, *kind, "{shown:#?}");
+            assert!(i.src.as_deref().is_some_and(|s| s.contains(src)), "{shown:#?}");
+            assert!(i.dst.as_deref().is_some_and(|d| d.ends_with(dst)), "{shown:#?}");
+            assert_eq!(i.span.as_ref().map(|l| l.line), Some(*line), "{shown:#?}");
+        }
+    }
+}
+
+/// One source hop as text: `17 SharedBorrow v[0].name -> n (Exact)`, with the events underneath.
+pub fn source_hop_text(h: &hopper_core::api::OriginHop) -> String {
+    let label = |o: &hopper_core::api::OwnershipLabel| {
+        format!(
+            "{} {:?} {} -> {} ({:?})",
+            o.span.as_ref().map_or(0, |l| l.line),
+            o.kind,
+            o.src.as_deref().unwrap_or("-"),
+            o.dst.as_deref().unwrap_or("-"),
+            o.confidence
+        )
+    };
+    let mut s = h.ownership.as_ref().map(label).unwrap_or_default();
+    for i in &h.inner {
+        s.push_str(&format!("\n    {}", label(i)));
+    }
+    s
 }
 
 pub mod gdb;

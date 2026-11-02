@@ -1,5 +1,9 @@
-//! The source pane's own gutter column: hit counts and the execution arrow, drawn by hopper beside
-//! quire's gutter (quire has no host gutter API yet: `docs/requests.md`).
+//! The source pane's own gutter column: hit counts, breakpoints and the execution arrow, drawn by
+//! hopper beside quire's gutter (quire has no host gutter API yet: `docs/requests.md`).
+//!
+//! The column has two zones: the hit count on its left (a press lists every execution of the
+//! line) and the marker zone on its right, where breakpoints and the arrow are drawn (a press
+//! adds or removes a breakpoint).
 //!
 //! This module is the mapping only: from the lines the editor shows (and where) plus what hopper
 //! knows about them to the marks the column draws, and which lines still need a count.
@@ -76,11 +80,29 @@ pub struct GutterMark {
     /// The hit count as drawn ("12", "1.2k", "3+" while partial); `None` draws nothing.
     pub label: Option<String>,
     pub arrow: Option<Arrow>,
+    /// A user breakpoint is set on the line.
+    pub breakpoint: bool,
+}
+
+/// Width of the marker zone at the column's right edge.
+pub const MARKER_W: f32 = 26.0;
+
+/// Which zone of the column a press at `x` (from the column's left edge) is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GutterZone {
+    /// The hit count: list the line's executions.
+    HitCount,
+    /// The marker zone: toggle a breakpoint.
+    Marker,
+}
+
+pub fn zone_at(x: f32, column_w: f32) -> GutterZone {
+    if x >= column_w - MARKER_W { GutterZone::Marker } else { GutterZone::HitCount }
 }
 
 /// The marks for the rows the editor shows: `rows` are (1-based line, top y in local space) of
-/// each visible line.
-pub fn marks(rows: &[(u32, f32)], hits: &HitCounts, arrows: &[ArrowAt]) -> Vec<GutterMark> {
+/// each visible line; `breakpoints` the lines with a user breakpoint.
+pub fn marks(rows: &[(u32, f32)], hits: &HitCounts, arrows: &[ArrowAt], breakpoints: &[u32]) -> Vec<GutterMark> {
     rows.iter()
         .filter_map(|&(line, y)| {
             let label = match hits.get(line) {
@@ -97,7 +119,8 @@ pub fn marks(rows: &[(u32, f32)], hits: &HitCounts, arrows: &[ArrowAt]) -> Vec<G
                     Arrow::Execution => 0,
                     Arrow::Frame => 1,
                 });
-            (label.is_some() || arrow.is_some()).then_some(GutterMark { line, y, label, arrow })
+            let breakpoint = breakpoints.contains(&line);
+            (label.is_some() || arrow.is_some() || breakpoint).then_some(GutterMark { line, y, label, arrow, breakpoint })
         })
         .collect()
 }
@@ -131,14 +154,15 @@ mod tests {
         hits.set(13, HitCount::Pending);
         let rows = [(10, 0.0), (11, 18.0), (12, 36.0), (13, 54.0), (14, 72.0)];
         let arrows = [ArrowAt { line: 14, arrow: Arrow::Frame }, ArrowAt { line: 11, arrow: Arrow::Execution }];
-        let m = marks(&rows, &hits, &arrows);
+        let m = marks(&rows, &hits, &arrows, &[13]);
         assert_eq!(
             m,
             vec![
-                GutterMark { line: 10, y: 0.0, label: Some("1".into()), arrow: None },
-                GutterMark { line: 11, y: 18.0, label: None, arrow: Some(Arrow::Execution) },
-                GutterMark { line: 12, y: 36.0, label: Some("1.5k+".into()), arrow: None },
-                GutterMark { line: 14, y: 72.0, label: None, arrow: Some(Arrow::Frame) },
+                GutterMark { line: 10, y: 0.0, label: Some("1".into()), arrow: None, breakpoint: false },
+                GutterMark { line: 11, y: 18.0, label: None, arrow: Some(Arrow::Execution), breakpoint: false },
+                GutterMark { line: 12, y: 36.0, label: Some("1.5k+".into()), arrow: None, breakpoint: false },
+                GutterMark { line: 13, y: 54.0, label: None, arrow: None, breakpoint: true },
+                GutterMark { line: 14, y: 72.0, label: None, arrow: Some(Arrow::Frame), breakpoint: false },
             ]
         );
     }
@@ -147,7 +171,15 @@ mod tests {
     fn the_execution_arrow_wins_a_shared_line() {
         let hits = HitCounts::default();
         let arrows = [ArrowAt { line: 5, arrow: Arrow::Frame }, ArrowAt { line: 5, arrow: Arrow::Execution }];
-        assert_eq!(marks(&[(5, 3.0)], &hits, &arrows)[0].arrow, Some(Arrow::Execution));
+        assert_eq!(marks(&[(5, 3.0)], &hits, &arrows, &[])[0].arrow, Some(Arrow::Execution));
+    }
+
+    #[test]
+    fn presses_on_the_right_toggle_breakpoints() {
+        assert_eq!(zone_at(4.0, 58.0), GutterZone::HitCount);
+        assert_eq!(zone_at(31.9, 58.0), GutterZone::HitCount);
+        assert_eq!(zone_at(32.0, 58.0), GutterZone::Marker);
+        assert_eq!(zone_at(57.0, 58.0), GutterZone::Marker);
     }
 
     #[test]

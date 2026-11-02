@@ -50,13 +50,13 @@ impl FrameKey {
 }
 
 /// A budget counter for one replay.
-struct Spend {
+pub(crate) struct Spend {
     used: u64,
     limit: u64,
 }
 
 impl Spend {
-    fn new(limit: u64) -> Spend {
+    pub(crate) fn new(limit: u64) -> Spend {
         Spend { used: 0, limit }
     }
 
@@ -106,7 +106,11 @@ impl Drop for Inserted<'_> {
 
 /// Run back to the entry of the frame instance `key` (stack pointer CFA - 8). `false` when the
 /// recording starts first.
-fn reverse_to_entry(t: &mut dyn Target, key: &FrameKey, spend: &mut Spend) -> Result<bool> {
+pub(crate) fn reverse_to_entry(
+    t: &mut dyn Target,
+    key: &FrameKey,
+    spend: &mut Spend,
+) -> Result<bool> {
     let bp = Breakpoint::code(key.entry);
     let mut ins = Inserted::new(t);
     ins.add(bp)?;
@@ -352,7 +356,7 @@ pub fn live_line_hits(
 }
 
 /// Seek a fresh replica to the start of the recording.
-fn to_start(shared: &Shared, t: &mut dyn Target) -> Result<()> {
+pub(crate) fn to_start(shared: &Shared, t: &mut dyn Target) -> Result<()> {
     if t.now().ok() != Some(shared.start.at) {
         t.seek(&shared.start.at)?;
     }
@@ -577,6 +581,7 @@ pub fn last_write(
     before: Moment,
 ) -> Result<Option<WriteEvent>> {
     shared.check_moment(&before)?;
+    crate::writes::request(shared, place, before);
     // The phase-B write log, where it covers the range and recorded the bytes.
     if let (Ok(ix), Some(main)) = (&shared.index, &shared.main_symbols)
         && let Ok(answer) = ix.index.last_write(place, before)
@@ -585,7 +590,9 @@ pub fn last_write(
         match answer.value {
             None => return Ok(None),
             Some(w) => {
-                if let Some(ev) = w.to_event(main) {
+                if let Some(ev) = w.to_event(main)
+                    && let Some(ev) = narrowed(ev, place)
+                {
                     return Ok(Some(ev));
                 }
             }
@@ -607,9 +614,37 @@ pub fn last_write(
     })?
 }
 
-/// The origin chain of a value.
+/// A logged write as the answer about `place`: the place asked, and the bytes the write left in
+/// it (a 16-byte store over a 4-byte field reports the field's 4). `None` when the write did not
+/// cover the whole place (its other bytes are older): reverse execution answers then.
+fn narrowed(ev: WriteEvent, place: Place) -> Option<WriteEvent> {
+    let (
+        Place::Memory { addr: wa, .. },
+        Place::Memory { addr, len, .. },
+    ) = (ev.place, place)
+    else {
+        return None;
+    };
+    let from = addr.checked_sub(wa)? as usize;
+    let bytes = ev.value.get(from..from + len as usize)?.to_vec();
+    Some(WriteEvent {
+        place,
+        value: bytes,
+        ..ev
+    })
+}
+
+/// The origin chain of a value, with the writes of the references it was reached through.
 pub fn origin(shared: &Arc<Shared>, value: &ValueHandle, budget: Budget) -> Result<OriginChain> {
     let place = place_of(shared, value)?.place;
+    crate::writes::request(shared, place, value.at);
+    // The pointers on the way to the value, nearest first; one that is not in memory (a
+    // register) has no write to find.
+    let pointers: Vec<Place> = references_of(value)
+        .iter()
+        .filter_map(|h| place_of(shared, h).ok().map(|l| l.place))
+        .filter(|p| matches!(p, Place::Memory { .. }))
+        .collect();
     let at = value.at;
     let lease = shared.pool.lease()?;
     let s = shared.clone();
@@ -623,8 +658,47 @@ pub fn origin(shared: &Arc<Shared>, value: &ValueHandle, budget: Budget) -> Resu
             steps: 0,
             budget: budget.max_steps,
         };
-        r.origin(place, budget)
+        let mut chain = r.origin(place, budget)?;
+        for p in pointers {
+            if r.t.now().ok() != Some(at) {
+                r.t.seek(&at)?;
+            }
+            r.steps = 0;
+            match r.reference_hop(p) {
+                Ok(Some(hop)) => chain.references.push(hop),
+                Ok(None) | Err(HopperError::BudgetExhausted { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(chain)
     })?
+}
+
+/// The handles of the pointers a value is reached through, nearest the value first: the
+/// prefixes of its path that a `Deref` follows, then the pointers its expression dereferences
+/// (`n` for `*n` and `(*n).vec[0]`).
+fn references_of(value: &ValueHandle) -> Vec<ValueHandle> {
+    let mut out = Vec::new();
+    for (i, e) in value.path.iter().enumerate().rev() {
+        if *e == hopper_core::api::PathElem::Deref {
+            out.push(ValueHandle {
+                path: value.path[..i].to_vec(),
+                ..value.clone()
+            });
+        }
+    }
+    if let ValueTarget::Expr(src) = &value.target
+        && let Ok(expr) = hopper_eval::expr::parse(src)
+    {
+        for p in expr.dereferenced() {
+            out.push(ValueHandle {
+                target: ValueTarget::Expr(p.to_string()),
+                path: Vec::new(),
+                ..value.clone()
+            });
+        }
+    }
+    out
 }
 
 /// How a value changed over a range: its value at the frame's entry (or the range's start)
@@ -647,6 +721,7 @@ pub fn value_history(
     let Place::Memory { addr, len, .. } = place else {
         return Err(HopperError::Unsupported("history of a register".into()));
     };
+    crate::writes::request(shared, place, value.at);
     let (pieces, whole) = watch_pieces(addr, len.min(32));
     let lease = shared.pool.lease()?;
     let s = shared.clone();

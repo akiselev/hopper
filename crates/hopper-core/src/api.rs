@@ -35,6 +35,28 @@ pub struct RecordingInfo {
     pub start: Option<Moment>,
     pub end: Option<Moment>,
     pub processes: Vec<ProcessInfo>,
+    /// A second run of the same program that answers the omniscient queries of a session whose
+    /// own run cannot (a live process, which runs forward only, is indexed on a reference run).
+    /// Moments in those answers carry the reference run's recording id, not [`Self::id`]: they
+    /// name states of the other run, cannot be sought here, and are shown as such.
+    #[serde(default)]
+    pub reference_run: Option<ReferenceRun>,
+}
+
+/// A run, other than the session's own, whose index answers the session's queries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceRun {
+    /// The recording id the reference run's moments carry.
+    pub id: RecordingId,
+    /// What the run is ("gdbserver run of <program>, same arguments").
+    pub description: String,
+}
+
+impl RecordingInfo {
+    /// Whether `m` is a moment of the reference run rather than of this recording.
+    pub fn is_reference_moment(&self, m: &Moment) -> bool {
+        self.reference_run.as_ref().is_some_and(|r| r.id == m.recording) && m.recording != self.id
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,10 +375,21 @@ pub struct OriginHop {
     pub read: Option<Place>,
     pub written: Place,
     pub machine: MachineKind,
-    /// The ownership event the sidecar matched to this hop.
+    /// The source-level ownership event this hop is part of (the hops one event makes, such as
+    /// a move's copies through temporaries and a callee's stores, carry the same label).
     pub ownership: Option<OwnershipLabel>,
     /// The heap allocation `written` belongs to, when it is on the heap.
     pub allocation: Option<AllocationId>,
+    /// The events underneath [`Self::ownership`], outermost first: for a call's return value,
+    /// how the callee built it (`Config { name, .. }` with `name` moved in); for a call, its
+    /// literal arguments.
+    #[serde(default)]
+    pub inner: Vec<OwnershipLabel>,
+    /// For an arithmetic hop ([`MachineKind::Arithmetic`]): the places the instruction computed
+    /// the written bytes from (registers of the writing frame, memory it read), in operand
+    /// order. Empty for other kinds.
+    #[serde(default)]
+    pub operands: Vec<Place>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +413,12 @@ pub struct OriginChain {
     /// From the value back to its origin: `hops[0]` wrote the bytes the user clicked.
     pub hops: Vec<OriginHop>,
     pub end: OriginEnd,
+    /// The writes that made the references the value was reached through, outermost first:
+    /// for `*n`, the store of `n` (`n = &v[0].name`, a shared borrow). They wrote the pointer,
+    /// not the value's bytes, so they are not in [`Self::hops`]; the source view puts them
+    /// first.
+    #[serde(default)]
+    pub references: Vec<OriginHop>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

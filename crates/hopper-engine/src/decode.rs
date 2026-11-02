@@ -125,17 +125,48 @@ pub enum WriteSource {
     Immediate,
     /// The kernel.
     Syscall,
-    /// Computed from these operands (their text).
-    Arithmetic { operands: Vec<String> },
+    /// Computed from these operands.
+    Arithmetic { operands: Vec<Operand> },
 }
 
-/// Operand texts of an instruction, for reports.
-fn operands(insn: &Instruction) -> Vec<String> {
-    let t = text(insn);
-    match t.split_once(' ') {
-        Some((_, ops)) => ops.split(',').map(|s| s.trim().to_string()).collect(),
-        None => Vec::new(),
+/// One input of a computation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Operand {
+    Register(Register),
+    /// Bytes read from memory (the effective address with the registers before the
+    /// instruction).
+    Memory { addr: u64, len: u64 },
+}
+
+/// The explicit operands an instruction reads, in operand order: registers it reads (a
+/// read-modify-write destination included) and the memory it loads. Immediates are constants and
+/// are left out; registers used only to form an address are not operands.
+pub fn operands(insn: &Instruction, regs: &RegisterSet) -> Vec<Operand> {
+    let mut factory = InstructionInfoFactory::new();
+    let info = factory.info(insn);
+    let reads = |a: OpAccess| {
+        matches!(
+            a,
+            OpAccess::Read | OpAccess::ReadWrite | OpAccess::CondRead | OpAccess::ReadCondWrite
+        )
+    };
+    let mut out = Vec::new();
+    for i in 0..insn.op_count() {
+        if !reads(info.op_access(i)) {
+            continue;
+        }
+        match insn.op_kind(i) {
+            OpKind::Register => out.push(Operand::Register(insn.op_register(i))),
+            OpKind::Memory => {
+                if let Some(addr) = effective_address(insn, i, regs) {
+                    let len = insn.memory_size().size() as u64;
+                    out.push(Operand::Memory { addr, len });
+                }
+            }
+            _ => {}
+        }
     }
+    out
 }
 
 /// Classify the write the instruction made to the byte at `watched`. `regs` are the registers
@@ -153,7 +184,7 @@ pub fn classify_write(insn: &Instruction, regs: &RegisterSet, watched: u64) -> W
     {
         let (Some(rsi), Some(rdi)) = (regs.get(Reg::RSI), regs.get(Reg::RDI)) else {
             return WriteSource::Arithmetic {
-                operands: operands(insn),
+                operands: operands(insn, regs),
             };
         };
         return WriteSource::Memory {
@@ -180,7 +211,7 @@ pub fn classify_write(insn: &Instruction, regs: &RegisterSet, watched: u64) -> W
                     }
                 }
                 None => WriteSource::Arithmetic {
-                    operands: operands(insn),
+                    operands: operands(insn, regs),
                 },
             },
             _ => WriteSource::Immediate,
@@ -231,7 +262,7 @@ pub fn classify_write(insn: &Instruction, regs: &RegisterSet, watched: u64) -> W
         };
     }
     WriteSource::Arithmetic {
-        operands: operands(insn),
+        operands: operands(insn, regs),
     }
 }
 
@@ -248,8 +279,8 @@ pub enum RegisterDefinition {
     Immediate,
     /// The kernel wrote it (the syscall result).
     Syscall,
-    /// Computed.
-    Arithmetic { operands: Vec<String> },
+    /// Computed from these operands.
+    Arithmetic { operands: Vec<Operand> },
 }
 
 /// How `insn` defines byte `offset` of register `target` (full register compared), with `regs`
@@ -332,7 +363,7 @@ pub fn register_definition(
             return match regs.get(Reg::RSP) {
                 Some(sp) => RegisterDefinition::Load { addr: sp + offset },
                 None => RegisterDefinition::Arithmetic {
-                    operands: operands(insn),
+                    operands: operands(insn, regs),
                 },
             };
         }
@@ -341,7 +372,7 @@ pub fn register_definition(
             OpKind::Memory => match effective_address(insn, src, regs) {
                 Some(ea) => RegisterDefinition::Load { addr: ea + offset },
                 None => RegisterDefinition::Arithmetic {
-                    operands: operands(insn),
+                    operands: operands(insn, regs),
                 },
             },
             OpKind::Register => RegisterDefinition::Copy {
@@ -359,7 +390,7 @@ pub fn register_definition(
         return RegisterDefinition::Immediate;
     }
     RegisterDefinition::Arithmetic {
-        operands: operands(insn),
+        operands: operands(insn, regs),
     }
 }
 
@@ -393,6 +424,51 @@ mod tests {
         );
         assert_eq!(flow(&insn(&[0xc3])), Flow::Return);
         assert_eq!(flow(&insn(&[0x90])), Flow::Other);
+    }
+
+    #[test]
+    fn arithmetic_reports_its_operands() {
+        // add rax, [rbx+8]
+        let i = insn(&[0x48, 0x03, 0x43, 0x08]);
+        let r = regs(&[(Reg::RBX, 0x7000), (Reg::RAX, 1)]);
+        assert_eq!(
+            operands(&i, &r),
+            vec![
+                Operand::Register(Register::RAX),
+                Operand::Memory {
+                    addr: 0x7008,
+                    len: 8
+                }
+            ]
+        );
+        assert_eq!(
+            register_definition(&i, &r, Register::RAX, 0),
+            RegisterDefinition::Arithmetic {
+                operands: operands(&i, &r)
+            }
+        );
+        // imul ecx, edx, 3: reads edx only (ecx is written, 3 is a constant).
+        let i = insn(&[0x6b, 0xca, 0x03]);
+        assert_eq!(
+            operands(&i, &r),
+            vec![Operand::Register(Register::EDX)]
+        );
+        // add dword ptr [rsp+4], eax: the stored sum reads both.
+        let i = insn(&[0x01, 0x44, 0x24, 0x04]);
+        let r = regs(&[(Reg::RSP, 0x8000)]);
+        match classify_write(&i, &r, 0x8004) {
+            WriteSource::Arithmetic { operands } => assert_eq!(
+                operands,
+                vec![
+                    Operand::Memory {
+                        addr: 0x8004,
+                        len: 4
+                    },
+                    Operand::Register(Register::EAX)
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

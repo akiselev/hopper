@@ -448,10 +448,12 @@ fn hopper_requests_answer_in_the_response_body() {
     assert_eq!(t.ok(cur)["stop"]["at"], at18.as_str());
 
     let chain = &t.ok(origin)["chain"];
-    let kinds: Vec<&str> = chain["hops"]
-        .as_array()
-        .unwrap()
+    // The borrow that made `n` is a reference hop; the value's own hops follow.
+    let refs = chain["references"].as_array().unwrap();
+    assert_eq!(refs.len(), 1);
+    let kinds: Vec<&str> = refs
         .iter()
+        .chain(chain["hops"].as_array().unwrap())
         .map(|h| h["ownership"]["kind"].as_str().unwrap())
         .collect();
     assert_eq!(
@@ -466,15 +468,19 @@ fn hopper_requests_answer_in_the_response_body() {
         ]
     );
     assert_eq!(chain["end"], "Literal");
-    assert_eq!(chain["hops"][1]["allocation"], 3);
+    assert_eq!(chain["hops"][0]["allocation"], 3);
+    // The borrow computed an address: an arithmetic node, its operand in the JSON.
+    assert_eq!(refs[0]["machine"], "Arithmetic");
+    assert_eq!(refs[0]["operands"][0]["Register"]["reg"], 6);
+    assert_eq!(chain["hops"][3]["inner"][0]["kind"], "Aggregate");
     assert!(
-        chain["hops"][0]["at"]
+        refs[0]["at"]
             .as_str()
             .unwrap()
             .starts_with("hopper://")
     );
     assert_eq!(
-        chain["hops"][0]["written"]["Memory"]["addr"],
+        refs[0]["written"]["Memory"]["addr"],
         "0x7ffc8a3e1e78"
     );
     assert_eq!(t.ok(origin)["value"]["summary"], "\"alpha\"");

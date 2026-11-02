@@ -417,6 +417,18 @@ fn hop_line(i: usize, h: &OriginHop) -> String {
                 let _ = write!(s, " at {}", short_loc(&span.to_string()));
             }
             let _ = write!(s, " [{:?}]", o.confidence);
+            for i in &h.inner {
+                let _ = write!(
+                    s,
+                    "\n       {:?} {} -> {}",
+                    i.kind,
+                    i.src.as_deref().unwrap_or("?"),
+                    i.dst.as_deref().unwrap_or("?")
+                );
+                if let Some(span) = &i.span {
+                    let _ = write!(s, " at {}", short_loc(&span.to_string()));
+                }
+            }
         }
         None => s.push_str("\n     (no ownership event)"),
     }
@@ -434,7 +446,21 @@ fn hop_line(i: usize, h: &OriginHop) -> String {
     if let Some(a) = h.allocation {
         let _ = write!(s, ", heap allocation #{}", a.0);
     }
+    if !h.operands.is_empty() {
+        let ops: Vec<String> = h.operands.iter().map(place_text).collect();
+        let _ = write!(s, "\n     computed from: {}", ops.join(", "));
+    }
     s
+}
+
+/// A place as `0x7ffc...+8` or `rax (thread 1, frame 0)`.
+fn place_text(p: &hopper_core::Place) -> String {
+    match p {
+        hopper_core::Place::Memory { addr, len, .. } => format!("{addr:#x}+{len}"),
+        hopper_core::Place::Register { frame, reg } => {
+            format!("{} (thread {}, frame {})", reg.name(), frame.tid.0, frame.depth)
+        }
+    }
 }
 
 /// A position given on the command line: a position URL, an rr event number, `start` or `end`.
@@ -627,6 +653,7 @@ queries (do not move the cursor):
   history <expr>      every change of the value
   calls [fn]          the call tree, or every call of fn
   hits <file:line>    every execution of a line
+  index [wait]        the index's progress (wait: until it finishes)
   q                   quit";
 
 /// The interactive debugger: reads commands from `input` until `q` or end of input.
@@ -757,7 +784,8 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
                 v.summary,
                 c.at.url()
             )?;
-            for (i, h) in chain.hops.iter().enumerate() {
+            // The writes of the references the value was reached through come first.
+            for (i, h) in chain.references.iter().chain(&chain.hops).enumerate() {
                 writeln!(out, "{}", hop_line(i, h))?;
             }
             writeln!(out, "  end: {:?}", chain.end)?;
@@ -792,6 +820,7 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
                 for c in &page.items {
                     writeln!(out, "  {} #{}  {}", c.function, c.id.0, call_span(c))?;
                 }
+                reference_note(d, page.items.iter().map(|c| &c.entry), out)?;
                 partial_note(&page.completeness, out)?;
             }
         }
@@ -804,6 +833,7 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
             for m in &page.items {
                 writeln!(out, "  {}", m.url())?;
             }
+            reference_note(d, page.items.iter(), out)?;
             partial_note(&page.completeness, out)?;
         }
         "x" => {
@@ -816,6 +846,21 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
             let p = p.ok_or_else(|| HopperError::NotFound("a process".into()))?;
             let bytes = d.memory(c.at, p, addr, len)?;
             writeln!(out, "  {addr:#x}: {}", hopper_core::wire::hex(&bytes))?;
+        }
+        "index" => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+            let mut st = d.index_status();
+            while arg == "wait" && !st.done && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                st = d.index_status();
+            }
+            for (phase, fraction) in &st.phases {
+                writeln!(out, "  {phase}: {:.0}%", fraction * 100.0)?;
+            }
+            writeln!(out, "  {}", if st.done { "done" } else { "building" })?;
+            if let Some(e) = &st.error {
+                writeln!(out, "  error: {e}")?;
+            }
         }
         "help" | "h" | "?" => writeln!(out, "{HELP}")?,
         other => writeln!(out, "unknown command `{other}`; type `help`")?,
@@ -861,7 +906,28 @@ fn print_call_tree(d: &dyn Debugger, parent: Option<CallId>, out: &mut impl Writ
         }
     }
     if parent.is_none() {
+        reference_note(d, page.items.iter().map(|c| &c.entry), out)?;
         partial_note(&page.completeness, out)?;
+    }
+    Ok(())
+}
+
+/// Say so when moments come from a live session's reference run: they name states of another
+/// run of the program and cannot be sought here.
+fn reference_note<'a>(
+    d: &dyn Debugger,
+    mut moments: impl Iterator<Item = &'a hopper_core::Moment>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let info = d.recording()?;
+    if let Some(r) = &info.reference_run
+        && moments.any(|m| info.is_reference_moment(m))
+    {
+        writeln!(
+            out,
+            "  (moments of the reference run, {}: not positions in this session)",
+            r.description
+        )?;
     }
     Ok(())
 }

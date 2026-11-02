@@ -19,24 +19,28 @@ pub enum Command {
     OpenUrlBox,
     /// Copies the current position URL.
     CopyUrl,
+    /// Adds or removes a breakpoint on the source caret's line (the stopped line when the
+    /// source has no caret).
+    ToggleBreakpoint,
 }
 
 impl Command {
     /// Whether the command moves the cursor through the engine.
     pub fn moves(self) -> bool {
-        !matches!(self, Command::OpenUrlBox | Command::CopyUrl)
+        !matches!(self, Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint)
     }
 }
 
 /// The debugger keymap: F10 over, F11 into, Shift+F11 out, F5 continue, each reversed with Ctrl
 /// (Shift+F5 is reverse continue too); Alt+Left/Right back and forward; Ctrl+L the URL box;
-/// Ctrl+Shift+C copies the position URL.
+/// Ctrl+Shift+C copies the position URL; F9 toggles a breakpoint.
 pub fn command_for_key(key: Key, mods: Modifiers) -> Option<Command> {
     let ctrl = mods.contains(Modifiers::CTRL);
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
     let dir = if ctrl { Direction::Reverse } else { Direction::Forward };
     match (key, alt) {
+        (Key::F9, false) if !ctrl && !shift => Some(Command::ToggleBreakpoint),
         (Key::F10, false) if !shift => Some(Command::Step { kind: StepKind::Over, dir }),
         (Key::F11, false) => Some(Command::Step { kind: if shift { StepKind::Out } else { StepKind::Into }, dir }),
         (Key::F5, false) => Some(Command::Continue { dir: if ctrl || shift { Direction::Reverse } else { Direction::Forward } }),
@@ -161,6 +165,8 @@ mod tests {
         assert_eq!(command_for_key(Key::L, Modifiers::CTRL), Some(Command::OpenUrlBox));
         assert_eq!(command_for_key(Key::C, Modifiers::CTRL.union(Modifiers::SHIFT)), Some(Command::CopyUrl));
         assert_eq!(command_for_key(Key::C, Modifiers::CTRL), None, "plain copy stays the panes'");
+        assert_eq!(command_for_key(Key::F9, none), Some(Command::ToggleBreakpoint));
+        assert!(!Command::ToggleBreakpoint.moves());
     }
 
     #[test]

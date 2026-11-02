@@ -10,6 +10,9 @@
 //!   ([`hopper_core::HopperError::StaleSidecar`]);
 //! - [`Sidecar::join`] turns a PC (its DWARF frame, callers and observed machine effect) into an
 //!   [`hopper_core::api::OwnershipLabel`] with a [`hopper_core::api::Confidence`];
+//! - [`Sidecar::user_frame`], [`Sidecar::call_transfer`] and [`Sidecar::returned_value`] lift
+//!   the labels of a chain's machine hops to user-level events (`c` → `v[0]` for `v.push(c)`,
+//!   `a ← load()` for a returned value);
 //! - [`Sidecar::local_events`] and [`ownership_state`] say whether a local is live, moved out or
 //!   dropped.
 //!
@@ -23,6 +26,7 @@ pub mod link;
 pub mod local;
 pub mod model;
 pub mod sidecar;
+pub mod source;
 
 pub use join::{Access, Choice, DwarfInline, FrameInfo, Join, MachineEffect, PcInfo};
 pub use local::{LocalEvent, LocalTransition, ownership_state};
@@ -31,4 +35,5 @@ pub use model::{
     Header, InlineFrame, LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span,
     TypeInfo, UnitOutput,
 };
+pub use source::{SourceEvent, UserFrame};
 pub use sidecar::{EventRef, Sidecar, build_id_of, read_build_id, sidecar_path};

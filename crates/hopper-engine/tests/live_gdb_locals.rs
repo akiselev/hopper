@@ -15,9 +15,9 @@ use support::*;
 
 #[test]
 fn the_comparison_itself() {
-    assert!(same_value("Foo {a: {...}}", "Foo {a: Bar (2)}"));
-    assert!(same_value("X ({...}), Y", "X (Z {v: 1}), Y"));
-    assert!(!same_value("Foo {a: {...}}", "Foo {b: 1}"));
+    // Elisions are compared as text: hopper writes `{...}` exactly where gdb does.
+    assert!(same_value("Foo {a: {...}}", "Foo {a: {...}}"));
+    assert!(!same_value("Foo {a: {...}}", "Foo {a: Bar (2)}"));
     assert!(same_value(
         "HashMap(size=2) = {[\"a\"] = 1, [\"b\"] = 2}",
         "HashMap(size=2) = {[\"b\"] = 2, [\"a\"] = 1}"

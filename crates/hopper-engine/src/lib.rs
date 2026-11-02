@@ -23,8 +23,10 @@ mod nav;
 pub mod ownership;
 mod provenance;
 mod queries;
+pub mod stepped;
 pub mod symbols;
 mod view;
+pub mod writes;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -50,7 +52,7 @@ use hopper_rr::{
 use hopper_sidecar::{Sidecar, sidecar_path};
 use hopper_symbols::{Binary, Module, SymbolSet};
 
-pub use indexed::IndexPolicy;
+pub use indexed::{IndexPolicy, LiveIndexPolicy};
 pub use nav::watch_pieces;
 use nav::{Driver, Halt};
 use ownership::{LineHit, TracePoint};
@@ -87,6 +89,10 @@ pub struct SessionOptions {
     pub navigation_budget: u64,
     /// Resumes one on-demand replay query (line hits, calls, value history) may spend.
     pub query_budget: u64,
+    /// Whether queries about moments the write log does not cover start phase-B windows.
+    pub write_log: writes::WriteLogPolicy,
+    /// Whether a live session indexes a reference run of its program.
+    pub live_index: LiveIndexPolicy,
 }
 
 impl Default for SessionOptions {
@@ -101,6 +107,8 @@ impl Default for SessionOptions {
             cache_chunks: 16_384,
             navigation_budget: 2_000_000,
             query_budget: 100_000,
+            write_log: writes::WriteLogPolicy::default(),
+            live_index: LiveIndexPolicy::default(),
         }
     }
 }
@@ -139,6 +147,7 @@ enum Mode {
     },
     Live {
         program: PathBuf,
+        args: Vec<OsString>,
     },
 }
 
@@ -175,6 +184,10 @@ pub(crate) struct Shared {
     pub index: std::result::Result<indexed::Indexed, indexed::NoIndex>,
     /// The main executable's symbols alone (what the index was built against).
     pub main_symbols: Option<SymbolSet>,
+    /// Phase-B windows started on demand.
+    pub write_windows: writes::WriteWindows,
+    /// A live session's reference-run index; why not otherwise.
+    pub reference: std::result::Result<indexed::ReferenceIndex, indexed::NoIndex>,
     start: Stop,
     rr_version: Option<String>,
     state: Mutex<CursorState>,
@@ -380,6 +393,7 @@ impl Session {
             0,
             Mode::Live {
                 program: program.to_path_buf(),
+                args: args.to_vec(),
             },
             options,
         )
@@ -408,7 +422,7 @@ impl Session {
             })
         })??;
         let exe = match &mode {
-            Mode::Live { program } if open.exe.as_os_str().is_empty() => program.clone(),
+            Mode::Live { program, .. } if open.exe.as_os_str().is_empty() => program.clone(),
             _ => open.exe.clone(),
         };
         // The main executable alone places tracepoints and names the first stop.
@@ -435,6 +449,20 @@ impl Session {
             Err(_) => (None, None),
         };
         let index = open_index(&options.index, &mode, open.recording, &exe);
+        let reference = match (&mode, &options.live_index, &options.index) {
+            (Mode::Live { .. }, _, IndexPolicy::Off) => {
+                Err(indexed::NoIndex::NotKept("the index is off".into()))
+            }
+            (Mode::Live { program, args }, LiveIndexPolicy::ReferenceRun, policy) => {
+                indexed::start_reference_run(policy, &options.gdbserver, program, args)
+            }
+            (Mode::Live { .. }, LiveIndexPolicy::Off, _) => Err(indexed::NoIndex::NotKept(
+                "the live session's reference run is off".into(),
+            )),
+            _ => Err(indexed::NoIndex::NotKept(
+                "only a live session indexes a reference run".into(),
+            )),
+        };
         let start = Stop {
             at: open.at,
             tid: open.tid,
@@ -460,6 +488,8 @@ impl Session {
             options,
             index,
             main_symbols: main_syms.as_ref().ok().cloned(),
+            write_windows: writes::WriteWindows::default(),
+            reference,
             start: start.clone(),
             rr_version: open.rr_version,
             state: Mutex::new(CursorState {
@@ -500,6 +530,54 @@ impl Session {
     /// Whether the session runs a live process (forward only).
     pub fn is_live(&self) -> bool {
         self.inner.is_live()
+    }
+
+    /// A live session's reference run and the range asked, in its moments: an open range, or
+    /// one bounded by the reference run's own moments. A range bounded by the live run's
+    /// moments has no counterpart there (`None`).
+    fn reference_for(
+        &self,
+        range: MomentRange,
+    ) -> Option<(&indexed::ReferenceIndex, MomentRange)> {
+        let r = self.inner.reference.as_ref().ok()?;
+        let ours = |m: &Option<Moment>| m.is_none_or(|m| m.recording == r.run.id);
+        (ours(&range.start) && ours(&range.end)).then_some((r, range))
+    }
+
+    /// The heap allocation holding `addr` in a live session, from its reference run: gdbserver
+    /// disables address randomisation, so a deterministic program's heap addresses match. When
+    /// the reference run reused the address for several allocations, which one the live
+    /// process is in cannot be told, and the answer says so.
+    fn reference_allocation(&self, addr: u64) -> Result<Option<AllocationInfo>> {
+        let r = self.inner.reference.as_ref().map_err(|why| {
+            HopperError::Unsupported(format!(
+                "allocation lineage comes from hopper-index, and this live session has none ({why})"
+            ))
+        })?;
+        let page = r.indexed.index.allocations(
+            MomentRange::all(),
+            PageReq {
+                offset: 0,
+                limit: u32::MAX,
+            },
+        )?;
+        let mut holding = page
+            .items
+            .into_iter()
+            .filter(|a| addr >= a.addr && addr < a.addr + a.size.max(1));
+        match (holding.next(), holding.next()) {
+            (None, _) => Ok(None),
+            (Some(one), None) => Ok(Some(one)),
+            (Some(_), Some(_)) => Err(HopperError::Unsupported(format!(
+                "the reference run allocated {addr:#x} more than once; a live session cannot \
+                 tell which of them it is in"
+            ))),
+        }
+    }
+
+    /// The phase-B windows queries started (see [`writes`]).
+    pub fn write_windows(&self) -> Vec<writes::WriteWindow> {
+        self.inner.write_windows.windows()
     }
 
     /// Why this session has no index, when it has none.
@@ -815,7 +893,7 @@ impl Debugger for Session {
                 (trace_dir.display().to_string(), queries::end_moment(s))
             }
             Mode::Replay { description } => (description.clone(), queries::end_moment(s)),
-            Mode::Live { program } => (format!("live: {}", program.display()), None),
+            Mode::Live { program, .. } => (format!("live: {}", program.display()), None),
         };
         Ok(RecordingInfo {
             id: s.recording,
@@ -824,6 +902,7 @@ impl Debugger for Session {
             start: Some(s.start.at),
             end,
             processes,
+            reference_run: s.reference.as_ref().ok().map(|r| r.run.clone()),
         })
     }
 
@@ -831,6 +910,9 @@ impl Debugger for Session {
         // Thread and process events come from the index; without it nothing is known.
         if let Ok(ix) = &self.inner.index {
             return ix.index.timeline(range, page);
+        }
+        if let Some((r, range)) = self.reference_for(range) {
+            return r.indexed.index.timeline(range, page);
         }
         Ok(Page {
             items: Vec::new(),
@@ -842,8 +924,24 @@ impl Debugger for Session {
     }
 
     fn index_status(&self) -> IndexStatus {
+        if let Ok(r) = &self.inner.reference {
+            let mut status = r.indexed.control.status();
+            for (phase, _) in &mut status.phases {
+                phase.push_str(" (reference run)");
+            }
+            return status;
+        }
         match &self.inner.index {
-            Ok(ix) => ix.control.status(),
+            Ok(ix) => {
+                let mut status = ix.control.status();
+                // Phase-B windows run beside phase A, under their own phase name.
+                if let Some((phase, done, error)) = self.inner.write_windows.status() {
+                    status.phases.push(phase);
+                    status.done &= done;
+                    status.error = status.error.or(error);
+                }
+                status
+            }
             // Nothing is building: queries replay on demand.
             Err(indexed::NoIndex::NotKept(_)) => IndexStatus {
                 phases: Vec::new(),
@@ -1089,14 +1187,20 @@ impl Debugger for Session {
 
     fn calls(&self, filter: CallFilter, page: PageReq) -> Result<Page<CallNode>> {
         if self.is_live() {
-            return Err(self.inner.live_refusal("the call history"));
+            return match &self.inner.reference {
+                Ok(r) => r.indexed.index.calls(&filter, page),
+                Err(_) => Err(self.inner.live_refusal("the call history")),
+            };
         }
         queries::calls(self.shared(), filter, page)
     }
 
     fn line_hits(&self, loc: SourceLoc, range: MomentRange, page: PageReq) -> Result<Page<Moment>> {
         if self.is_live() {
-            return Ok(queries::live_line_hits(self, &loc, range, page));
+            return match self.reference_for(range) {
+                Some((r, range)) => r.indexed.index.line_hits(&loc, range, page),
+                None => Ok(queries::live_line_hits(self, &loc, range, page)),
+            };
         }
         queries::line_hits(self.shared(), loc, range, page)
     }
@@ -1133,6 +1237,9 @@ impl Debugger for Session {
         addr: u64,
         at: Moment,
     ) -> Result<Option<AllocationInfo>> {
+        if self.is_live() {
+            return self.reference_allocation(addr);
+        }
         if process != self.inner.process {
             return Err(HopperError::NotFound(format!("process {}", process.pid)));
         }

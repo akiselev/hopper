@@ -43,8 +43,17 @@ pub const TOOLBAR_H: f32 = 36.0;
 pub const STATUS_H: f32 = 24.0;
 
 /// The panes, by berth id, with their titles.
-pub const PANES: [(&str, &str); 6] =
-    [("source", "Source"), ("stack", "Stack"), ("locals", "Locals"), ("timeline", "Timeline"), ("calls", "Calls"), ("query", "Query")];
+pub const PANES: [(&str, &str); 9] = [
+    ("source", "Source"),
+    ("stack", "Stack"),
+    ("locals", "Locals"),
+    ("timeline", "Timeline"),
+    ("calls", "Calls"),
+    ("query", "Query"),
+    ("disassembly", "Disassembly"),
+    ("registers", "Registers"),
+    ("memory", "Memory"),
+];
 
 pub const CSS: &str = r#"
 .hop-root { display: flex; flex-direction: column; width: 100%; height: 100%; background-color: #1f1f1f; color: #cccccc; font-size: 12px; }
@@ -59,6 +68,8 @@ pub const CSS: &str = r#"
 .hop-fill { width: 100%; height: 100%; }
 .hop-query { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .hop-console { margin: 4px; flex-shrink: 0; }
+.hop-memory-bar { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 4px; flex-shrink: 0; }
+.hop-memory-addr { width: 220px; }
 "#;
 
 /// hopper's panes are fixed: a tab's close button (or closing the window's last tab) is refused.
@@ -98,8 +109,9 @@ impl PaneHost for Panes {
     }
 }
 
-/// The default layout: source in the centre with locals and the stack to its right, the calls
-/// and the query pane under them, the timeline along the bottom.
+/// The default layout: source in the centre with the disassembly under it, locals and the stack
+/// (beside the registers) to its right, the calls and the query pane (with the memory pane as a
+/// tab) under them, the timeline along the bottom.
 pub fn default_layout(size: Size) -> Dock {
     let mut dock = Dock::new(Layout::new());
     let area = berth_core::LogicalSize { w: size.w.max(1.0) as u32, h: (size.h - TOOLBAR_H - STATUS_H).max(1.0) as u32 };
@@ -122,9 +134,19 @@ pub fn default_layout(size: Size) -> Dock {
     if let Some(g) = group_of(&dock, "locals") {
         apply(&mut dock, DockCommand::Split { group: g, side: Side::Bottom, pane: Some(p("stack")), initial_size: Some(LogicalPx(220)) });
     }
+    if let Some(g) = group_of(&dock, "stack") {
+        apply(&mut dock, DockCommand::Split { group: g, side: Side::Right, pane: Some(p("registers")), initial_size: Some(LogicalPx(230)) });
+    }
+    if let Some(g) = group_of(&dock, "source") {
+        apply(&mut dock, DockCommand::Split { group: g, side: Side::Bottom, pane: Some(p("disassembly")), initial_size: Some(LogicalPx(150)) });
+    }
     apply(&mut dock, DockCommand::Open { pane: p("calls"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(300)) });
     if let Some(g) = group_of(&dock, "calls") {
         apply(&mut dock, DockCommand::Split { group: g, side: Side::Right, pane: Some(p("query")), initial_size: Some(LogicalPx(640)) });
+    }
+    if let Some(g) = group_of(&dock, "query") {
+        apply(&mut dock, DockCommand::Open { pane: p("memory"), at: Some(Target::Group { window: main.clone(), group: g, index: None }), initial_size: None });
+        apply(&mut dock, DockCommand::Activate { pane: p("query") });
     }
     apply(&mut dock, DockCommand::Open { pane: p("timeline"), at: Some(Target::WindowEdge { window: main.clone(), side: Side::Bottom }), initial_size: Some(LogicalPx(96)) });
     if let Some(g) = group_of(&dock, "source") {
@@ -140,6 +162,7 @@ pub enum Action {
     UrlSubmit,
     UrlCancel,
     ConsoleSubmit,
+    MemorySubmit,
     CallsActivated,
     CallsSelected,
 }
@@ -162,6 +185,11 @@ pub struct Ui {
     pub calls: NodeId,
     pub query: NodeId,
     pub console: NodeId,
+    pub disassembly: NodeId,
+    pub registers: NodeId,
+    pub memory: NodeId,
+    pub memory_addr: NodeId,
+    pub memory_label: NodeId,
     pub actions: HashMap<NodeId, Action>,
     pub panes: Panes,
     pub dock: Dock,
@@ -314,8 +342,34 @@ impl Ui {
         listen(doc, console, submit);
         actions.insert(console, Action::ConsoleSubmit);
 
+        let disassembly = node(doc, None, crate::rows::KIND, &["hop-fill"], "");
+        set(doc, disassembly, ANCHOR, Value::Str("pane:disassembly".into()));
+        let registers = node(doc, None, crate::rows::KIND, &["hop-fill"], "");
+        set(doc, registers, ANCHOR, Value::Str("pane:registers".into()));
+        let memory_box = node(doc, None, w::BOX, &["hop-query"], "");
+        set(doc, memory_box, ANCHOR, Value::Str("pane:memory".into()));
+        let memory_bar = node(doc, Some(memory_box), w::BOX, &["hop-memory-bar"], "");
+        let memory_addr = node(doc, Some(memory_bar), w::TEXT_EDIT, &["hop-memory-addr"], "");
+        set(doc, memory_addr, w::TEXT_HINT, Value::Str("Address (0x…)".into()));
+        set(doc, memory_addr, ARIA_LABEL, Value::Str("Memory address".into()));
+        set(doc, memory_addr, ANCHOR, Value::Str("memory-address".into()));
+        listen(doc, memory_addr, submit);
+        actions.insert(memory_addr, Action::MemorySubmit);
+        let memory_label = node(doc, Some(memory_bar), w::LABEL, &[], "");
+        let memory = node(doc, Some(memory_box), crate::rows::KIND, &[], "flex-grow: 1; min-height: 0; width: 100%");
+
         let mut panes = Panes::default();
-        for (id, n) in [("source", source), ("stack", stack), ("locals", locals), ("timeline", timeline), ("calls", calls), ("query", query_box)] {
+        for (id, n) in [
+            ("source", source),
+            ("stack", stack),
+            ("locals", locals),
+            ("timeline", timeline),
+            ("calls", calls),
+            ("query", query_box),
+            ("disassembly", disassembly),
+            ("registers", registers),
+            ("memory", memory_box),
+        ] {
             panes.content.insert(PaneId::new(id), n);
         }
         if let Some(h) = doc.service::<RowsHost>() {
@@ -323,6 +377,9 @@ impl Ui {
                 (stack, vec![Width::Fixed(36.0), Width::Fill, Width::Fill], "No stack yet"),
                 (locals, vec![Width::Fixed(110.0), Width::Fill, Width::Fixed(150.0)], "No locals"),
                 (query, vec![Width::Fixed(170.0), Width::Fill, Width::Fixed(110.0), Width::Fixed(80.0)], ""),
+                (disassembly, vec![Width::Fixed(18.0), Width::Fixed(130.0), Width::Fill, Width::Fixed(110.0)], "No code"),
+                (registers, vec![Width::Fixed(64.0), Width::Fill, Width::Fill], "No registers"),
+                (memory, vec![Width::Fixed(130.0), Width::Fill, Width::Fixed(150.0)], "No memory read"),
             ] {
                 h.lists.insert(n, RowList { columns: cols, empty: empty.into(), ..RowList::default() });
             }
@@ -350,6 +407,11 @@ impl Ui {
             calls,
             query,
             console,
+            disassembly,
+            registers,
+            memory,
+            memory_addr,
+            memory_label,
             actions,
             panes,
             dock: default_layout(Size::new(1440.0, 900.0)),
@@ -403,6 +465,7 @@ impl Ui {
                 p.message = v.source.message.clone();
                 p.arrows = v.source.arrows.clone();
                 p.hits = file.as_ref().and_then(|f| v.source.hits.get(f).cloned()).unwrap_or_default();
+                p.breakpoints = v.breakpoint_lines();
                 if let Some(r) = v.source.reveal.take() {
                     p.reveal = Some(r);
                 }
@@ -419,6 +482,22 @@ impl Ui {
         }
         if ch.calls {
             let _ = skelter_widgets::table::model::TableModels::refresh(doc, self.calls);
+        }
+        if ch.machine {
+            let (rows, at) = disassembly_rows(v);
+            self.set_rows(doc, self.disassembly, rows, at);
+            let rows = registers_rows(v);
+            self.set_rows(doc, self.registers, rows, None);
+        }
+        if ch.memory {
+            let rows = memory_pane_rows(v);
+            self.set_rows(doc, self.memory, rows, None);
+            let label = match (v.memory.addr, &v.memory.message) {
+                (Some(a), Some(m)) => format!("{} at {a:#x}: {m}", v.memory.label),
+                (Some(a), None) => format!("{} at {a:#x}", v.memory.label),
+                (None, _) => String::new(),
+            };
+            set(doc, self.memory_label, w::LABEL_TEXT, Value::Str(label.into()));
         }
         if ch.timeline {
             if let Some(h) = doc.service::<TimelineHost>() {
@@ -540,6 +619,64 @@ fn locals_rows(v: &Viewer) -> Vec<RowLine> {
                 let more = total.map(|t| format!("… {} more (double-click)", t.saturating_sub(*loaded))).unwrap_or_else(|| "… more (double-click)".into());
                 RowLine { depth: *depth, disclosure: Disclosure::None, cells: vec![RowCell::new(more, Tone::Accent)] }
             }
+        })
+        .collect()
+}
+
+/// The disassembly pane's rows, and the row of the selected frame's PC.
+fn disassembly_rows(v: &Viewer) -> (Vec<RowLine>, Option<usize>) {
+    if let Some(m) = &v.machine.message
+        && v.machine.instructions.is_empty()
+    {
+        return (vec![RowLine { cells: vec![RowCell::new("", Tone::Normal), RowCell::new(m.clone(), Tone::Error)], ..RowLine::default() }], None);
+    }
+    let mut at = None;
+    let rows = v
+        .machine
+        .instructions
+        .iter()
+        .enumerate()
+        .map(|(i, insn)| {
+            let here = Some(insn.addr) == v.machine.pc;
+            if here {
+                at = Some(i);
+            }
+            let loc = insn.location.as_ref().map(|l| format!("{}:{}", crate::app::short_file(&l.file), l.line)).unwrap_or_default();
+            RowLine {
+                depth: 0,
+                disclosure: Disclosure::None,
+                cells: vec![
+                    RowCell::new(if here { "▶" } else { "" }, Tone::Warning),
+                    RowCell::mono(format!("{:#x}", insn.addr), Tone::Muted),
+                    RowCell::mono(insn.text.clone(), if here { Tone::Heading } else { Tone::Normal }),
+                    RowCell::new(loc, Tone::Muted),
+                ],
+            }
+        })
+        .collect();
+    (rows, at)
+}
+
+fn registers_rows(v: &Viewer) -> Vec<RowLine> {
+    let Some(regs) = &v.machine.registers else { return Vec::new() };
+    crate::app::register_rows(regs)
+        .into_iter()
+        .map(|(name, hex, dec)| RowLine {
+            depth: 0,
+            disclosure: Disclosure::None,
+            cells: vec![RowCell::mono(name, Tone::Accent), RowCell::mono(hex, Tone::Normal), RowCell::mono(dec, Tone::Muted)],
+        })
+        .collect()
+}
+
+fn memory_pane_rows(v: &Viewer) -> Vec<RowLine> {
+    let Some(addr) = v.memory.addr else { return Vec::new() };
+    crate::app::memory_rows(addr, &v.memory.bytes)
+        .into_iter()
+        .map(|(a, hex, text)| RowLine {
+            depth: 0,
+            disclosure: Disclosure::None,
+            cells: vec![RowCell::mono(a, Tone::Muted), RowCell::mono(hex, Tone::Normal), RowCell::mono(text, Tone::Accent)],
         })
         .collect()
 }

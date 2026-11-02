@@ -190,7 +190,7 @@ impl Sidecar {
 
     /// The function record a frame resolves to and its candidate events at the frame's
     /// location. `None` when the sidecar has no record for the frame.
-    fn frame_candidates(
+    pub(crate) fn frame_candidates(
         &self,
         frame: &FrameInfo,
         at_call_site: bool,
@@ -271,7 +271,7 @@ fn chain_matches(sidecar: &[InlineFrame], dwarf: &[DwarfInline]) -> bool {
 
 /// Loose function-name equality: the sidecar has def paths with generic arguments, DWARF has
 /// linkage names or qualified names.
-fn names_match(def_path: &str, dwarf: &str) -> bool {
+pub(crate) fn names_match(def_path: &str, dwarf: &str) -> bool {
     let a = format!("{:#}", rustc_demangle::demangle(def_path));
     let b = format!("{:#}", rustc_demangle::demangle(dwarf));
     let strip = |s: &str| -> String {
@@ -304,7 +304,7 @@ fn names_match(def_path: &str, dwarf: &str) -> bool {
 }
 
 /// `sub` names `base` or a part of it (`b.name`, `v[0]`, `*b` deref aside).
-fn place_within(sub: &str, base: &str) -> bool {
+pub(crate) fn place_within(sub: &str, base: &str) -> bool {
     let sub = sub.trim_start_matches('*');
     let base = base.trim_start_matches('*');
     sub == base

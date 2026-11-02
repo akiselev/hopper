@@ -505,3 +505,26 @@ fn worked_example_expressions_at_line_18() {
     assert_eq!(gdb[0].as_deref(), Some("\"alpha\""));
     assert_eq!(gdb[1].as_deref(), Some("3"));
 }
+
+/// Values nested past the old summary depth and past gdb's `print max-depth` (20): hopper
+/// elides exactly where gdb does, so the summaries are equal text.
+#[test]
+fn nesting_matches_gdb_max_depth() {
+    let Some(st) = stopped("nesting", "nesting::stop_here") else {
+        return;
+    };
+    let frame = st.frame_index("nesting::main");
+    let names = ["nine", "deep", "wide"];
+    let ours: Vec<String> = st.with(frame, |ev, cx| {
+        names
+            .iter()
+            .map(|n| ev.eval(cx, n).expect("evaluates").summary)
+            .collect()
+    });
+    let gdb = st.gdb(frame, &names, GdbPrinting::PrettyPrinters);
+    for ((name, mine), theirs) in names.iter().zip(&ours).zip(&gdb) {
+        assert_eq!(Some(mine), theirs.as_ref(), "{name}");
+    }
+    assert!(ours[0].ends_with("{depth: 9, inner: 0}}}}}}}}}"), "{}", ours[0]);
+    assert!(ours[1].contains("{...}"), "{}", ours[1]);
+}

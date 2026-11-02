@@ -17,6 +17,53 @@ pub enum Expr {
     Negate(Box<Expr>),
 }
 
+impl Expr {
+    /// The pointers this expression dereferences, nearest the value first: `(*n).vec[0]` gives
+    /// `[n]`, `**p` gives `[*p, p]`. A deref inside an index expression is not on the value's
+    /// path and is left out.
+    pub fn dereferenced(&self) -> Vec<&Expr> {
+        let mut out = Vec::new();
+        let mut e = self;
+        loop {
+            e = match e {
+                Expr::Field(base, _) | Expr::Index(base, _) => base,
+                Expr::Deref(inner) => {
+                    out.push(&**inner);
+                    inner
+                }
+                Expr::AddressOf(_) | Expr::Negate(_) | Expr::Name(_) | Expr::Int(_) => {
+                    return out;
+                }
+            };
+        }
+    }
+}
+
+/// Source text that [`parse`] reads back as the same expression.
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Name(n) => f.write_str(n),
+            Expr::Int(i) => write!(f, "{i}"),
+            Expr::Field(base, name) => match **base {
+                Expr::Deref(_) | Expr::AddressOf(_) | Expr::Negate(_) => {
+                    write!(f, "({base}).{name}")
+                }
+                _ => write!(f, "{base}.{name}"),
+            },
+            Expr::Index(base, i) => match **base {
+                Expr::Deref(_) | Expr::AddressOf(_) | Expr::Negate(_) => {
+                    write!(f, "({base})[{i}]")
+                }
+                _ => write!(f, "{base}[{i}]"),
+            },
+            Expr::Deref(e) => write!(f, "*{e}"),
+            Expr::AddressOf(e) => write!(f, "&{e}"),
+            Expr::Negate(e) => write!(f, "-{e}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token {
     Ident(String),
@@ -302,6 +349,28 @@ mod tests {
             parse("arr[i]").unwrap(),
             Expr::Index(name("arr"), name("i"))
         );
+    }
+
+    #[test]
+    fn display_round_trips_and_derefs_are_listed() {
+        for src in ["(*n).vec[0]", "**p", "a.b[3].c", "*v[0]", "&a[1]", "(*boxed).x", "-42"] {
+            let e = parse(src).unwrap();
+            assert_eq!(e.to_string(), src);
+            assert_eq!(parse(&e.to_string()).unwrap(), e);
+        }
+        let texts = |src: &str| -> Vec<String> {
+            parse(src)
+                .unwrap()
+                .dereferenced()
+                .iter()
+                .map(|e| e.to_string())
+                .collect()
+        };
+        assert_eq!(texts("(*n).vec[0]"), ["n"]);
+        assert_eq!(texts("**p"), ["*p", "p"]);
+        assert_eq!(texts("*v[0]"), ["v[0]"]);
+        assert!(texts("a.b").is_empty());
+        assert!(texts("&*a").is_empty());
     }
 
     #[test]

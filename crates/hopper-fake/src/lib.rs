@@ -571,6 +571,7 @@ impl Debugger for FakeDebugger {
                 executable: EXECUTABLE.into(),
                 threads: vec![TID],
             }],
+            reference_run: None,
         })
     }
 
@@ -988,15 +989,22 @@ impl Debugger for FakeDebugger {
         let retries = path
             .iter()
             .any(|e| matches!(e, PathElem::Field(f) if f == "retries"));
+        // A value reached through `n` starts with the borrow that made `n`, as a reference hop.
+        let through_n = root == "n" && path.contains(&PathElem::Deref);
+        let references: Vec<OriginHop> = if through_n {
+            vec![hops.borrow_n.clone()]
+        } else {
+            Vec::new()
+        };
         let chain: Option<Vec<&OriginHop>> = match (function.as_str(), root.as_str()) {
-            (script::MAIN, "n") => Some(vec![
-                &hops.borrow_n,
+            (script::MAIN, "n") if through_n => Some(vec![
                 &hops.move_into_vec,
                 &hops.clone_name,
                 &hops.move_a_to_b,
                 &hops.load_return,
                 &hops.alpha_literal,
             ]),
+            (script::MAIN, "n") => Some(vec![&hops.borrow_n]),
             (script::MAIN, "v") if retries => Some(vec![
                 &hops.move_into_vec,
                 &hops.clone_retries,
@@ -1044,6 +1052,7 @@ impl Debugger for FakeDebugger {
                 end: OriginEnd::Unknown {
                     reason: format!("no recorded origin for `{}`", r.name),
                 },
+                references: Vec::new(),
             });
         };
         if chain[0].at.partial_cmp(&value.at) == Some(Ordering::Greater) {
@@ -1052,6 +1061,7 @@ impl Debugger for FakeDebugger {
                 end: OriginEnd::Unknown {
                     reason: format!("`{}` is not written yet", r.name),
                 },
+                references: Vec::new(),
             });
         }
         let max = budget.max_hops as usize;
@@ -1063,6 +1073,7 @@ impl Debugger for FakeDebugger {
         Ok(OriginChain {
             hops: chain.into_iter().take(max).cloned().collect(),
             end,
+            references,
         })
     }
 
@@ -1094,7 +1105,14 @@ fn origin_key(value: &ValueHandle, r: &Resolved) -> (String, Vec<PathElem>) {
     match &value.target {
         ValueTarget::Expr(e) => match parse_expr(e) {
             Ok(p) => {
-                let mut path = p.path;
+                // A `*` prefix dereferences the root before the rest of the path applies.
+                let derefs = p
+                    .prefixes
+                    .iter()
+                    .filter(|x| matches!(x, values::Prefix::Deref))
+                    .map(|_| PathElem::Deref);
+                let mut path: Vec<PathElem> = derefs.collect();
+                path.extend(p.path);
                 path.extend(value.path.iter().cloned());
                 (p.root, path)
             }

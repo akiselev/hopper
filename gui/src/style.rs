@@ -36,6 +36,7 @@ pub const FRAME_LINE: Color = rgba(0x4EC9B0, 0.14);
 pub const FRAME_ARROW: Color = rgb(0x4EC9B0);
 pub const GUTTER_BG: Color = rgb(0x1A1A1A);
 pub const HIT_COUNT: Color = rgb(0x858585);
+pub const BREAKPOINT: Color = rgb(0xE51400);
 
 /// The UI font and the code font, as CSS family lists.
 pub const UI_FONT: &str = "Inter, Noto Sans, DejaVu Sans, sans-serif";
