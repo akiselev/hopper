@@ -24,7 +24,9 @@ pub fn partial_file_name(unit: &CrateUnit) -> String {
 /// Write a partial into `dir` under its canonical name; returns the path.
 pub fn write_partial(dir: &Path, data: &SidecarData) -> Result<PathBuf> {
     let Binding::Partial(unit) = &data.header.binding else {
-        return Err(HopperError::Invalid("write_partial needs a partial binding".into()));
+        return Err(HopperError::Invalid(
+            "write_partial needs a partial binding".into(),
+        ));
     };
     std::fs::create_dir_all(dir)?;
     let path = dir.join(partial_file_name(unit));
@@ -36,21 +38,34 @@ pub fn write_partial(dir: &Path, data: &SidecarData) -> Result<PathBuf> {
 /// with `build_id`. Functions are deduplicated by symbol (shared generics can be codegen'd in
 /// more than one crate) and sorted by symbol. Libraries the executable does not link are
 /// ignored; every partial must come from the same rustc.
-pub fn link(executable: &SidecarData, libraries: &[SidecarData], build_id: BuildId, tool: &str)
--> Result<SidecarData> {
-    let Binding::Partial(CrateUnit { name, output: UnitOutput::Linked { upstream, .. }, .. }) =
-        &executable.header.binding
+pub fn link(
+    executable: &SidecarData,
+    libraries: &[SidecarData],
+    build_id: BuildId,
+    tool: &str,
+) -> Result<SidecarData> {
+    let Binding::Partial(CrateUnit {
+        name,
+        output: UnitOutput::Linked { upstream, .. },
+        ..
+    }) = &executable.header.binding
     else {
-        return Err(HopperError::Invalid("link needs an executable's partial".into()));
+        return Err(HopperError::Invalid(
+            "link needs an executable's partial".into(),
+        ));
     };
     let wanted: HashSet<u64> = upstream.iter().copied().collect();
     let mut crates = vec![name.clone()];
     let mut functions: BTreeMap<String, FunctionRecord> = BTreeMap::new();
     for f in &executable.functions {
-        functions.entry(f.symbol.clone()).or_insert_with(|| f.clone());
+        functions
+            .entry(f.symbol.clone())
+            .or_insert_with(|| f.clone());
     }
     for lib in libraries {
-        let Binding::Partial(unit) = &lib.header.binding else { continue };
+        let Binding::Partial(unit) = &lib.header.binding else {
+            continue;
+        };
         if !wanted.contains(&unit.stable_crate_id) {
             continue;
         }
@@ -64,7 +79,9 @@ pub fn link(executable: &SidecarData, libraries: &[SidecarData], build_id: Build
             crates.push(unit.name.clone());
         }
         for f in &lib.functions {
-            functions.entry(f.symbol.clone()).or_insert_with(|| f.clone());
+            functions
+                .entry(f.symbol.clone())
+                .or_insert_with(|| f.clone());
         }
     }
     crates[1..].sort();
@@ -101,7 +118,9 @@ impl PartialSet {
             .collect();
         paths.sort();
         for path in paths {
-            let Ok(data) = codec::decode(&std::fs::read(&path)?) else { continue };
+            let Ok(data) = codec::decode(&std::fs::read(&path)?) else {
+                continue;
+            };
             if matches!(data.header.binding, Binding::Partial(_)) {
                 partials.push((path, data));
             }
@@ -112,18 +131,24 @@ impl PartialSet {
     /// The executable partial whose linked output is `binary` (the same file, or a hard link
     /// to it).
     pub fn executable_for(&self, binary: &Path) -> Option<&SidecarData> {
-        self.partials.iter().map(|(_, d)| d).find(|d| match &d.header.binding {
-            Binding::Partial(CrateUnit { output: UnitOutput::Linked { path, .. }, .. }) => {
-                same_file(Path::new(path), binary)
-            }
-            _ => false,
-        })
+        self.partials
+            .iter()
+            .map(|(_, d)| d)
+            .find(|d| match &d.header.binding {
+                Binding::Partial(CrateUnit {
+                    output: UnitOutput::Linked { path, .. },
+                    ..
+                }) => same_file(Path::new(path), binary),
+                _ => false,
+            })
     }
 
     /// Link the sidecar for `binary` and write it to `<binary>.hsc`. Returns the written path, or
     /// `None` when no partial in the set produced this binary.
     pub fn link_binary(&self, binary: &Path, tool: &str) -> Result<Option<PathBuf>> {
-        let Some(exe) = self.executable_for(binary) else { return Ok(None) };
+        let Some(exe) = self.executable_for(binary) else {
+            return Ok(None);
+        };
         let build_id = read_build_id(binary)?;
         let libs: Vec<SidecarData> = self.partials.iter().map(|(_, d)| d.clone()).collect();
         let linked = link(exe, &libs, build_id, tool)?;

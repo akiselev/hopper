@@ -71,12 +71,18 @@ impl RustcPlugin for HopperBuildPlugin {
     /// has its own CLI ([`crate::cli`]) because it must run `cargo build`.
     fn args(&self, target_dir: &Utf8Path) -> RustcPluginArgs<DriverArgs> {
         RustcPluginArgs {
-            args: DriverArgs { fallback_partials_dir: Some(target_dir.join(PARTIALS_DIR_NAME).into()) },
+            args: DriverArgs {
+                fallback_partials_dir: Some(target_dir.join(PARTIALS_DIR_NAME).into()),
+            },
             filter: CrateFilter::OnlyWorkspace,
         }
     }
 
-    fn run(self, mut compiler_args: Vec<String>, args: DriverArgs) -> rustc_interface::interface::Result<()> {
+    fn run(
+        self,
+        mut compiler_args: Vec<String>,
+        args: DriverArgs,
+    ) -> rustc_interface::interface::Result<()> {
         // A GNU build-id ties the linked binary to its sidecar. Harmless for libraries.
         compiler_args.extend(["-C".into(), "link-arg=-Wl,--build-id".into()]);
         let mut callbacks = SidecarCallbacks { args };
@@ -100,17 +106,24 @@ impl rustc_driver::Callbacks for SidecarCallbacks {
         }));
     }
 
-    fn after_analysis(&mut self, _compiler: &rustc_interface::interface::Compiler, tcx: TyCtxt<'_>)
-    -> rustc_driver::Compilation {
+    fn after_analysis(
+        &mut self,
+        _compiler: &rustc_interface::interface::Compiler,
+        tcx: TyCtxt<'_>,
+    ) -> rustc_driver::Compilation {
         if tcx.sess.opts.output_types.should_codegen() {
             let data = crate_partial(tcx);
             let dir = match (&tcx.sess.io.output_dir, &self.args.fallback_partials_dir) {
-                (Some(out), _) => partials_dir_for_out_dir(&std::path::absolute(out).unwrap_or_else(|_| out.clone())),
+                (Some(out), _) => partials_dir_for_out_dir(
+                    &std::path::absolute(out).unwrap_or_else(|_| out.clone()),
+                ),
                 (None, Some(fallback)) => fallback.clone(),
                 (None, None) => PathBuf::from(PARTIALS_DIR_NAME),
             };
             if let Err(e) = write_partial(&dir, &data) {
-                tcx.dcx().warn(format!("hopper-build: could not write the ownership sidecar: {e}"));
+                tcx.dcx().warn(format!(
+                    "hopper-build: could not write the ownership sidecar: {e}"
+                ));
             }
         }
         rustc_driver::Compilation::Continue
@@ -121,7 +134,10 @@ impl rustc_driver::Callbacks for SidecarCallbacks {
 fn crate_partial(tcx: TyCtxt<'_>) -> SidecarData {
     let name = tcx.crate_name(LOCAL_CRATE).to_string();
     let linked = tcx.crate_types().iter().copied().find(|ct| {
-        matches!(ct, CrateType::Executable | CrateType::Dylib | CrateType::Cdylib | CrateType::ProcMacro)
+        matches!(
+            ct,
+            CrateType::Executable | CrateType::Dylib | CrateType::Cdylib | CrateType::ProcMacro
+        )
     });
     let output = match linked {
         Some(ct) => {
@@ -133,19 +149,33 @@ fn crate_partial(tcx: TyCtxt<'_>) -> SidecarData {
             );
             match out {
                 OutFileName::Real(path) => UnitOutput::Linked {
-                    path: std::path::absolute(&path).unwrap_or(path).to_string_lossy().into_owned(),
-                    upstream: tcx.crates(()).iter().map(|c| tcx.stable_crate_id(*c).as_u64()).collect(),
+                    path: std::path::absolute(&path)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .into_owned(),
+                    upstream: tcx
+                        .crates(())
+                        .iter()
+                        .map(|c| tcx.stable_crate_id(*c).as_u64())
+                        .collect(),
                 },
                 OutFileName::Stdout => UnitOutput::Library,
             }
         }
         None => UnitOutput::Library,
     };
-    let unit = CrateUnit { name: name.clone(), stable_crate_id: tcx.stable_crate_id(LOCAL_CRATE).as_u64(), output };
+    let unit = CrateUnit {
+        name: name.clone(),
+        stable_crate_id: tcx.stable_crate_id(LOCAL_CRATE).as_u64(),
+        output,
+    };
     SidecarData {
         header: Header {
             binding: Binding::Partial(unit),
-            rustc_version: format!("rustc {}", rustc_interface::util::rustc_version_str().unwrap_or("unknown")),
+            rustc_version: format!(
+                "rustc {}",
+                rustc_interface::util::rustc_version_str().unwrap_or("unknown")
+            ),
             crates: vec![name],
             tool: crate::tool_version(),
         },

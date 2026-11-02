@@ -2,7 +2,9 @@
 
 use std::fmt::Write;
 
-use crate::model::{Binding, ControlPath, FunctionOrigin, OwnershipEvent, SidecarData, UnitOutput, kind_name};
+use crate::model::{
+    Binding, ControlPath, FunctionOrigin, OwnershipEvent, SidecarData, UnitOutput, kind_name,
+};
 
 /// Render a whole sidecar.
 pub fn dump(data: &SidecarData) -> String {
@@ -12,7 +14,11 @@ pub fn dump(data: &SidecarData) -> String {
         Binding::Binary { build_id } => writeln!(out, "binary build-id {build_id}"),
         Binding::Partial(unit) => match &unit.output {
             UnitOutput::Library => {
-                writeln!(out, "partial library {} {:016x}", unit.name, unit.stable_crate_id)
+                writeln!(
+                    out,
+                    "partial library {} {:016x}",
+                    unit.name, unit.stable_crate_id
+                )
             }
             UnitOutput::Linked { path, upstream } => writeln!(
                 out,
@@ -34,7 +40,12 @@ pub fn dump(data: &SidecarData) -> String {
             FunctionOrigin::Shim => " [shim]",
             FunctionOrigin::Dependency => " [dependency]",
         };
-        writeln!(out, "fn {} ({}) at {}{origin}", f.demangled, f.symbol, f.def_span).unwrap();
+        writeln!(
+            out,
+            "fn {} ({}) at {}{origin}",
+            f.demangled, f.symbol, f.def_span
+        )
+        .unwrap();
         for e in &f.events {
             writeln!(out, "  {}", event_line(e)).unwrap();
         }
@@ -67,7 +78,12 @@ pub fn event_line(e: &OwnershipEvent) -> String {
         ControlPath::Unwind => s.push_str(" [unwind]"),
     }
     for frame in &e.inline_chain {
-        write!(s, " inlined {} at {}:{}", frame.callee, frame.call_site.lo.line, frame.call_site.lo.col).unwrap();
+        write!(
+            s,
+            " inlined {} at {}:{}",
+            frame.callee, frame.call_site.lo.line, frame.call_site.lo.col
+        )
+        .unwrap();
     }
     for c in &e.caveats {
         write!(s, " !{c:?}").unwrap();

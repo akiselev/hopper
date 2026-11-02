@@ -67,9 +67,9 @@ impl Sidecar {
                 },
                 OwnershipKind::Drop => match src {
                     Some(s) if s == local => Some(LocalTransition::Dropped),
-                    Some(s) if is_part_of(s, local) => {
-                        Some(LocalTransition::PartlyDropped { place: s.to_owned() })
-                    }
+                    Some(s) if is_part_of(s, local) => Some(LocalTransition::PartlyDropped {
+                        place: s.to_owned(),
+                    }),
                     _ => None,
                 },
                 OwnershipKind::StorageDead => {
@@ -87,8 +87,12 @@ impl Sidecar {
             // Any kind that writes a whole new value into the local re-initialises it; a move
             // can both leave one local and initialise another.
             let init = match e.kind {
-                OwnershipKind::Drop | OwnershipKind::StorageDead | OwnershipKind::Projection => None,
-                _ => (dst == Some(local)).then(|| LocalTransition::Initialised { from: e.src.clone() }),
+                OwnershipKind::Drop | OwnershipKind::StorageDead | OwnershipKind::Projection => {
+                    None
+                }
+                _ => (dst == Some(local)).then(|| LocalTransition::Initialised {
+                    from: e.src.clone(),
+                }),
             };
             for t in [transition, init].into_iter().flatten() {
                 out.push(LocalEvent {
@@ -115,14 +119,18 @@ fn is_part_of(place: &str, local: &str) -> bool {
 /// execution order, each with the moment it executed when the engine knows it. With no events
 /// the local has not been touched by anything the sidecar knows, which is [`OwnershipState::Live`]
 /// once the variable is in scope.
-pub fn ownership_state<'a>(executed: impl IntoIterator<Item = (&'a LocalEvent, Option<Moment>)>) -> OwnershipState {
+pub fn ownership_state<'a>(
+    executed: impl IntoIterator<Item = (&'a LocalEvent, Option<Moment>)>,
+) -> OwnershipState {
     let mut state = OwnershipState::Live;
     for (ev, moment) in executed {
         state = match &ev.transition {
             LocalTransition::Initialised { .. } => OwnershipState::Live,
-            LocalTransition::MovedOut { to } => {
-                OwnershipState::MovedOut { to: to.clone(), at: Some(ev.span.start()), moment }
-            }
+            LocalTransition::MovedOut { to } => OwnershipState::MovedOut {
+                to: to.clone(),
+                at: Some(ev.span.start()),
+                moment,
+            },
             // A drop behind a drop flag runs only while the local still owns its value: after a
             // move out the flag is clear and the drop is skipped.
             LocalTransition::Dropped
@@ -131,11 +139,17 @@ pub fn ownership_state<'a>(executed: impl IntoIterator<Item = (&'a LocalEvent, O
             {
                 state
             }
-            LocalTransition::Dropped => OwnershipState::Dropped { at: Some(ev.span.start()), moment },
+            LocalTransition::Dropped => OwnershipState::Dropped {
+                at: Some(ev.span.start()),
+                moment,
+            },
             // A moved-out local's storage ending does not make it "dropped": nothing ran.
             LocalTransition::StorageDead => match state {
                 OwnershipState::MovedOut { .. } => state,
-                _ => OwnershipState::Dropped { at: Some(ev.span.start()), moment },
+                _ => OwnershipState::Dropped {
+                    at: Some(ev.span.start()),
+                    moment,
+                },
             },
             LocalTransition::PartlyMovedOut { .. } | LocalTransition::PartlyDropped { .. } => state,
         };

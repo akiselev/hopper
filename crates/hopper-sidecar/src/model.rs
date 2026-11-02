@@ -88,7 +88,11 @@ pub struct Span {
 impl Span {
     /// The start of the span as a [`SourceLoc`], which is what a DWARF line row names.
     pub fn start(&self) -> SourceLoc {
-        SourceLoc { file: self.file.clone(), line: self.lo.line, column: Some(self.lo.col) }
+        SourceLoc {
+            file: self.file.clone(),
+            line: self.lo.line,
+            column: Some(self.lo.col),
+        }
     }
 
     /// Whether `loc` (a line, and a column when it has one) falls inside this span.
@@ -96,9 +100,19 @@ impl Span {
         if !files_match(&self.file, &loc.file) {
             return false;
         }
-        let at = LineCol { line: loc.line, col: loc.column.unwrap_or(0) };
+        let at = LineCol {
+            line: loc.line,
+            col: loc.column.unwrap_or(0),
+        };
         match loc.column {
-            Some(_) => self.lo <= at && at < self.hi.max(LineCol { line: self.lo.line, col: self.lo.col + 1 }),
+            Some(_) => {
+                self.lo <= at
+                    && at
+                        < self.hi.max(LineCol {
+                            line: self.lo.line,
+                            col: self.lo.col + 1,
+                        })
+            }
             None => self.lo.line <= loc.line && loc.line <= self.hi.line,
         }
     }
@@ -106,7 +120,11 @@ impl Span {
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}:{}-{}:{}", self.file, self.lo.line, self.lo.col, self.hi.line, self.hi.col)
+        write!(
+            f,
+            "{}:{}:{}-{}:{}",
+            self.file, self.lo.line, self.lo.col, self.hi.line, self.hi.col
+        )
     }
 }
 
@@ -139,7 +157,11 @@ pub fn normalize_path(path: &str) -> String {
         }
     }
     let joined = parts.join("/");
-    if absolute { format!("/{joined}") } else { joined }
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 /// One step of an inline chain: `callee`'s body was inlined at `call_site`.
@@ -287,7 +309,9 @@ impl CalleeRole {
             "std::alloc::realloc",
             "std::alloc::dealloc",
         ];
-        if ALLOCATORS.iter().any(|a| base.starts_with(a) || base.contains(&format!("<{a}")))
+        if ALLOCATORS
+            .iter()
+            .any(|a| base.starts_with(a) || base.contains(&format!("<{a}")))
             || base.starts_with("__rust_alloc")
             || base.starts_with("__rust_realloc")
             || base.starts_with("__rust_dealloc")
@@ -373,7 +397,11 @@ mod tests {
     use super::*;
 
     fn span(l0: u32, c0: u32, l1: u32, c1: u32) -> Span {
-        Span { file: "src/main.rs".into(), lo: LineCol { line: l0, col: c0 }, hi: LineCol { line: l1, col: c1 } }
+        Span {
+            file: "src/main.rs".into(),
+            lo: LineCol { line: l0, col: c0 },
+            hi: LineCol { line: l1, col: c1 },
+        }
     }
 
     #[test]
@@ -387,7 +415,11 @@ mod tests {
         assert!(!s.contains(&loc));
         assert!(!s.contains(&SourceLoc::new("/w/src/lib.rs", 13)));
         // An empty span still contains its start.
-        assert!(span(19, 1, 19, 1).contains(&SourceLoc { file: "main.rs".into(), line: 19, column: Some(1) }));
+        assert!(span(19, 1, 19, 1).contains(&SourceLoc {
+            file: "main.rs".into(),
+            line: 19,
+            column: Some(1)
+        }));
     }
 
     #[test]
@@ -395,14 +427,20 @@ mod tests {
         assert_eq!(normalize_path("/a/b/../c/./main.rs"), "/a/c/main.rs");
         assert_eq!(normalize_path("../x/./y"), "../x/y");
         assert_eq!(normalize_path("/../a"), "/a");
-        assert!(files_match("/w/hopper-build/../fixtures/src/main.rs", "/w/fixtures/src/main.rs"));
+        assert!(files_match(
+            "/w/hopper-build/../fixtures/src/main.rs",
+            "/w/fixtures/src/main.rs"
+        ));
         assert!(files_match("./src/main.rs", "/w/src/main.rs"));
         assert!(!files_match("/w/a/../b/main.rs", "/w/a/main.rs"));
     }
 
     #[test]
     fn callee_roles() {
-        assert_eq!(CalleeRole::of("<Config as std::clone::Clone>::clone"), Some(CalleeRole::Clone));
+        assert_eq!(
+            CalleeRole::of("<Config as std::clone::Clone>::clone"),
+            Some(CalleeRole::Clone)
+        );
         assert_eq!(
             CalleeRole::of("<std::string::String as std::clone::Clone>::clone"),
             Some(CalleeRole::Clone)
@@ -411,7 +449,10 @@ mod tests {
             CalleeRole::of("<std::string::String as std::convert::From<&str>>::from"),
             Some(CalleeRole::Conversion)
         );
-        assert_eq!(CalleeRole::of("alloc::alloc::exchange_malloc"), Some(CalleeRole::Allocator));
+        assert_eq!(
+            CalleeRole::of("alloc::alloc::exchange_malloc"),
+            Some(CalleeRole::Allocator)
+        );
         assert_eq!(CalleeRole::of("__rust_alloc"), Some(CalleeRole::Allocator));
         assert_eq!(
             CalleeRole::of("std::ptr::drop_in_place::<std::string::String>"),
@@ -423,7 +464,13 @@ mod tests {
 
     #[test]
     fn strip_generics() {
-        assert_eq!(strip_generic_args("std::ptr::drop_in_place::<String>"), "std::ptr::drop_in_place");
-        assert_eq!(strip_generic_args("<Vec<T> as Clone>::clone"), "<Vec<T> as Clone>::clone");
+        assert_eq!(
+            strip_generic_args("std::ptr::drop_in_place::<String>"),
+            "std::ptr::drop_in_place"
+        );
+        assert_eq!(
+            strip_generic_args("<Vec<T> as Clone>::clone"),
+            "<Vec<T> as Clone>::clone"
+        );
     }
 }

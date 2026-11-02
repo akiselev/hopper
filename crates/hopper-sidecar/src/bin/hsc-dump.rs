@@ -39,7 +39,8 @@ fn main() -> ExitCode {
     };
     let mut data: SidecarData = sc.into_data();
     if let Some(name) = function {
-        data.functions.retain(|f| f.demangled.contains(&name) || f.def_path.contains(&name));
+        data.functions
+            .retain(|f| f.demangled.contains(&name) || f.def_path.contains(&name));
     }
     print!("{}", dump(&data));
     ExitCode::SUCCESS

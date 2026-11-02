@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{elf_with_build_id, ev, func, span, with_callee, FILE};
+use common::{FILE, elf_with_build_id, ev, func, span, with_callee};
 use hopper_core::HopperError;
 use hopper_core::api::OwnershipKind as K;
 use hopper_sidecar::link::{PartialSet, link, partial_file_name, write_partial};
@@ -21,20 +21,50 @@ fn header(binding: Binding) -> Header {
 }
 
 fn rich_data() -> SidecarData {
-    let mut inlined = ev(K::Move, 1920, 41, 4, Some(10), Some("src"), Some("*end"), Some(("Config", 32)));
+    let mut inlined = ev(
+        K::Move,
+        1920,
+        41,
+        4,
+        Some(10),
+        Some("src"),
+        Some("*end"),
+        Some(("Config", 32)),
+    );
     inlined.span.file = "/rustc/library/core/src/ptr/mod.rs".into();
-    inlined.inline_chain = vec![InlineFrame { callee: "std::ptr::write::<Config>".into(), call_site: span(1045, 13, 40) }];
+    inlined.inline_chain = vec![InlineFrame {
+        callee: "std::ptr::write::<Config>".into(),
+        call_site: span(1045, 13, 40),
+    }];
     inlined.caveats = vec![Caveat::Unsafe, Caveat::InteriorMutability];
     inlined.path = ControlPath::Unwind;
     let mut sized_unknown = ev(K::Drop, 19, 1, 9, None, Some("v"), None, None);
-    sized_unknown.ty = Some(TypeInfo { name: "[u8]".into(), size: None });
+    sized_unknown.ty = Some(TypeInfo {
+        name: "[u8]".into(),
+        size: None,
+    });
     sized_unknown.path = ControlPath::DropFlagGuarded;
     let multi_line = hopper_sidecar::OwnershipEvent {
-        span: Span { file: FILE.into(), lo: LineCol { line: 3, col: 10 }, hi: LineCol { line: 5, col: 2 } },
-        ..ev(K::Aggregate, 3, 10, 1, Some(2), None, Some("return"), Some(("Config", 32)))
+        span: Span {
+            file: FILE.into(),
+            lo: LineCol { line: 3, col: 10 },
+            hi: LineCol { line: 5, col: 2 },
+        },
+        ..ev(
+            K::Aggregate,
+            3,
+            10,
+            1,
+            Some(2),
+            None,
+            Some("return"),
+            Some(("Config", 32)),
+        )
     };
     SidecarData {
-        header: header(Binding::Binary { build_id: BuildId(vec![0xbc, 0xc7, 0x46, 0x62]) }),
+        header: header(Binding::Binary {
+            build_id: BuildId(vec![0xbc, 0xc7, 0x46, 0x62]),
+        }),
         functions: vec![
             func(
                 "_RNvCs7102KwbUtvs_14worked_example4main",
@@ -42,18 +72,54 @@ fn rich_data() -> SidecarData {
                 FunctionOrigin::Source,
                 11,
                 vec![
-                    ev(K::Move, 13, 13, 1, Some(0), Some("a"), Some("b"), Some(("Config", 32))),
+                    ev(
+                        K::Move,
+                        13,
+                        13,
+                        1,
+                        Some(0),
+                        Some("a"),
+                        Some("b"),
+                        Some(("Config", 32)),
+                    ),
                     with_callee(
-                        ev(K::Clone, 14, 15, 1, None, Some("b"), Some("c"), Some(("Config", 32))),
+                        ev(
+                            K::Clone,
+                            14,
+                            15,
+                            1,
+                            None,
+                            Some("b"),
+                            Some("c"),
+                            Some(("Config", 32)),
+                        ),
                         "<Config as std::clone::Clone>::clone",
                     ),
                     sized_unknown,
                     multi_line,
                 ],
             ),
-            func("_RNvMsF_push", "std::vec::Vec::<Config>::push", FunctionOrigin::Dependency, 1003, vec![inlined]),
-            func("_RINvdrop", "std::ptr::drop_in_place::<Config>", FunctionOrigin::Shim, 809, vec![]),
-            func("_RNvXclone", "<Config as std::clone::Clone>::clone", FunctionOrigin::MacroExpansion, 3, vec![]),
+            func(
+                "_RNvMsF_push",
+                "std::vec::Vec::<Config>::push",
+                FunctionOrigin::Dependency,
+                1003,
+                vec![inlined],
+            ),
+            func(
+                "_RINvdrop",
+                "std::ptr::drop_in_place::<Config>",
+                FunctionOrigin::Shim,
+                809,
+                vec![],
+            ),
+            func(
+                "_RNvXclone",
+                "<Config as std::clone::Clone>::clone",
+                FunctionOrigin::MacroExpansion,
+                3,
+                vec![],
+            ),
         ],
     }
 }
@@ -63,7 +129,10 @@ fn round_trip_is_lossless() {
     let data = rich_data();
     let bytes = codec::encode(&data).unwrap();
     assert_eq!(&bytes[..8], &codec::MAGIC);
-    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), codec::FORMAT_VERSION);
+    assert_eq!(
+        u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+        codec::FORMAT_VERSION
+    );
     assert_eq!(codec::decode(&bytes).unwrap(), data);
     assert_eq!(codec::decode_header_only(&bytes).unwrap(), data.header);
 }
@@ -72,10 +141,17 @@ fn round_trip_is_lossless() {
 fn partial_headers_round_trip() {
     for output in [
         UnitOutput::Library,
-        UnitOutput::Linked { path: "/t/debug/deps/worked_example-1234".into(), upstream: vec![1, u64::MAX, 7] },
+        UnitOutput::Linked {
+            path: "/t/debug/deps/worked_example-1234".into(),
+            upstream: vec![1, u64::MAX, 7],
+        },
     ] {
         let data = SidecarData {
-            header: header(Binding::Partial(CrateUnit { name: "worked_example".into(), stable_crate_id: 0x51b8a900ad25aa84, output })),
+            header: header(Binding::Partial(CrateUnit {
+                name: "worked_example".into(),
+                stable_crate_id: 0x51b8a900ad25aa84,
+                output,
+            })),
             functions: Vec::new(),
         };
         assert_eq!(codec::decode(&codec::encode(&data).unwrap()).unwrap(), data);
@@ -111,8 +187,13 @@ fn corruption_is_detected() {
 
 #[test]
 fn build_id_of_an_elf() {
-    let elf = elf_with_build_id(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
-    assert_eq!(build_id_of(&elf).unwrap().to_hex(), "0102030405060708090a0b0c0d0e0f1011121314");
+    let elf = elf_with_build_id(&[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]);
+    assert_eq!(
+        build_id_of(&elf).unwrap().to_hex(),
+        "0102030405060708090a0b0c0d0e0f1011121314"
+    );
     assert!(build_id_of(b"not an object file").is_err());
 }
 
@@ -133,38 +214,102 @@ fn open_for_binary_checks_the_build_id() {
     // Rebuilt binary: different build-id.
     std::fs::write(&bin, elf_with_build_id(&[9, 9, 9, 9])).unwrap();
     match Sidecar::open_for_binary(&sc_path, &bin) {
-        Err(HopperError::StaleSidecar(msg)) => assert!(msg.contains("bcc74662") && msg.contains("09090909"), "{msg}"),
+        Err(HopperError::StaleSidecar(msg)) => assert!(
+            msg.contains("bcc74662") && msg.contains("09090909"),
+            "{msg}"
+        ),
         other => panic!("expected StaleSidecar, got {other:?}"),
     }
 
     // A partial is never a binary's sidecar.
     let partial = Sidecar::new(SidecarData {
-        header: header(Binding::Partial(CrateUnit { name: "x".into(), stable_crate_id: 1, output: UnitOutput::Library })),
+        header: header(Binding::Partial(CrateUnit {
+            name: "x".into(),
+            stable_crate_id: 1,
+            output: UnitOutput::Library,
+        })),
         functions: Vec::new(),
     });
-    assert!(matches!(partial.check_build_id(&BuildId(id)), Err(HopperError::StaleSidecar(_))));
+    assert!(matches!(
+        partial.check_build_id(&BuildId(id)),
+        Err(HopperError::StaleSidecar(_))
+    ));
 }
 
-fn partial(name: &str, id: u64, output: UnitOutput, functions: Vec<hopper_sidecar::FunctionRecord>) -> SidecarData {
+fn partial(
+    name: &str,
+    id: u64,
+    output: UnitOutput,
+    functions: Vec<hopper_sidecar::FunctionRecord>,
+) -> SidecarData {
     SidecarData {
-        header: Header { crates: vec![name.into()], ..header(Binding::Partial(CrateUnit { name: name.into(), stable_crate_id: id, output })) },
+        header: Header {
+            crates: vec![name.into()],
+            ..header(Binding::Partial(CrateUnit {
+                name: name.into(),
+                stable_crate_id: id,
+                output,
+            }))
+        },
         functions,
     }
 }
 
 #[test]
 fn link_merges_linked_crates_only() {
-    let shared = func("_Rshared", "lib::shared::<u8>", FunctionOrigin::Dependency, 1, vec![]);
+    let shared = func(
+        "_Rshared",
+        "lib::shared::<u8>",
+        FunctionOrigin::Dependency,
+        1,
+        vec![],
+    );
     let exe = partial(
         "app",
         10,
-        UnitOutput::Linked { path: "/t/app".into(), upstream: vec![20, 99] },
-        vec![func("_Rmain", "app::main", FunctionOrigin::Source, 1, vec![]), shared.clone()],
+        UnitOutput::Linked {
+            path: "/t/app".into(),
+            upstream: vec![20, 99],
+        },
+        vec![
+            func("_Rmain", "app::main", FunctionOrigin::Source, 1, vec![]),
+            shared.clone(),
+        ],
     );
-    let lib = partial("lib", 20, UnitOutput::Library, vec![func("_Rlib", "lib::f", FunctionOrigin::Source, 1, vec![]), shared]);
-    let other = partial("other", 30, UnitOutput::Library, vec![func("_Rother", "other::g", FunctionOrigin::Source, 1, vec![])]);
-    let linked = link(&exe, &[lib.clone(), other], BuildId(vec![1]), "hopper-build test").unwrap();
-    assert_eq!(linked.header.binding, Binding::Binary { build_id: BuildId(vec![1]) });
+    let lib = partial(
+        "lib",
+        20,
+        UnitOutput::Library,
+        vec![
+            func("_Rlib", "lib::f", FunctionOrigin::Source, 1, vec![]),
+            shared,
+        ],
+    );
+    let other = partial(
+        "other",
+        30,
+        UnitOutput::Library,
+        vec![func(
+            "_Rother",
+            "other::g",
+            FunctionOrigin::Source,
+            1,
+            vec![],
+        )],
+    );
+    let linked = link(
+        &exe,
+        &[lib.clone(), other],
+        BuildId(vec![1]),
+        "hopper-build test",
+    )
+    .unwrap();
+    assert_eq!(
+        linked.header.binding,
+        Binding::Binary {
+            build_id: BuildId(vec![1])
+        }
+    );
     assert_eq!(linked.header.crates, ["app", "lib"]);
     assert_eq!(linked.header.tool, "hopper-build test");
     let symbols: Vec<&str> = linked.functions.iter().map(|f| f.symbol.as_str()).collect();
@@ -193,19 +338,39 @@ fn partial_set_links_a_hard_linked_binary() {
     let exe = partial(
         "app",
         10,
-        UnitOutput::Linked { path: real.to_string_lossy().into_owned(), upstream: vec![20] },
-        vec![func("_Rmain", "app::main", FunctionOrigin::Source, 1, vec![])],
+        UnitOutput::Linked {
+            path: real.to_string_lossy().into_owned(),
+            upstream: vec![20],
+        },
+        vec![func(
+            "_Rmain",
+            "app::main",
+            FunctionOrigin::Source,
+            1,
+            vec![],
+        )],
     );
-    let lib = partial("lib", 20, UnitOutput::Library, vec![func("_Rlib", "lib::f", FunctionOrigin::Source, 1, vec![])]);
+    let lib = partial(
+        "lib",
+        20,
+        UnitOutput::Library,
+        vec![func("_Rlib", "lib::f", FunctionOrigin::Source, 1, vec![])],
+    );
     let p = write_partial(&partials, &exe).unwrap();
-    assert_eq!(p.file_name().unwrap().to_str().unwrap(), "app-000000000000000a.hsc");
+    assert_eq!(
+        p.file_name().unwrap().to_str().unwrap(),
+        "app-000000000000000a.hsc"
+    );
     write_partial(&partials, &lib).unwrap();
     // A non-sidecar file in the directory is ignored.
     std::fs::write(partials.join("junk.hsc"), b"junk").unwrap();
 
     let set = PartialSet::load_dir(&partials).unwrap();
     assert_eq!(set.partials.len(), 2);
-    let written = set.link_binary(&uplifted, "hopper-build test").unwrap().unwrap();
+    let written = set
+        .link_binary(&uplifted, "hopper-build test")
+        .unwrap()
+        .unwrap();
     assert_eq!(written, sidecar_path(&uplifted));
     let sc = Sidecar::open_for_binary(&written, &uplifted).unwrap();
     assert_eq!(sc.functions().len(), 2);
@@ -215,9 +380,18 @@ fn partial_set_links_a_hard_linked_binary() {
     std::fs::write(&stranger, elf_with_build_id(&[8; 20])).unwrap();
     assert_eq!(set.link_binary(&stranger, "t").unwrap(), None);
     // A missing partials directory is an empty set.
-    assert!(PartialSet::load_dir(&dir.path().join("none")).unwrap().partials.is_empty());
+    assert!(
+        PartialSet::load_dir(&dir.path().join("none"))
+            .unwrap()
+            .partials
+            .is_empty()
+    );
     assert_eq!(
-        partial_file_name(&CrateUnit { name: "lib".into(), stable_crate_id: 20, output: UnitOutput::Library }),
+        partial_file_name(&CrateUnit {
+            name: "lib".into(),
+            stable_crate_id: 20,
+            output: UnitOutput::Library
+        }),
         "lib-0000000000000014.hsc"
     );
 }
@@ -225,7 +399,9 @@ fn partial_set_links_a_hard_linked_binary() {
 #[test]
 fn indexes_by_name_and_line() {
     let sc = Sidecar::new(rich_data());
-    let main = sc.function_named("_RNvCs7102KwbUtvs_14worked_example4main").unwrap();
+    let main = sc
+        .function_named("_RNvCs7102KwbUtvs_14worked_example4main")
+        .unwrap();
     assert_eq!(sc.function_named("worked_example::main"), Some(main));
     assert_eq!(sc.function(main).def_path, "worked_example::main");
     assert_eq!(sc.function_named("no::such"), None);

@@ -50,7 +50,11 @@ pub struct FrameInfo {
 
 impl FrameInfo {
     pub fn new(function: impl Into<String>, location: Option<SourceLoc>) -> FrameInfo {
-        FrameInfo { function: function.into(), inline_chain: Vec::new(), location }
+        FrameInfo {
+            function: function.into(),
+            inline_chain: Vec::new(),
+            location,
+        }
     }
 }
 
@@ -69,7 +73,10 @@ impl Access {
     }
 
     pub fn of(place: impl Into<String>, size: u64) -> Access {
-        Access { size, place: Some(place.into()) }
+        Access {
+            size,
+            place: Some(place.into()),
+        }
     }
 }
 
@@ -94,7 +101,10 @@ pub struct PcInfo {
 /// How the join chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice {
-    Chosen { event: EventRef, label: OwnershipLabel },
+    Chosen {
+        event: EventRef,
+        label: OwnershipLabel,
+    },
     /// Several candidates, and nothing observed picks one.
     Ambiguous,
     /// The deciding frame has no event at this location.
@@ -161,21 +171,38 @@ impl Sidecar {
         }
         match fallback {
             Some((depth, candidates)) => self.decide(depth, candidates, pc),
-            None => Join { frame: None, candidates: Vec::new(), choice: Choice::NoCandidates },
+            None => Join {
+                frame: None,
+                candidates: Vec::new(),
+                choice: Choice::NoCandidates,
+            },
         }
     }
 
     fn decide(&self, depth: usize, candidates: Vec<EventRef>, pc: &PcInfo) -> Join {
         let choice = choose(self, &candidates, pc.effect.as_ref(), depth > 0);
-        Join { frame: Some(depth), candidates, choice }
+        Join {
+            frame: Some(depth),
+            candidates,
+            choice,
+        }
     }
 
     /// The function record a frame resolves to and its candidate events at the frame's
     /// location. `None` when the sidecar has no record for the frame.
-    fn frame_candidates(&self, frame: &FrameInfo, at_call_site: bool) -> Option<(usize, Vec<EventRef>)> {
+    fn frame_candidates(
+        &self,
+        frame: &FrameInfo,
+        at_call_site: bool,
+    ) -> Option<(usize, Vec<EventRef>)> {
         let physical = self.function_named(&frame.function);
         if let Some(fi) = physical {
-            let found = self.located(fi, &frame.inline_chain, frame.location.as_ref(), at_call_site);
+            let found = self.located(
+                fi,
+                &frame.inline_chain,
+                frame.location.as_ref(),
+                at_call_site,
+            );
             if !found.is_empty() || frame.inline_chain.is_empty() {
                 return Some((fi, found));
             }
@@ -185,13 +212,21 @@ impl Sidecar {
         if let Some(inner) = frame.inline_chain.last()
             && let Some(fi) = self.function_named(&inner.function)
         {
-            return Some((fi, self.located(fi, &[], frame.location.as_ref(), at_call_site)));
+            return Some((
+                fi,
+                self.located(fi, &[], frame.location.as_ref(), at_call_site),
+            ));
         }
         physical.map(|fi| (fi, Vec::new()))
     }
 
-    fn located(&self, function: usize, chain: &[DwarfInline], loc: Option<&SourceLoc>, at_call_site: bool)
-    -> Vec<EventRef> {
+    fn located(
+        &self,
+        function: usize,
+        chain: &[DwarfInline],
+        loc: Option<&SourceLoc>,
+        at_call_site: bool,
+    ) -> Vec<EventRef> {
         let Some(loc) = loc else { return Vec::new() };
         let mut found: Vec<EventRef> = self
             .function_events_at_line(function, &loc.file, loc.line)
@@ -203,8 +238,11 @@ impl Sidecar {
             })
             .collect();
         if let Some(col) = loc.column {
-            let exact: Vec<EventRef> =
-                found.iter().copied().filter(|r| self.event(*r).span.lo.col == col).collect();
+            let exact: Vec<EventRef> = found
+                .iter()
+                .copied()
+                .filter(|r| self.event(*r).span.lo.col == col)
+                .collect();
             if !exact.is_empty() {
                 found = exact;
             }
@@ -270,7 +308,9 @@ fn place_within(sub: &str, base: &str) -> bool {
     let sub = sub.trim_start_matches('*');
     let base = base.trim_start_matches('*');
     sub == base
-        || sub.strip_prefix(base).is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+        || sub
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
 }
 
 /// Two places overlap when one is within the other.
@@ -307,10 +347,18 @@ fn effect_score(e: &OwnershipEvent, effect: &MachineEffect) -> Option<u32> {
 }
 
 fn is_call_event(kind: OwnershipKind) -> bool {
-    matches!(kind, OwnershipKind::CallReturn | OwnershipKind::Clone | OwnershipKind::Drop)
+    matches!(
+        kind,
+        OwnershipKind::CallReturn | OwnershipKind::Clone | OwnershipKind::Drop
+    )
 }
 
-fn choose(sc: &Sidecar, candidates: &[EventRef], effect: Option<&MachineEffect>, at_call_site: bool) -> Choice {
+fn choose(
+    sc: &Sidecar,
+    candidates: &[EventRef],
+    effect: Option<&MachineEffect>,
+    at_call_site: bool,
+) -> Choice {
     let chosen = |r: EventRef, confidence: Confidence| {
         let e = sc.event(r);
         Choice::Chosen {
@@ -336,10 +384,17 @@ fn choose(sc: &Sidecar, candidates: &[EventRef], effect: Option<&MachineEffect>,
     // StorageDead emits no instructions and a Projection only computes an address inside its
     // borrow's statement, so neither explains an observed write.
     let effectful: Vec<EventRef> = match effect {
-        Some(MachineEffect { written: Some(_), .. }) => candidates
+        Some(MachineEffect {
+            written: Some(_), ..
+        }) => candidates
             .iter()
             .copied()
-            .filter(|r| !matches!(kind_of(r), OwnershipKind::StorageDead | OwnershipKind::Projection))
+            .filter(|r| {
+                !matches!(
+                    kind_of(r),
+                    OwnershipKind::StorageDead | OwnershipKind::Projection
+                )
+            })
             .collect(),
         _ => candidates.to_vec(),
     };
@@ -362,7 +417,11 @@ fn choose(sc: &Sidecar, candidates: &[EventRef], effect: Option<&MachineEffect>,
             if at_call_site && let Some(r) = unique(&|r| is_call_event(kind_of(r))) {
                 return chosen(r, Confidence::Inferred);
             }
-            if candidates.is_empty() { Choice::NoCandidates } else { Choice::Ambiguous }
+            if candidates.is_empty() {
+                Choice::NoCandidates
+            } else {
+                Choice::Ambiguous
+            }
         }
         Some(effect) => {
             if effectful.is_empty() {
@@ -378,8 +437,11 @@ fn choose(sc: &Sidecar, candidates: &[EventRef], effect: Option<&MachineEffect>,
                 return chosen(*only, Confidence::Exact);
             }
             let best = scored.iter().map(|(_, s)| *s).max().unwrap_or(0);
-            let top: Vec<EventRef> =
-                scored.iter().filter(|(_, s)| *s == best && best > 0).map(|(r, _)| *r).collect();
+            let top: Vec<EventRef> = scored
+                .iter()
+                .filter(|(_, s)| *s == best && best > 0)
+                .map(|(r, _)| *r)
+                .collect();
             if let [one] = top.as_slice() {
                 return chosen(*one, Confidence::Inferred);
             }
@@ -412,9 +474,15 @@ mod tests {
 
     #[test]
     fn function_names_match_loosely() {
-        assert!(names_match("std::vec::Vec::<Config>::push", "alloc::vec::Vec<T,A>::push"));
+        assert!(names_match(
+            "std::vec::Vec::<Config>::push",
+            "alloc::vec::Vec<T,A>::push"
+        ));
         assert!(names_match("worked_example::load", "load"));
-        assert!(names_match("worked_example::load", "_ZN14worked_example4load17h0123456789abcdefE"));
+        assert!(names_match(
+            "worked_example::load",
+            "_ZN14worked_example4load17h0123456789abcdefE"
+        ));
         assert!(!names_match("worked_example::load", "worked_example::main"));
     }
 }

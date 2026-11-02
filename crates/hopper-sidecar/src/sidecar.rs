@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use hopper_core::{HopperError, Result};
 
 use crate::codec;
-use crate::model::{Binding, BuildId, FunctionRecord, Header, OwnershipEvent, SidecarData, files_match};
+use crate::model::{
+    Binding, BuildId, FunctionRecord, Header, OwnershipEvent, SidecarData, files_match,
+};
 
 /// An event's address inside a [`Sidecar`]: function index, then event index.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -43,10 +45,17 @@ impl Sidecar {
                     .or_default()
                     .entry(e.span.lo.line)
                     .or_default()
-                    .push(EventRef { function: fi, event: ei });
+                    .push(EventRef {
+                        function: fi,
+                        event: ei,
+                    });
             }
         }
-        Sidecar { data, by_name, by_line }
+        Sidecar {
+            data,
+            by_name,
+            by_line,
+        }
     }
 
     /// Decode a sidecar from bytes without checking it against a binary.
@@ -159,7 +168,10 @@ impl Sidecar {
 
     /// The events of one function whose span starts on `line` of a file matching `file`.
     pub fn function_events_at_line(&self, function: usize, file: &str, line: u32) -> Vec<EventRef> {
-        self.events_at_line(file, line).into_iter().filter(|r| r.function == function).collect()
+        self.events_at_line(file, line)
+            .into_iter()
+            .filter(|r| r.function == function)
+            .collect()
     }
 }
 
@@ -199,9 +211,14 @@ pub fn read_build_id(binary: &Path) -> Result<BuildId> {
 pub fn build_id_of(bytes: &[u8]) -> Result<BuildId> {
     use object::Object;
     let file = object::File::parse(bytes).map_err(|e| HopperError::Symbols(e.to_string()))?;
-    match file.build_id().map_err(|e| HopperError::Symbols(e.to_string()))? {
+    match file
+        .build_id()
+        .map_err(|e| HopperError::Symbols(e.to_string()))?
+    {
         Some(id) => Ok(BuildId(id.to_vec())),
-        None => Err(HopperError::NotFound("no GNU build-id note (link with -Wl,--build-id)".into())),
+        None => Err(HopperError::NotFound(
+            "no GNU build-id note (link with -Wl,--build-id)".into(),
+        )),
     }
 }
 
@@ -211,12 +228,18 @@ mod tests {
 
     #[test]
     fn strips_legacy_hash() {
-        assert_eq!(strip_hash("worked_example::load::h0123456789abcdef"), Some("worked_example::load"));
+        assert_eq!(
+            strip_hash("worked_example::load::h0123456789abcdef"),
+            Some("worked_example::load")
+        );
         assert_eq!(strip_hash("worked_example::load"), None);
     }
 
     #[test]
     fn sidecar_path_appends_extension() {
-        assert_eq!(sidecar_path(Path::new("/t/debug/worked-example")), PathBuf::from("/t/debug/worked-example.hsc"));
+        assert_eq!(
+            sidecar_path(Path::new("/t/debug/worked-example")),
+            PathBuf::from("/t/debug/worked-example.hsc")
+        );
     }
 }

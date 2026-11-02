@@ -8,8 +8,9 @@ use hopper_core::api::OwnershipKind;
 use hopper_core::{HopperError, Result};
 
 use crate::model::{
-    Binding, BuildId, Caveat, ControlPath, CrateUnit, FunctionOrigin, FunctionRecord, Header, InlineFrame,
-    LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span, TypeInfo, UnitOutput,
+    Binding, BuildId, Caveat, ControlPath, CrateUnit, FunctionOrigin, FunctionRecord, Header,
+    InlineFrame, LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span, TypeInfo,
+    UnitOutput,
 };
 
 /// The first eight bytes of every `.hsc` file. The high byte and the CR LF / ^Z / LF tail catch
@@ -267,7 +268,10 @@ fn caveats_from_bits(bits: u8) -> Result<Vec<Caveat>> {
 /// Decode `.hsc` bytes.
 pub fn decode(bytes: &[u8]) -> Result<SidecarData> {
     let body = decompress(bytes)?;
-    let mut r = Reader { bytes: &body, pos: 0 };
+    let mut r = Reader {
+        bytes: &body,
+        pos: 0,
+    };
     let header = decode_header(&mut r)?;
     let count = r.len("string count")?;
     let mut strings = Vec::with_capacity(count.min(1 << 20));
@@ -284,12 +288,17 @@ pub fn decode(bytes: &[u8]) -> Result<SidecarData> {
 /// Decode only the header (the body is still decompressed and checksummed).
 pub fn decode_header_only(bytes: &[u8]) -> Result<Header> {
     let body = decompress(bytes)?;
-    decode_header(&mut Reader { bytes: &body, pos: 0 })
+    decode_header(&mut Reader {
+        bytes: &body,
+        pos: 0,
+    })
 }
 
 fn decompress(bytes: &[u8]) -> Result<Vec<u8>> {
     if bytes.len() < 12 || bytes[..8] != MAGIC {
-        return Err(HopperError::Invalid("not a hopper sidecar (bad magic)".into()));
+        return Err(HopperError::Invalid(
+            "not a hopper sidecar (bad magic)".into(),
+        ));
     }
     let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     if version != FORMAT_VERSION {
@@ -317,7 +326,10 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn byte(&mut self) -> Result<u8> {
-        let b = *self.bytes.get(self.pos).ok_or_else(|| corrupt("truncated"))?;
+        let b = *self
+            .bytes
+            .get(self.pos)
+            .ok_or_else(|| corrupt("truncated"))?;
         self.pos += 1;
         Ok(b)
     }
@@ -385,7 +397,9 @@ impl Reader<'_> {
 
 fn decode_header(r: &mut Reader<'_>) -> Result<Header> {
     let binding = match r.byte()? {
-        0 => Binding::Binary { build_id: BuildId(r.bytes()?.to_vec()) },
+        0 => Binding::Binary {
+            build_id: BuildId(r.bytes()?.to_vec()),
+        },
         1 => {
             let name = r.string()?;
             let stable_crate_id = r.uvar()?;
@@ -399,7 +413,11 @@ fn decode_header(r: &mut Reader<'_>) -> Result<Header> {
                 }
                 other => return Err(corrupt(format!("unknown unit output {other}"))),
             };
-            Binding::Partial(CrateUnit { name, stable_crate_id, output })
+            Binding::Partial(CrateUnit {
+                name,
+                stable_crate_id,
+                output,
+            })
         }
         other => return Err(corrupt(format!("unknown binding {other}"))),
     };
@@ -407,7 +425,12 @@ fn decode_header(r: &mut Reader<'_>) -> Result<Header> {
     let n = r.len("crate count")?;
     let crates = (0..n).map(|_| r.string()).collect::<Result<Vec<_>>>()?;
     let tool = r.string()?;
-    Ok(Header { binding, rustc_version, crates, tool })
+    Ok(Header {
+        binding,
+        rustc_version,
+        crates,
+        tool,
+    })
 }
 
 fn decode_functions(r: &mut Reader<'_>, strings: &[String]) -> Result<Vec<FunctionRecord>> {
@@ -425,7 +448,15 @@ fn decode_functions(r: &mut Reader<'_>, strings: &[String]) -> Result<Vec<Functi
         for _ in 0..m {
             events.push(read_event(r, strings)?);
         }
-        out.push(FunctionRecord { symbol, demangled, def_path, krate, def_span, origin, events });
+        out.push(FunctionRecord {
+            symbol,
+            demangled,
+            def_path,
+            krate,
+            def_span,
+            origin,
+            events,
+        });
     }
     Ok(out)
 }
@@ -436,11 +467,19 @@ fn read_span(r: &mut Reader<'_>, strings: &[String]) -> Result<Span> {
     let lo_col = r.u32("column")?;
     let delta = r.u32("line delta")?;
     let hi_col = r.u32("column")?;
-    let hi_line = lo_line.checked_add(delta).ok_or_else(|| corrupt("span end line overflows"))?;
+    let hi_line = lo_line
+        .checked_add(delta)
+        .ok_or_else(|| corrupt("span end line overflows"))?;
     Ok(Span {
         file,
-        lo: LineCol { line: lo_line, col: lo_col },
-        hi: LineCol { line: hi_line, col: hi_col },
+        lo: LineCol {
+            line: lo_line,
+            col: lo_col,
+        },
+        hi: LineCol {
+            line: hi_line,
+            col: hi_col,
+        },
     })
 }
 
@@ -503,10 +542,23 @@ mod tests {
 
     #[test]
     fn varint_round_trip() {
-        for v in [0u64, 1, 127, 128, 300, 16_383, 16_384, u32::MAX as u64, u64::MAX] {
+        for v in [
+            0u64,
+            1,
+            127,
+            128,
+            300,
+            16_383,
+            16_384,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             let mut out = Vec::new();
             put_uvar(&mut out, v);
-            let mut r = Reader { bytes: &out, pos: 0 };
+            let mut r = Reader {
+                bytes: &out,
+                pos: 0,
+            };
             assert_eq!(r.uvar().unwrap(), v);
             assert_eq!(r.pos, out.len());
         }
@@ -518,14 +570,31 @@ mod tests {
     #[test]
     fn varint_rejects_overflow() {
         let bytes = [0xff; 11];
-        assert!(Reader { bytes: &bytes, pos: 0 }.uvar().is_err());
+        assert!(
+            Reader {
+                bytes: &bytes,
+                pos: 0
+            }
+            .uvar()
+            .is_err()
+        );
         let bytes = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02];
-        assert!(Reader { bytes: &bytes, pos: 0 }.uvar().is_err());
+        assert!(
+            Reader {
+                bytes: &bytes,
+                pos: 0
+            }
+            .uvar()
+            .is_err()
+        );
     }
 
     #[test]
     fn rejects_bad_magic_and_version() {
-        assert!(matches!(decode(b"not a sidecar"), Err(HopperError::Invalid(_))));
+        assert!(matches!(
+            decode(b"not a sidecar"),
+            Err(HopperError::Invalid(_))
+        ));
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&99u32.to_le_bytes());
         let err = decode(&bytes).unwrap_err();
@@ -535,7 +604,19 @@ mod tests {
     #[test]
     fn every_kind_has_a_code() {
         use OwnershipKind::*;
-        for k in [Move, Copy, Clone, SharedBorrow, MutBorrow, Projection, Drop, Aggregate, Literal, CallReturn, StorageDead] {
+        for k in [
+            Move,
+            Copy,
+            Clone,
+            SharedBorrow,
+            MutBorrow,
+            Projection,
+            Drop,
+            Aggregate,
+            Literal,
+            CallReturn,
+            StorageDead,
+        ] {
             assert_eq!(kind_from_code(kind_code(k)).unwrap(), k);
         }
     }

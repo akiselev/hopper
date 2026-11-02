@@ -21,7 +21,9 @@ use std::process::{Command, ExitCode, Stdio};
 
 use hopper_sidecar::link::PartialSet;
 
-use crate::plugin::{DRIVER_IDENTITY_VAR, DRIVER_NAME, DriverArgs, PARTIALS_DIR_NAME, driver_identity};
+use crate::plugin::{
+    DRIVER_IDENTITY_VAR, DRIVER_NAME, DriverArgs, PARTIALS_DIR_NAME, driver_identity,
+};
 
 /// What a build produced.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -46,7 +48,11 @@ pub fn main() -> ExitCode {
         args.remove(0);
     }
     if args.iter().any(|a| a == "-V" || a == "--version") {
-        println!("{} (rustc_plugin channel {})", crate::tool_version(), rustc_plugin::CHANNEL);
+        println!(
+            "{} (rustc_plugin channel {})",
+            crate::tool_version(),
+            rustc_plugin::CHANNEL
+        );
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -59,7 +65,10 @@ pub fn main() -> ExitCode {
                 eprintln!("hopper-build: {} -> {}", bin.display(), sc.display());
             }
             for bin in &outcome.without_sidecar {
-                eprintln!("hopper-build: no sidecar for {} (no partial produced it)", bin.display());
+                eprintln!(
+                    "hopper-build: no sidecar for {} (no partial produced it)",
+                    bin.display()
+                );
             }
             ExitCode::SUCCESS
         }
@@ -84,35 +93,53 @@ pub fn run(cargo_args: &[String]) -> Result<BuildOutcome, String> {
     let driver = std::env::current_exe()
         .map_err(|e| format!("cannot find own executable: {e}"))?
         .with_file_name(DRIVER_NAME);
-    let identity = driver_identity(&driver).map_err(|e| format!("driver {}: {e}", driver.display()))?;
+    let identity =
+        driver_identity(&driver).map_err(|e| format!("driver {}: {e}", driver.display()))?;
     let sysroot = sysroot()?;
 
     let tool = crate::tool_version();
     let mut outcome = BuildOutcome::default();
-    let mut missing = link_all(&build(cargo_args, &driver, &identity, &sysroot)?, &tool, &mut outcome)?;
+    let mut missing = link_all(
+        &build(cargo_args, &driver, &identity, &sysroot)?,
+        &tool,
+        &mut outcome,
+    )?;
     if !missing.is_empty() {
         let packages: BTreeSet<&str> = missing.iter().map(|e| e.package_id.as_str()).collect();
         clean(cargo_args, &packages)?;
-        missing = link_all(&build(cargo_args, &driver, &identity, &sysroot)?, &tool, &mut outcome)?;
+        missing = link_all(
+            &build(cargo_args, &driver, &identity, &sysroot)?,
+            &tool,
+            &mut outcome,
+        )?;
     }
     outcome.without_sidecar = missing.into_iter().map(|e| e.path).collect();
     Ok(outcome)
 }
 
 /// Link the sidecar of every executable that has a partial; return those that have none.
-fn link_all(executables: &[Executable], tool: &str, outcome: &mut BuildOutcome) -> Result<Vec<Executable>, String> {
+fn link_all(
+    executables: &[Executable],
+    tool: &str,
+    outcome: &mut BuildOutcome,
+) -> Result<Vec<Executable>, String> {
     let mut missing = Vec::new();
     for exe in executables {
         let linked = match partials_dir_for(&exe.path) {
             Some(dir) => {
-                let set = PartialSet::load_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                set.link_binary(&exe.path, tool).map_err(|e| format!("{}: {e}", exe.path.display()))?
+                let set =
+                    PartialSet::load_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                set.link_binary(&exe.path, tool)
+                    .map_err(|e| format!("{}: {e}", exe.path.display()))?
             }
             None => None,
         };
         match linked {
             Some(sc) => outcome.sidecars.push((exe.path.clone(), sc)),
-            None => missing.push(Executable { path: exe.path.clone(), package_id: exe.package_id.clone() }),
+            None => missing.push(Executable {
+                path: exe.path.clone(),
+                package_id: exe.package_id.clone(),
+            }),
         }
     }
     Ok(missing)
@@ -121,7 +148,11 @@ fn link_all(executables: &[Executable], tool: &str, outcome: &mut BuildOutcome) 
 /// The partials directory of an executable's profile: beside the executable
 /// (`target/debug/app`) or one level up (`target/debug/examples/app`, `target/debug/deps/test-…`).
 fn partials_dir_for(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors().skip(1).take(2).map(|d| d.join(PARTIALS_DIR_NAME)).find(|d| d.is_dir())
+    exe.ancestors()
+        .skip(1)
+        .take(2)
+        .map(|d| d.join(PARTIALS_DIR_NAME))
+        .find(|d| d.is_dir())
 }
 
 /// The pinned toolchain's sysroot. The driver needs it to find that toolchain's std; rustc_plugin
@@ -135,12 +166,21 @@ fn sysroot() -> Result<PathBuf, String> {
         .output()
         .map_err(|e| format!("cannot run rustc --print sysroot: {e}"))?;
     if !out.status.success() {
-        return Err(format!("rustc --print sysroot failed ({}); is {} installed?", out.status, rustc_plugin::CHANNEL));
+        return Err(format!(
+            "rustc --print sysroot failed ({}); is {} installed?",
+            out.status,
+            rustc_plugin::CHANNEL
+        ));
     }
     Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
 }
 
-fn build(cargo_args: &[String], driver: &Path, identity: &str, sysroot: &Path) -> Result<Vec<Executable>, String> {
+fn build(
+    cargo_args: &[String],
+    driver: &Path,
+    identity: &str,
+    sysroot: &Path,
+) -> Result<Vec<Executable>, String> {
     let driver_args = serde_json::to_string(&DriverArgs::default()).map_err(|e| e.to_string())?;
     let mut cmd = cargo();
     cmd.arg("build")
@@ -175,7 +215,9 @@ fn build(cargo_args: &[String], driver: &Path, identity: &str, sysroot: &Path) -
             Err(_) => println!("{line}"),
         }
     }
-    let status = child.wait().map_err(|e| format!("waiting for cargo: {e}"))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("waiting for cargo: {e}"))?;
     if !status.success() {
         return Err(format!("cargo build failed ({status})"));
     }
@@ -191,13 +233,19 @@ fn clean(args: &[String], packages: &BTreeSet<&str>) -> Result<(), String> {
             cmd.args([flag, v]);
         }
     }
-    if args.iter().take_while(|a| *a != "--").any(|a| a == "--release" || a == "-r") {
+    if args
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--release" || a == "-r")
+    {
         cmd.arg("--release");
     }
     for p in packages {
         cmd.args(["-p", p]);
     }
-    let status = cmd.status().map_err(|e| format!("cannot run cargo clean: {e}"))?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("cannot run cargo clean: {e}"))?;
     if !status.success() {
         return Err(format!("cargo clean failed ({status})"));
     }
@@ -240,10 +288,19 @@ mod tests {
 
     #[test]
     fn flag_values() {
-        assert_eq!(flag_value(&s(&["--target-dir", "/t"]), "--target-dir"), Some("/t"));
-        assert_eq!(flag_value(&s(&["--target-dir=/t"]), "--target-dir"), Some("/t"));
+        assert_eq!(
+            flag_value(&s(&["--target-dir", "/t"]), "--target-dir"),
+            Some("/t")
+        );
+        assert_eq!(
+            flag_value(&s(&["--target-dir=/t"]), "--target-dir"),
+            Some("/t")
+        );
         assert_eq!(flag_value(&s(&["--release"]), "--target-dir"), None);
-        assert_eq!(flag_value(&s(&["--", "--target-dir", "/t"]), "--target-dir"), None);
+        assert_eq!(
+            flag_value(&s(&["--", "--target-dir", "/t"]), "--target-dir"),
+            None
+        );
     }
 
     #[test]
@@ -252,8 +309,14 @@ mod tests {
         let profile = dir.path().join("debug");
         std::fs::create_dir_all(profile.join(PARTIALS_DIR_NAME)).unwrap();
         std::fs::create_dir_all(profile.join("examples")).unwrap();
-        assert_eq!(partials_dir_for(&profile.join("app")), Some(profile.join(PARTIALS_DIR_NAME)));
-        assert_eq!(partials_dir_for(&profile.join("examples/ex")), Some(profile.join(PARTIALS_DIR_NAME)));
+        assert_eq!(
+            partials_dir_for(&profile.join("app")),
+            Some(profile.join(PARTIALS_DIR_NAME))
+        );
+        assert_eq!(
+            partials_dir_for(&profile.join("examples/ex")),
+            Some(profile.join(PARTIALS_DIR_NAME))
+        );
         assert_eq!(partials_dir_for(&dir.path().join("elsewhere/x/y")), None);
     }
 }

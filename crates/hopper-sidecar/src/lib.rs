@@ -27,8 +27,8 @@ pub mod sidecar;
 pub use join::{Access, Choice, DwarfInline, FrameInfo, Join, MachineEffect, PcInfo};
 pub use local::{LocalEvent, LocalTransition, ownership_state};
 pub use model::{
-    Binding, BuildId, CalleeRole, Caveat, ControlPath, CrateUnit, FunctionOrigin, FunctionRecord, Header,
-    InlineFrame, LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span, TypeInfo,
-    UnitOutput,
+    Binding, BuildId, CalleeRole, Caveat, ControlPath, CrateUnit, FunctionOrigin, FunctionRecord,
+    Header, InlineFrame, LineCol, MirLocation, MirPosition, OwnershipEvent, SidecarData, Span,
+    TypeInfo, UnitOutput,
 };
 pub use sidecar::{EventRef, Sidecar, build_id_of, read_build_id, sidecar_path};

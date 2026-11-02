@@ -45,18 +45,19 @@ pub fn elf_with_build_id(id: &[u8]) -> Vec<u8> {
     out.extend_from_slice(shstrtab);
     out.resize(shoff as usize, 0);
 
-    let section = |out: &mut Vec<u8>, name: u32, ty: u32, flags: u64, off: u64, size: u64, align: u64| {
-        out.extend_from_slice(&name.to_le_bytes());
-        out.extend_from_slice(&ty.to_le_bytes());
-        out.extend_from_slice(&flags.to_le_bytes());
-        out.extend_from_slice(&0u64.to_le_bytes()); // addr
-        out.extend_from_slice(&off.to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // link
-        out.extend_from_slice(&0u32.to_le_bytes()); // info
-        out.extend_from_slice(&align.to_le_bytes());
-        out.extend_from_slice(&0u64.to_le_bytes()); // entsize
-    };
+    let section =
+        |out: &mut Vec<u8>, name: u32, ty: u32, flags: u64, off: u64, size: u64, align: u64| {
+            out.extend_from_slice(&name.to_le_bytes());
+            out.extend_from_slice(&ty.to_le_bytes());
+            out.extend_from_slice(&flags.to_le_bytes());
+            out.extend_from_slice(&0u64.to_le_bytes()); // addr
+            out.extend_from_slice(&off.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes()); // link
+            out.extend_from_slice(&0u32.to_le_bytes()); // info
+            out.extend_from_slice(&align.to_le_bytes());
+            out.extend_from_slice(&0u64.to_le_bytes()); // entsize
+        };
     section(&mut out, 0, 0, 0, 0, 0, 0);
     section(&mut out, 1, 7, 2, note_off, note.len() as u64, 4); // SHT_NOTE, SHF_ALLOC
     section(&mut out, 20, 3, 0, strtab_off, shstrtab.len() as u64, 1); // SHT_STRTAB
@@ -66,7 +67,11 @@ pub fn elf_with_build_id(id: &[u8]) -> Vec<u8> {
 pub const FILE: &str = "/w/worked-example/src/main.rs";
 
 pub fn span(line: u32, col: u32, end_col: u32) -> Span {
-    Span { file: FILE.into(), lo: LineCol { line, col }, hi: LineCol { line, col: end_col } }
+    Span {
+        file: FILE.into(),
+        lo: LineCol { line, col },
+        hi: LineCol { line, col: end_col },
+    }
 }
 
 /// An event on `line:col` at MIR `bb[stmt]` (`stmt = None` for the terminator).
@@ -92,7 +97,10 @@ pub fn ev(
         path: ControlPath::Normal,
         src: src.map(str::to_owned),
         dst: dst.map(str::to_owned),
-        ty: ty.map(|(name, size)| TypeInfo { name: name.into(), size: Some(size) }),
+        ty: ty.map(|(name, size)| TypeInfo {
+            name: name.into(),
+            size: Some(size),
+        }),
         callee: None,
         caveats: Vec::new(),
     }
@@ -103,7 +111,13 @@ pub fn with_callee(mut e: OwnershipEvent, callee: &str) -> OwnershipEvent {
     e
 }
 
-pub fn func(symbol: &str, def_path: &str, origin: FunctionOrigin, line: u32, events: Vec<OwnershipEvent>) -> FunctionRecord {
+pub fn func(
+    symbol: &str,
+    def_path: &str,
+    origin: FunctionOrigin,
+    line: u32,
+    events: Vec<OwnershipEvent>,
+) -> FunctionRecord {
     FunctionRecord {
         symbol: symbol.into(),
         demangled: def_path.into(),

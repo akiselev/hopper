@@ -21,19 +21,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hopper_sidecar::{
-    Caveat, ControlPath, FunctionOrigin, FunctionRecord, InlineFrame, LineCol, MirLocation, MirPosition,
-    OwnershipEvent, Span, TypeInfo,
-};
 use hopper_core::api::OwnershipKind;
+use hopper_sidecar::{
+    Caveat, ControlPath, FunctionOrigin, FunctionRecord, InlineFrame, LineCol, MirLocation,
+    MirPosition, OwnershipEvent, Span, TypeInfo,
+};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self as hir, LangItem};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::mir::{
-    self, AggregateKind, BasicBlock, BorrowKind, Body, Local, Operand, Place, PlaceTy, ProjectionElem,
-    RawPtrKind, Rvalue, SourceInfo, SourceScope, StatementKind, TerminatorKind, VarDebugInfoContents,
+    self, AggregateKind, BasicBlock, Body, BorrowKind, Local, Operand, Place, PlaceTy,
+    ProjectionElem, RawPtrKind, Rvalue, SourceInfo, SourceScope, StatementKind, TerminatorKind,
+    VarDebugInfoContents,
 };
 use rustc_middle::mono::MonoItem;
 use rustc_middle::ty::print::{with_forced_trimmed_paths, with_no_trimmed_paths};
@@ -49,7 +50,9 @@ pub fn crate_functions(tcx: TyCtxt<'_>) -> Vec<FunctionRecord> {
     let mut out = Vec::new();
     for cgu in partitions.codegen_units {
         for item in cgu.items().keys() {
-            let MonoItem::Fn(instance) = *item else { continue };
+            let MonoItem::Fn(instance) = *item else {
+                continue;
+            };
             let symbol = tcx.symbol_name(instance).name.to_string();
             if seen.insert(symbol.clone(), ()).is_some() {
                 continue;
@@ -83,7 +86,9 @@ impl FileNames {
                         wd.join(name).to_string_lossy().into_owned()
                     }
                 }
-                other => other.display(RemapPathScopeComponents::DEBUGINFO).to_string(),
+                other => other
+                    .display(RemapPathScopeComponents::DEBUGINFO)
+                    .to_string(),
             })
             .clone()
     }
@@ -113,10 +118,19 @@ impl SafetyCache {
                 let root = tcx.typeck_root_def_id(def_id).as_local()?;
                 let body = tcx.hir_maybe_body_owned_by(root)?;
                 let whole_body = matches!(tcx.def_kind(root), DefKind::Fn | DefKind::AssocFn)
-                    && tcx.hir_node_by_def_id(root).fn_sig().is_some_and(|s| s.header.is_unsafe());
-                let mut v = UnsafeBlocks { tcx, blocks: Vec::new() };
+                    && tcx
+                        .hir_node_by_def_id(root)
+                        .fn_sig()
+                        .is_some_and(|s| s.header.is_unsafe());
+                let mut v = UnsafeBlocks {
+                    tcx,
+                    blocks: Vec::new(),
+                };
                 v.visit_body(body);
-                Some(UnsafeRegions { whole_body, blocks: v.blocks })
+                Some(UnsafeRegions {
+                    whole_body,
+                    blocks: v.blocks,
+                })
             })
             .as_ref()
     }
@@ -244,7 +258,11 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 && vdi.composite.is_none()
             {
                 if p.projection.is_empty() {
-                    let map = if scope_is_inlined(body, vdi.source_info.scope) { &mut inlined_names } else { &mut names };
+                    let map = if scope_is_inlined(body, vdi.source_info.scope) {
+                        &mut inlined_names
+                    } else {
+                        &mut names
+                    };
                     map.entry(p.local).or_insert_with(|| vdi.name.to_string());
                 } else {
                     projected_names.push((p, vdi.name.to_string()));
@@ -319,7 +337,11 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     }
 
     fn mono<T: ty::TypeFoldable<TyCtxt<'tcx>>>(&self, v: T) -> T {
-        self.instance.instantiate_mir_and_normalize_erasing_regions(self.tcx, self.env, EarlyBinder::bind(v))
+        self.instance.instantiate_mir_and_normalize_erasing_regions(
+            self.tcx,
+            self.env,
+            EarlyBinder::bind(v),
+        )
     }
 
     fn origin(&self) -> FunctionOrigin {
@@ -344,12 +366,18 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 ControlPath::Normal
             };
             for (i, stmt) in data.statements.iter().enumerate() {
-                let loc = MirLocation { block: bb.as_u32(), position: MirPosition::Statement(i as u32) };
+                let loc = MirLocation {
+                    block: bb.as_u32(),
+                    position: MirPosition::Statement(i as u32),
+                };
                 self.in_inlined_scope = scope_is_inlined(self.body, stmt.source_info.scope);
                 self.statement(&stmt.kind, stmt.source_info, loc);
             }
             if let Some(term) = &data.terminator {
-                let loc = MirLocation { block: bb.as_u32(), position: MirPosition::Terminator };
+                let loc = MirLocation {
+                    block: bb.as_u32(),
+                    position: MirPosition::Terminator,
+                };
                 self.in_inlined_scope = scope_is_inlined(self.body, term.source_info.scope);
                 self.terminator(&term.kind, term.source_info, loc);
             }
@@ -359,7 +387,9 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         FunctionRecord {
             demangled: format!("{:#}", rustc_demangle::demangle(&self.symbol)),
             symbol: self.symbol.clone(),
-            def_path: with_no_trimmed_paths!(tcx.def_path_str_with_args(def_id, self.instance.args)),
+            def_path: with_no_trimmed_paths!(
+                tcx.def_path_str_with_args(def_id, self.instance.args)
+            ),
             krate: tcx.crate_name(def_id.krate).to_string(),
             def_span,
             origin: self.origin(),
@@ -379,21 +409,38 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 if let Some(name) = self.name_of(*local) {
                     let ty = self.mono(self.body.local_decls[*local].ty);
                     let place = Place::from(*local);
-                    self.emit(OwnershipKind::StorageDead, si, loc, Some(name), None, Some(ty), None, &[place]);
+                    self.emit(
+                        OwnershipKind::StorageDead,
+                        si,
+                        loc,
+                        Some(name),
+                        None,
+                        Some(ty),
+                        None,
+                        &[place],
+                    );
                 }
             }
             _ => {}
         }
     }
 
-    fn assign(&mut self, place: Place<'tcx>, rvalue: &Rvalue<'tcx>, si: SourceInfo, loc: MirLocation) {
+    fn assign(
+        &mut self,
+        place: Place<'tcx>,
+        rvalue: &Rvalue<'tcx>,
+        si: SourceInfo,
+        loc: MirLocation,
+    ) {
         let dst = self.dst_text(place);
         let dst_ty = self.place_ty(place);
         match rvalue {
             Rvalue::Use(op) | Rvalue::Cast(_, op, _) | Rvalue::WrapUnsafeBinder(op, _) => {
                 self.operand(op, dst, si, loc, None, &[place]);
             }
-            Rvalue::Repeat(op, _) => self.operand(op, format!("{dst}[..]"), si, loc, None, &[place]),
+            Rvalue::Repeat(op, _) => {
+                self.operand(op, format!("{dst}[..]"), si, loc, None, &[place])
+            }
             Rvalue::Ref(_, kind, borrowed) => {
                 let kind = match kind {
                     BorrowKind::Mut { .. } => OwnershipKind::MutBorrow,
@@ -404,17 +451,37 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             Rvalue::RawPtr(kind, borrowed) => {
                 let kind = match kind {
                     RawPtrKind::Mut => OwnershipKind::MutBorrow,
-                    RawPtrKind::Const | RawPtrKind::FakeForPtrMetadata => OwnershipKind::SharedBorrow,
+                    RawPtrKind::Const | RawPtrKind::FakeForPtrMetadata => {
+                        OwnershipKind::SharedBorrow
+                    }
                 };
                 self.borrow(kind, *borrowed, place, dst, dst_ty, si, loc);
             }
             Rvalue::CopyForDeref(src) => {
                 let s = self.place_text(*src);
                 let ty = self.place_ty(*src);
-                self.emit(OwnershipKind::Copy, si, loc, Some(s), Some(dst), Some(ty), None, &[*src, place]);
+                self.emit(
+                    OwnershipKind::Copy,
+                    si,
+                    loc,
+                    Some(s),
+                    Some(dst),
+                    Some(ty),
+                    None,
+                    &[*src, place],
+                );
             }
             Rvalue::Aggregate(kind, fields) => {
-                self.emit(OwnershipKind::Aggregate, si, loc, None, Some(dst.clone()), Some(dst_ty), None, &[place]);
+                self.emit(
+                    OwnershipKind::Aggregate,
+                    si,
+                    loc,
+                    None,
+                    Some(dst.clone()),
+                    Some(dst_ty),
+                    None,
+                    &[place],
+                );
                 for (i, op) in fields.iter_enumerated() {
                     let field_dst = self.aggregate_field(kind, &dst, i.index());
                     self.operand(op, field_dst, si, loc, None, &[place]);
@@ -440,12 +507,33 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     ) {
         let src = self.place_text(borrowed);
         if let Some((_, base_elems)) = borrowed.projection.split_last() {
-            let base = Place { local: borrowed.local, projection: self.tcx.mk_place_elems(base_elems) };
+            let base = Place {
+                local: borrowed.local,
+                projection: self.tcx.mk_place_elems(base_elems),
+            };
             let base_text = self.place_text(base);
             let ty = self.place_ty(borrowed);
-            self.emit(OwnershipKind::Projection, si, loc, Some(base_text), Some(src.clone()), Some(ty), None, &[borrowed]);
+            self.emit(
+                OwnershipKind::Projection,
+                si,
+                loc,
+                Some(base_text),
+                Some(src.clone()),
+                Some(ty),
+                None,
+                &[borrowed],
+            );
         }
-        self.emit(kind, si, loc, Some(src), Some(dst), Some(dst_ty), None, &[borrowed, place]);
+        self.emit(
+            kind,
+            si,
+            loc,
+            Some(src),
+            Some(dst),
+            Some(dst_ty),
+            None,
+            &[borrowed, place],
+        );
     }
 
     /// The event for an operand used as a value that goes to `dst`.
@@ -477,7 +565,16 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             }
             Operand::Constant(c) => {
                 let src = const_text(c);
-                self.emit(OwnershipKind::Literal, si, loc, Some(src), Some(dst), Some(ty), callee, places);
+                self.emit(
+                    OwnershipKind::Literal,
+                    si,
+                    loc,
+                    Some(src),
+                    Some(dst),
+                    Some(ty),
+                    callee,
+                    places,
+                );
             }
             Operand::RuntimeChecks(_) => {}
         }
@@ -489,21 +586,48 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         match kind {
             // Codegen gives a call terminator's instructions `fn_span`, not the terminator's span
             // (`codegen_call_terminator`), so the events carry it too.
-            TerminatorKind::Call { func, args, destination, fn_span, .. } => {
+            TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                fn_span,
+                ..
+            } => {
                 let dst = self.place_text(*destination);
-                let si = SourceInfo { span: *fn_span, ..si };
+                let si = SourceInfo {
+                    span: *fn_span,
+                    ..si
+                };
                 self.call(func, args, Some(*destination), dst, si, loc);
             }
-            TerminatorKind::TailCall { func, args, fn_span } => {
-                let si = SourceInfo { span: *fn_span, ..si };
+            TerminatorKind::TailCall {
+                func,
+                args,
+                fn_span,
+            } => {
+                let si = SourceInfo {
+                    span: *fn_span,
+                    ..si
+                };
                 self.call(func, args, None, "return".to_owned(), si, loc);
             }
             TerminatorKind::Drop { place, .. } => {
                 let ty = self.place_ty(*place);
                 let glue = Instance::resolve_drop_in_place(self.tcx, ty);
-                let callee = with_no_trimmed_paths!(self.tcx.def_path_str_with_args(glue.def_id(), glue.args));
+                let callee = with_no_trimmed_paths!(
+                    self.tcx.def_path_str_with_args(glue.def_id(), glue.args)
+                );
                 let src = self.place_text(*place);
-                self.emit(OwnershipKind::Drop, si, loc, Some(src), None, Some(ty), Some(callee), &[*place]);
+                self.emit(
+                    OwnershipKind::Drop,
+                    si,
+                    loc,
+                    Some(src),
+                    None,
+                    Some(ty),
+                    Some(callee),
+                    &[*place],
+                );
             }
             _ => {}
         }
@@ -519,10 +643,19 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         loc: MirLocation,
     ) {
         let callee = self.callee(func);
-        let short = callee.as_ref().map_or_else(|| "<fn pointer>".to_owned(), |c| c.short.clone());
+        let short = callee
+            .as_ref()
+            .map_or_else(|| "<fn pointer>".to_owned(), |c| c.short.clone());
         let path = callee.as_ref().map(|c| c.path.clone());
         for (i, arg) in args.iter().enumerate() {
-            self.operand(&arg.node, format!("{short}(arg {i})"), si, loc, path.as_deref(), &[]);
+            self.operand(
+                &arg.node,
+                format!("{short}(arg {i})"),
+                si,
+                loc,
+                path.as_deref(),
+                &[],
+            );
         }
         let dst_ty = destination.map(|d| self.place_ty(d));
         let places: Vec<Place<'tcx>> = destination.into_iter().collect();
@@ -533,11 +666,29 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 if let Some(p) = recv.node.place() {
                     all.push(p);
                 }
-                self.emit(OwnershipKind::Clone, si, loc, Some(src), Some(dst), dst_ty, path, &all);
+                self.emit(
+                    OwnershipKind::Clone,
+                    si,
+                    loc,
+                    Some(src),
+                    Some(dst),
+                    dst_ty,
+                    path,
+                    &all,
+                );
             }
             _ => {
                 let src = format!("{short}(..)");
-                self.emit(OwnershipKind::CallReturn, si, loc, Some(src), Some(dst), dst_ty, path, &places);
+                self.emit(
+                    OwnershipKind::CallReturn,
+                    si,
+                    loc,
+                    Some(src),
+                    Some(dst),
+                    dst_ty,
+                    path,
+                    &places,
+                );
             }
         }
     }
@@ -545,17 +696,28 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     fn callee(&self, func: &Operand<'tcx>) -> Option<Callee> {
         let tcx = self.tcx;
         let fty = self.mono(func.ty(&self.body.local_decls, tcx));
-        let ty::FnDef(def_id, args) = *fty.kind() else { return None };
+        let ty::FnDef(def_id, args) = *fty.kind() else {
+            return None;
+        };
         let path = with_no_trimmed_paths!(tcx.def_path_str_with_args(def_id, args));
         let short = with_forced_trimmed_paths!(tcx.def_path_str_with_args(def_id, args));
         let role = match tcx.trait_of_assoc(def_id) {
-            Some(t) if tcx.is_lang_item(t, LangItem::Clone) && tcx.item_name(def_id).as_str() == "clone" => {
+            Some(t)
+                if tcx.is_lang_item(t, LangItem::Clone)
+                    && tcx.item_name(def_id).as_str() == "clone" =>
+            {
                 CalleeKind::Clone
             }
-            Some(t) if tcx.is_lang_item(t, LangItem::Index) || tcx.is_lang_item(t, LangItem::IndexMut) => {
+            Some(t)
+                if tcx.is_lang_item(t, LangItem::Index)
+                    || tcx.is_lang_item(t, LangItem::IndexMut) =>
+            {
                 CalleeKind::Index
             }
-            Some(t) if tcx.is_lang_item(t, LangItem::Deref) || tcx.is_lang_item(t, LangItem::DerefMut) => {
+            Some(t)
+                if tcx.is_lang_item(t, LangItem::Deref)
+                    || tcx.is_lang_item(t, LangItem::DerefMut) =>
+            {
                 CalleeKind::Deref
             }
             _ => CalleeKind::Other,
@@ -583,7 +745,18 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
         let caveats = self.caveats(collapsed, si.scope, places, ty);
         let ty = ty.map(|t| self.type_info(t));
         let path = self.path;
-        self.events.push(OwnershipEvent { kind, span, inline_chain, location, path, src, dst, ty, callee, caveats });
+        self.events.push(OwnershipEvent {
+            kind,
+            span,
+            inline_chain,
+            location,
+            path,
+            src,
+            dst,
+            ty,
+            callee,
+            caveats,
+        });
     }
 
     /// A span as codegen gives it to DWARF: macro expansions collapsed into the body's context,
@@ -597,18 +770,29 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             match sm.lookup_line(pos) {
                 Ok(rustc_span::SourceFileAndLine { sf, line }) => {
                     let line_pos = sf.lines()[line];
-                    LineCol { line: line as u32 + 1, col: (sf.relative_position(pos) - line_pos).to_u32() + 1 }
+                    LineCol {
+                        line: line as u32 + 1,
+                        col: (sf.relative_position(pos) - line_pos).to_u32() + 1,
+                    }
                 }
                 Err(_) => LineCol { line: 0, col: 0 },
             }
         };
-        Span { file, lo: line_col(sp.lo()), hi: line_col(sp.hi()) }
+        Span {
+            file,
+            lo: line_col(sp.lo()),
+            hi: line_col(sp.hi()),
+        }
     }
 
     fn inline_chain(&mut self, scope: SourceScope) -> Vec<InlineFrame> {
         let scopes = &self.body.source_scopes;
         let mut roots = Vec::new();
-        let mut cur = if scopes[scope].inlined.is_some() { Some(scope) } else { scopes[scope].inlined_parent_scope };
+        let mut cur = if scopes[scope].inlined.is_some() {
+            Some(scope)
+        } else {
+            scopes[scope].inlined_parent_scope
+        };
         while let Some(s) = cur {
             if let Some((callee, call_site)) = scopes[s].inlined {
                 roots.push((callee, call_site));
@@ -621,7 +805,10 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             .map(|(callee, call_site)| {
                 let callee = self.mono(callee);
                 InlineFrame {
-                    callee: with_no_trimmed_paths!(self.tcx.def_path_str_with_args(callee.def_id(), callee.args)),
+                    callee: with_no_trimmed_paths!(
+                        self.tcx
+                            .def_path_str_with_args(callee.def_id(), callee.args)
+                    ),
                     call_site: self.span(call_site),
                 }
             })
@@ -632,17 +819,28 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     /// callee, or this instance's own item.
     fn source_def(&self, scope: SourceScope) -> DefId {
         let scopes = &self.body.source_scopes;
-        let root = if scopes[scope].inlined.is_some() { Some(scope) } else { scopes[scope].inlined_parent_scope };
+        let root = if scopes[scope].inlined.is_some() {
+            Some(scope)
+        } else {
+            scopes[scope].inlined_parent_scope
+        };
         match root.and_then(|r| scopes[r].inlined) {
             Some((callee, _)) => callee.def_id(),
             None => self.instance.def_id(),
         }
     }
 
-    fn caveats(&mut self, span: RSpan, scope: SourceScope, places: &[Place<'tcx>], ty: Option<Ty<'tcx>>) -> Vec<Caveat> {
+    fn caveats(
+        &mut self,
+        span: RSpan,
+        scope: SourceScope,
+        places: &[Place<'tcx>],
+        ty: Option<Ty<'tcx>>,
+    ) -> Vec<Caveat> {
         let mut out = Vec::new();
         let def = self.source_def(scope);
-        let is_item = matches!(self.instance.def, InstanceKind::Item(_)) || def != self.instance.def_id();
+        let is_item =
+            matches!(self.instance.def, InstanceKind::Item(_)) || def != self.instance.def_id();
         let is_unsafe = !is_item
             || match self.safety.of(self.tcx, def) {
                 Some(r) => r.whole_body || r.blocks.iter().any(|b| b.contains(span)),
@@ -652,7 +850,9 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             out.push(Caveat::Unsafe);
         }
         let interior = ty.is_some_and(|t| !t.is_freeze(self.tcx, self.env))
-            || places.iter().any(|p| self.place_has_interior_mutability(*p));
+            || places
+                .iter()
+                .any(|p| self.place_has_interior_mutability(*p));
         if interior {
             out.push(Caveat::InteriorMutability);
         }
@@ -677,7 +877,11 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
 
     fn type_info(&self, ty: Ty<'tcx>) -> TypeInfo {
         let name = with_forced_trimmed_paths!(ty.to_string());
-        let size = self.tcx.layout_of(self.env.as_query_input(ty)).ok().map(|l| l.size.bytes());
+        let size = self
+            .tcx
+            .layout_of(self.env.as_query_input(ty))
+            .ok()
+            .map(|l| l.size.bytes());
         TypeInfo { name, size }
     }
 
@@ -715,7 +919,12 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                 }
             }
             if let Some(term) = &data.terminator
-                && let TerminatorKind::Call { func, args, destination, .. } = &term.kind
+                && let TerminatorKind::Call {
+                    func,
+                    args,
+                    destination,
+                    ..
+                } = &term.kind
                 && destination.projection.is_empty()
             {
                 *count.entry(destination.local).or_default() += 1;
@@ -723,7 +932,9 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                     (Some(CalleeKind::Index), Some(base), Some(idx)) => {
                         Some(TempValue::Index(base.node.clone(), idx.node.clone()))
                     }
-                    (Some(CalleeKind::Deref), Some(base), _) => Some(TempValue::Deref(base.node.clone())),
+                    (Some(CalleeKind::Deref), Some(base), _) => {
+                        Some(TempValue::Deref(base.node.clone()))
+                    }
                     _ => None,
                 };
                 if let Some(v) = v {
@@ -744,7 +955,10 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     /// a constant is named raw (`_8`): rendering it through its value would read `move c -> c`.
     fn dst_text(&self, place: Place<'tcx>) -> String {
         if place.projection.is_empty()
-            && matches!(self.temps.get(&place.local), Some(TempValue::Use(_) | TempValue::Const(_)))
+            && matches!(
+                self.temps.get(&place.local),
+                Some(TempValue::Use(_) | TempValue::Const(_))
+            )
         {
             return format!("{:?}", place.local);
         }
@@ -759,7 +973,13 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
     fn name_of(&self, local: Local) -> Option<String> {
         self.names
             .get(&local)
-            .or_else(|| if self.in_inlined_scope { self.inlined_names.get(&local) } else { None })
+            .or_else(|| {
+                if self.in_inlined_scope {
+                    self.inlined_names.get(&local)
+                } else {
+                    None
+                }
+            })
             .cloned()
     }
 
@@ -831,8 +1051,13 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                     let field = field_name(tcx, pt, f.index());
                     // `(*self).name` reads as `self.name`, as the source writes it.
                     match base.strip_prefix('*') {
-                        Some(inner) if is_simple_path(inner) => Rendered::Place(format!("{inner}.{field}")),
-                        _ if is_simple_path(&base) || base.ends_with(']') || base.ends_with(')') => {
+                        Some(inner) if is_simple_path(inner) => {
+                            Rendered::Place(format!("{inner}.{field}"))
+                        }
+                        _ if is_simple_path(&base)
+                            || base.ends_with(']')
+                            || base.ends_with(')') =>
+                        {
                             Rendered::Place(format!("{base}.{field}"))
                         }
                         _ => Rendered::Place(format!("({base}).{field}")),
@@ -842,18 +1067,26 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
                     let idx = self.render_local(i, depth + 1).text();
                     Rendered::Place(format!("{}[{idx}]", acc.text()))
                 }
-                ProjectionElem::ConstantIndex { offset, from_end: false, .. } => {
-                    Rendered::Place(format!("{}[{offset}]", acc.text()))
-                }
-                ProjectionElem::ConstantIndex { offset, from_end: true, .. } => {
-                    Rendered::Place(format!("{}[len - {offset}]", acc.text()))
-                }
-                ProjectionElem::Subslice { from, to, from_end: false } => {
-                    Rendered::Place(format!("{}[{from}..{to}]", acc.text()))
-                }
-                ProjectionElem::Subslice { from, to, from_end: true } => {
-                    Rendered::Place(format!("{}[{from}..len - {to}]", acc.text()))
-                }
+                ProjectionElem::ConstantIndex {
+                    offset,
+                    from_end: false,
+                    ..
+                } => Rendered::Place(format!("{}[{offset}]", acc.text())),
+                ProjectionElem::ConstantIndex {
+                    offset,
+                    from_end: true,
+                    ..
+                } => Rendered::Place(format!("{}[len - {offset}]", acc.text())),
+                ProjectionElem::Subslice {
+                    from,
+                    to,
+                    from_end: false,
+                } => Rendered::Place(format!("{}[{from}..{to}]", acc.text())),
+                ProjectionElem::Subslice {
+                    from,
+                    to,
+                    from_end: true,
+                } => Rendered::Place(format!("{}[{from}..len - {to}]", acc.text())),
                 ProjectionElem::Downcast(name, v) => {
                     let variant = match name {
                         Some(n) => n.to_string(),
@@ -874,8 +1107,16 @@ impl<'a, 'tcx> FnWalker<'a, 'tcx> {
             AggregateKind::Adt(def_id, variant, ..) => {
                 let adt = tcx.adt_def(*def_id);
                 let v = adt.variant(*variant);
-                let field = v.fields.iter().nth(index).map_or_else(|| index.to_string(), |f| f.name.to_string());
-                if adt.is_enum() { format!("({dst} as {}).{field}", v.name) } else { format!("{dst}.{field}") }
+                let field = v
+                    .fields
+                    .iter()
+                    .nth(index)
+                    .map_or_else(|| index.to_string(), |f| f.name.to_string());
+                if adt.is_enum() {
+                    format!("({dst} as {}).{field}", v.name)
+                } else {
+                    format!("{dst}.{field}")
+                }
             }
             AggregateKind::Array(_) => format!("{dst}[{index}]"),
             AggregateKind::Closure(def_id, _) | AggregateKind::CoroutineClosure(def_id, _) => {
@@ -896,7 +1137,9 @@ fn assign_const_entry(map: &mut HashMap<Local, bool>, l: Local) -> &mut bool {
 }
 
 fn is_simple_path(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
 }
 
 fn field_name<'tcx>(tcx: TyCtxt<'tcx>, pt: PlaceTy<'tcx>, index: usize) -> String {
@@ -911,7 +1154,9 @@ fn field_name<'tcx>(tcx: TyCtxt<'tcx>, pt: PlaceTy<'tcx>, index: usize) -> Strin
                 .and_then(|v| v.fields.iter().nth(index))
                 .map_or_else(|| index.to_string(), |f| f.name.to_string())
         }
-        ty::Closure(def_id, _) | ty::CoroutineClosure(def_id, _) => capture_name(tcx, *def_id, index),
+        ty::Closure(def_id, _) | ty::CoroutineClosure(def_id, _) => {
+            capture_name(tcx, *def_id, index)
+        }
         _ => index.to_string(),
     }
 }
@@ -930,7 +1175,11 @@ fn variant_name<'tcx>(_tcx: TyCtxt<'tcx>, pt: PlaceTy<'tcx>, index: usize) -> St
 fn capture_name(tcx: TyCtxt<'_>, closure: DefId, index: usize) -> String {
     closure
         .as_local()
-        .and_then(|l| tcx.closure_captures(l).get(index).map(|c| c.to_symbol().to_string()))
+        .and_then(|l| {
+            tcx.closure_captures(l)
+                .get(index)
+                .map(|c| c.to_symbol().to_string())
+        })
         .unwrap_or_else(|| index.to_string())
 }
 
@@ -951,8 +1200,9 @@ fn const_text(c: &mir::ConstOperand<'_>) -> String {
 /// `3_u32` → `3`, `-1_isize` → `-1`.
 fn strip_int_suffix(s: &str) -> Option<String> {
     let (num, suffix) = s.rsplit_once('_')?;
-    const SUFFIXES: [&str; 12] =
-        ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize"];
+    const SUFFIXES: [&str; 12] = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+    ];
     let digits = num.strip_prefix('-').unwrap_or(num);
     (SUFFIXES.contains(&suffix) && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
         .then(|| num.to_owned())
