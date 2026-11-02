@@ -46,6 +46,10 @@ pub fn gdb_stop(run: GdbRun<'_>, line: u32) -> GdbStop {
             c
         }
     };
+    // gdb prints non-ASCII chars literally ('λ') under a UTF-8 locale and escaped
+    // ('\u{0003bb}') otherwise; hopper's summaries are the escaped form, so pin the C locale
+    // whatever the host's is.
+    cmd.env("LC_ALL", "C");
     cmd.args(["-batch", "-nx", "-iex", "set debuginfod enabled off"]);
     cmd.args(["-iex", "set auto-load safe-path /"]);
     if let Some(d) = rust_gdb_scripts() {

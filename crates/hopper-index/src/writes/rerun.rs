@@ -19,10 +19,18 @@
 //! before-state. The written bytes are known when they come from a register or an immediate;
 //! otherwise the write is logged as [`WriteValue::Unrecorded`].
 //!
-//! **Moments.** `frame_time` is the record's `event` (rr's `when`: the frame being replayed,
-//! `TraceReader::time`), `ticks` its `ticks`, and `sub` counts the task's records since its
-//! (event, ticks) last changed. That matches [`hopper_rr::RrReplica`]'s `sub` when every record
-//! is one instruction; the `rr_rerun_moments_match_replica` test checks it on a PMU host.
+//! **Moments.** rerun's `event` is the frame being replayed (`TraceReader::time`) when the record
+//! was printed, but [`hopper_rr::RrReplica`]'s `frame_time` is rr's `when`, the last
+//! *completely* replayed event (`current_trace_frame().time() - 1`, `DebuggerExtensionCommand.cc`).
+//! They agree for the first record (printed as `start - 1`) and for the record of the step that
+//! completed its event (printed with the completed event's number); for a step inside frame `e`
+//! rerun prints `e` where `when` is `e - 1`. A record completed its event exactly when the next
+//! record's `event` is larger, and the last record of a shard always completes the shard's last
+//! event, so [`StepDecoder`] holds each record until the next arrives (or [`StepDecoder::finish`])
+//! and then gives it `when`. `ticks` is the record's `ticks`, and `sub` counts the task's
+//! instructions since its (when, ticks) last changed, as the replica's `sub` does; a record that
+//! executed nothing (a syscall exit) still moves the task to its clock. The
+//! `rr_rerun_moments_match_replica` test checks this on a PMU host.
 //!
 //! **Shards.** The window's events are split into contiguous ranges. Each shard is either a plain
 //! `rr rerun -s <start> -e <end>` (replaying to its start at full speed, then stepping) or, with
@@ -317,8 +325,10 @@ fn same_state(a: &RegisterSet, b: &RegisterSet) -> bool {
 pub struct StepDecoder {
     recording: RecordingId,
     process: ProcessId,
-    /// Per task: its previous record and that record's sub.
+    /// Per task: its previous record (with rr's `when` as its event) and that record's sub.
     last: std::collections::HashMap<Tid, (StepRecord, u32)>,
+    /// The latest record, waiting for the next to tell whether it completed its event.
+    held: Option<StepRecord>,
     pub instructions: u64,
     pub writes: u64,
     pub undecoded: u64,
@@ -332,6 +342,7 @@ impl StepDecoder {
             recording,
             process,
             last: Default::default(),
+            held: None,
             instructions: 0,
             writes: 0,
             undecoded: 0,
@@ -350,51 +361,73 @@ impl StepDecoder {
         }
     }
 
-    /// Decode `records` (in output order) into writes.
+    /// Decode `records` (in output order) into writes. The last record is held until the next
+    /// call or [`Self::finish`] (see the module docs).
     pub fn feed(&mut self, records: Vec<StepRecord>, code: &dyn CodeSource) -> Vec<LoggedWrite> {
         let mut out = Vec::new();
         for r in records {
-            let Some((prev, prev_sub)) = self.last.remove(&r.tid) else {
-                let m = self.moment(&r, 0);
-                self.first.get_or_insert(m);
-                self.last_moment = Some(m);
-                self.last.insert(r.tid, (r, 0));
-                continue;
-            };
-            if prev.regs.pc() == r.regs.pc() && same_state(&prev.regs, &r.regs) {
-                // A state change with no instruction (syscall exit, signal): nothing executed.
-                self.last.insert(r.tid, (prev, prev_sub));
-                continue;
+            if let Some(mut held) = self.held.take() {
+                if r.event <= held.event {
+                    // A step inside frame `held.event`: rr's `when` is the frame before it.
+                    held.event = held.event.saturating_sub(1);
+                }
+                self.decode(held, code, &mut out);
             }
-            self.instructions += 1;
-            let sub = if (prev.event, prev.ticks) == (r.event, r.ticks) {
-                prev_sub + 1
-            } else {
-                0
-            };
-            let at = self.moment(&prev, prev_sub);
-            match prev.regs.pc().and_then(|pc| Some((pc, code.code_at(pc)?))) {
-                Some((pc, bytes)) => match decode_at(&bytes, pc) {
-                    Some(insn) => {
-                        for site in instruction_writes(&insn, &prev.regs, Some(&r.regs)) {
-                            self.writes += 1;
-                            out.push(LoggedWrite {
-                                at,
-                                pc,
-                                place: Place::memory(self.process, site.addr, site.len),
-                                value: site.value.map_or(WriteValue::Unrecorded, WriteValue::Bytes),
-                            });
-                        }
-                    }
-                    None => self.undecoded += 1,
-                },
-                None => self.undecoded += 1,
-            }
-            let m = self.moment(&r, sub);
-            self.last_moment = Some(m);
-            self.last.insert(r.tid, (r, sub));
+            self.held = Some(r);
         }
         out
+    }
+
+    /// Decode the held last record: the end of the shard, which completed its event.
+    pub fn finish(&mut self, code: &dyn CodeSource) -> Vec<LoggedWrite> {
+        let mut out = Vec::new();
+        if let Some(held) = self.held.take() {
+            self.decode(held, code, &mut out);
+        }
+        out
+    }
+
+    /// Decode one record whose `event` is already rr's `when`.
+    fn decode(&mut self, r: StepRecord, code: &dyn CodeSource, out: &mut Vec<LoggedWrite>) {
+        let Some((prev, prev_sub)) = self.last.remove(&r.tid) else {
+            let m = self.moment(&r, 0);
+            self.first.get_or_insert(m);
+            self.last_moment = Some(m);
+            self.last.insert(r.tid, (r, 0));
+            return;
+        };
+        let same_clock = (prev.event, prev.ticks) == (r.event, r.ticks);
+        if prev.regs.pc() == r.regs.pc() && same_state(&prev.regs, &r.regs) {
+            // A state change with no instruction (syscall exit, signal): nothing executed, but
+            // the task is now at this record's clock.
+            let sub = if same_clock { prev_sub } else { 0 };
+            self.last_moment = Some(self.moment(&r, sub));
+            self.last.insert(r.tid, (r, sub));
+            return;
+        }
+        self.instructions += 1;
+        let sub = if same_clock { prev_sub + 1 } else { 0 };
+        let at = self.moment(&prev, prev_sub);
+        match prev.regs.pc().and_then(|pc| Some((pc, code.code_at(pc)?))) {
+            Some((pc, bytes)) => match decode_at(&bytes, pc) {
+                Some(insn) => {
+                    for site in instruction_writes(&insn, &prev.regs, Some(&r.regs)) {
+                        self.writes += 1;
+                        out.push(LoggedWrite {
+                            at,
+                            pc,
+                            place: Place::memory(self.process, site.addr, site.len),
+                            value: site.value.map_or(WriteValue::Unrecorded, WriteValue::Bytes),
+                        });
+                    }
+                }
+                None => self.undecoded += 1,
+            },
+            None => self.undecoded += 1,
+        }
+        let m = self.moment(&r, sub);
+        self.last_moment = Some(m);
+        self.last.insert(r.tid, (r, sub));
     }
 }
 
@@ -406,7 +439,8 @@ pub fn writes_from_steps(
     code: &dyn CodeSource,
 ) -> (Vec<LoggedWrite>, StepDecoder) {
     let mut d = StepDecoder::new(recording, process);
-    let w = d.feed(records, code);
+    let mut w = d.feed(records, code);
+    w.extend(d.finish(code));
     (w, d)
 }
 
@@ -597,6 +631,14 @@ fn run_shard(
         }
     }
     let status = stepper.wait()?;
+    for w in decoder.finish(code) {
+        pending.push(Record::Write {
+            at: Stamp::of(&w.at),
+            pc: w.pc,
+            place: w.place,
+            value: w.value,
+        });
+    }
     if let Some(mut e) = exporter {
         let _ = e.wait();
     }
@@ -779,8 +821,39 @@ mod tests {
             writes[1].value,
             WriteValue::Bytes(7u64.to_le_bytes().to_vec())
         );
-        // The second instruction ran inside event 10 at the same ticks: sub restarts there.
-        assert_eq!(writes[1].at.order_key(), (10, 50, 0));
+        // Both instructions ran inside frame 10, where rr's `when` is 9, at the same ticks: the
+        // second is one instruction later in the same region.
+        assert_eq!(writes[1].at.order_key(), (9, 50, 1));
+        // The last record (the syscall exit) completed event 10: the task is at its start.
+        assert_eq!(d.last_moment.unwrap().order_key(), (10, 50, 0));
+    }
+
+    #[test]
+    fn records_split_across_batches_get_the_same_moments() {
+        let mut gp = [0u64; 16];
+        gp[4] = 0x7ffe_0000;
+        let mut gp2 = gp;
+        gp2[4] -= 8;
+        let mut out = raw_record(9, 0, 100, 50, 0x1000, gp);
+        out.extend(raw_record(10, 1, 100, 50, 0x1001, gp2));
+        out.extend(raw_record(10, 2, 100, 50, 0x1009, gp2));
+        out.extend(raw_record(10, 2, 100, 50, 0x1009, gp2));
+        let records = parse_raw(&out, &write_log_fields()).unwrap();
+        let code = Code(vec![
+            (0x1000, vec![0x53]),
+            (0x1001, vec![0x48, 0xc7, 0x04, 0x24, 0x07, 0, 0, 0]),
+        ]);
+        let rec = RecordingId([1; 16]);
+        let (whole, _) = writes_from_steps(records.clone(), rec, ProcessId::new(100), &code);
+        let mut d = StepDecoder::new(rec, ProcessId::new(100));
+        let mut split = Vec::new();
+        for r in records {
+            split.extend(d.feed(vec![r], &code));
+        }
+        split.extend(d.finish(&code));
+        let keys = |w: &[LoggedWrite]| w.iter().map(|w| w.at.order_key()).collect::<Vec<_>>();
+        assert_eq!(keys(&split), keys(&whole));
+        assert_eq!(d.last_moment.unwrap().order_key(), (10, 50, 0));
     }
 
     #[test]

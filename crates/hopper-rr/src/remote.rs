@@ -31,6 +31,16 @@ pub(crate) enum ThreadWatch {
     },
 }
 
+/// Whether the server holds the breakpoints in [`Remote::breakpoints`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerBreakpoints {
+    /// Every tracked breakpoint is inserted on the server.
+    Held,
+    /// The server dropped them all (rr does on every `vRun`); none is inserted until
+    /// [`Remote::reinsert_all`].
+    Dropped,
+}
+
 #[derive(Debug)]
 pub(crate) struct Remote<C: Connection> {
     pub client: RspClient<C>,
@@ -42,6 +52,10 @@ pub(crate) struct Remote<C: Connection> {
     selected: Option<ThreadId>,
     /// Breakpoints and watchpoints hopper has inserted, in insertion order.
     pub breakpoints: Vec<Breakpoint>,
+    /// Whether the server holds `breakpoints` right now. Sending `z` for a breakpoint the
+    /// server does not hold aborts rr (`ReplayTimeline::remove_breakpoint` asserts), and
+    /// inserting one it already holds raises rr's reference count on it.
+    server_breakpoints: ServerBreakpoints,
     /// Set once the process exited or was killed: the stop that ended it.
     pub ended: Option<StopEvent>,
     pub thread_watch: ThreadWatch,
@@ -57,6 +71,7 @@ impl<C: Connection> Remote<C> {
             current: None,
             selected: None,
             breakpoints: Vec::new(),
+            server_breakpoints: ServerBreakpoints::Held,
             ended: None,
             thread_watch: ThreadWatch::Off,
             thread_events: Vec::new(),
@@ -230,7 +245,9 @@ impl<C: Connection> Remote<C> {
         if self.breakpoints.contains(&bp) {
             return Ok(());
         }
-        self.client.insert_breakpoint(bp.kind, bp.addr, bp.len)?;
+        if self.server_breakpoints == ServerBreakpoints::Held {
+            self.client.insert_breakpoint(bp.kind, bp.addr, bp.len)?;
+        }
         self.breakpoints.push(bp);
         Ok(())
     }
@@ -243,16 +260,38 @@ impl<C: Connection> Remote<C> {
                 bp.kind, bp.addr
             )));
         };
-        self.client.remove_breakpoint(bp.kind, bp.addr, bp.len)?;
+        if self.server_breakpoints == ServerBreakpoints::Held {
+            self.client.remove_breakpoint(bp.kind, bp.addr, bp.len)?;
+        }
         self.breakpoints.remove(i);
         Ok(())
     }
 
-    /// Insert every tracked breakpoint again (rr drops them all on a seek).
+    /// Note that the server dropped every breakpoint (rr does on a `vRun`).
+    pub fn breakpoints_dropped(&mut self) {
+        self.server_breakpoints = ServerBreakpoints::Dropped;
+    }
+
+    /// Insert every tracked breakpoint again when the server dropped them; a no-op when it
+    /// holds them.
     pub fn reinsert_all(&mut self) -> Result<()> {
-        for bp in self.breakpoints.clone() {
-            self.client.insert_breakpoint(bp.kind, bp.addr, bp.len)?;
+        if self.server_breakpoints == ServerBreakpoints::Held {
+            return Ok(());
         }
+        let all = self.breakpoints.clone();
+        for (i, bp) in all.iter().enumerate() {
+            if let Err(e) = self.client.insert_breakpoint(bp.kind, bp.addr, bp.len) {
+                // Take back the ones already inserted, so the server holds none again and a
+                // later call inserts each exactly once.
+                for done in &all[..i] {
+                    let _ = self
+                        .client
+                        .remove_breakpoint(done.kind, done.addr, done.len);
+                }
+                return Err(e);
+            }
+        }
+        self.server_breakpoints = ServerBreakpoints::Held;
         Ok(())
     }
 
@@ -330,6 +369,10 @@ impl<C: Connection> Remote<C> {
             ResumeRequest::Step(t) => t,
             ResumeRequest::ReverseContinue | ResumeRequest::ReverseStep(_) => return Ok(None),
         };
+        // Nothing to step over when the server holds no breakpoints (in the middle of a seek).
+        if self.server_breakpoints == ServerBreakpoints::Dropped {
+            return Ok(None);
+        }
         let has_code_breakpoints = self
             .breakpoints
             .iter()

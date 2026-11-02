@@ -517,9 +517,11 @@ impl<'a> Driver<'a> {
                 }
             }
         };
+        // The earliest position seen so far that is in the target line: where the step ends.
+        let mut first_in_line = (self.pc(tid)?, self.sp(tid)?);
+        let function_of =
+            |nav: &mut Self, pc: u64| nav.syms_for(pc).set.function_at(pc).map(|f| f.entry);
         loop {
-            let last_pc = self.pc(tid)?;
-            let last_sp = self.sp(tid)?;
             let entered = match self.back_one(tid, into)? {
                 Err(h) => return Ok(h),
                 Ok(e) => e,
@@ -527,23 +529,30 @@ impl<'a> Driver<'a> {
             let pc = self.pc(tid)?;
             if entered {
                 // Stepped back into a callee's last line: move to its start instead.
-                match self.line_at(pc) {
-                    Some(lr) => {
-                        target = lr;
-                        continue;
-                    }
-                    None => continue,
+                if let Some(lr) = self.line_at(pc) {
+                    target = lr;
+                    first_in_line = (pc, self.sp(tid)?);
                 }
+                continue;
+            }
+            let line = self.line_at(pc);
+            if line.is_none()
+                && !target.range.contains(&pc)
+                && function_of(self, pc) == function_of(self, target.range.start)
+            {
+                // Code without line information inside the line (a jump target the compiler
+                // gave line 0): keep going, as the forward step does.
+                continue;
             }
             let still_in = target.range.contains(&pc)
-                || self
-                    .line_at(pc)
-                    .is_some_and(|lr| same_line(&lr.location, &target.location));
-            if still_in && pc != last_pc {
+                || line.is_some_and(|lr| same_line(&lr.location, &target.location));
+            if still_in && pc != first_in_line.0 {
+                first_in_line = (pc, self.sp(tid)?);
                 continue;
             }
             // Left the line: forward again to its first instruction.
-            return match self.run_to(last_pc, tid, Some(last_sp), Direction::Forward)? {
+            let (pc, sp) = first_in_line;
+            return match self.run_to(pc, tid, Some(sp), Direction::Forward)? {
                 Reach::Arrived => Ok(Halt::Stepped),
                 Reach::Halted(h) => Ok(h),
             };

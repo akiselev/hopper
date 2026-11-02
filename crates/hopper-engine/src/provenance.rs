@@ -209,12 +209,16 @@ impl<'a> Reverse<'a> {
             Ok(x) => x,
             Err(no) => return Ok(Err(no)),
         };
-        let after = self.t.now()?;
         let piece_end = (watched + piece_len).min(addr + watched_len);
         let follow = piece_end.max(watched + 1) - watched;
+        // A reverse watchpoint stop is just before the writer (see `StopReason::Watchpoint`).
+        // One instruction forward for the moment and value after the write, then back, so the
+        // replica is at the writer for `source_of`.
+        self.spend()?;
+        self.t.resume(Resume::Step { tid }, Direction::Forward)?;
+        let after = self.t.now()?;
         let mut value = vec![0u8; len.min(4096) as usize];
         let _ = self.t.read_memory(addr, &mut value);
-        // One instruction back: the writer.
         self.spend()?;
         self.t.resume(Resume::Step { tid }, Direction::Reverse)?;
         let regs = self.t.registers(tid)?;

@@ -582,6 +582,12 @@ impl<C: Connection> RspClient<C> {
                 if !self.features.supports("ReverseContinue") {
                     return Err(HopperError::Unsupported("reverse continue".into()));
                 }
+                // `bc` runs whatever thread `Hc` last named, and a server may change that by
+                // itself: rr sets it to the stopped thread after every forward stop and then
+                // reports only that thread's breaks and watchpoints on a reverse continue
+                // (`GdbServer::compute_run_command_for_reverse_exec`). gdb sends `Hc0` before
+                // every `bc`; so does hopper, every time, since the server's state moves.
+                self.select_thread(ThreadOp::Continue, ThreadSelector::Any)?;
                 self.send(b"bc")
             }
             ResumeRequest::ReverseStep(t) => {

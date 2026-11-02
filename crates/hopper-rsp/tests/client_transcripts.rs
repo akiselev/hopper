@@ -377,6 +377,8 @@ fn falls_back_to_plain_packets_without_vcont() {
 #[test]
 fn reverses_with_bc_and_bs() {
     let script = handshake(RR_SUPPORTED)
+        // Every thread, whatever `Hc` the server last set by itself.
+        .exchange("Hc0", "OK")
         .exchange("bc", "T00thread:p10.10;replaylog:begin;")
         .exchange("Hcp10.10", "OK")
         .exchange("bs", "T05thread:p10.10;");

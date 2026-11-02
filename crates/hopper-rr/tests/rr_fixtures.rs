@@ -243,16 +243,24 @@ fn rr_reverse_continues_to_a_write_watchpoint() {
             addr: word
         }
     );
-    // Stopped just after the write that produced the current value.
-    assert_eq!(value_now(&mut t), current);
+    // Stopped just before the write that produced the current value: the old value is still
+    // there, and one instruction forward the current one is.
+    assert_ne!(value_now(&mut t), current, "before the write");
     let tid: Tid = ev.tid;
     t.remove(watch).unwrap();
-    t.resume(Resume::Step { tid }, Direction::Reverse).unwrap();
-    assert_ne!(
+    t.resume(Resume::Step { tid }, Direction::Forward).unwrap();
+    assert_eq!(
         value_now(&mut t),
         current,
-        "one instruction back, before the write"
+        "one instruction forward, after the write"
     );
+    // A second reverse continue, from the writer, moves on to an earlier write.
+    t.resume(Resume::Step { tid }, Direction::Reverse).unwrap();
+    let writer = t.now().unwrap();
+    t.insert(watch).unwrap();
+    let ev = t.resume(Resume::Continue, Direction::Reverse).unwrap();
+    assert!(matches!(ev.reason, StopReason::Watchpoint { .. }), "{ev:?}");
+    assert!(t.now().unwrap().is_before(&writer), "an earlier write");
 }
 
 #[test]

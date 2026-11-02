@@ -203,7 +203,9 @@ fn rr_m4_origin_reaches_the_rodata_literal_and_mcp_reproduces_it() {
     let lines = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_until","arguments":{"until":"location","location":"main.rs:18"}}}"#.to_string(),
+        // The cursor is already past line 18 (the click above): back to the start first.
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_until","arguments":{"until":"end","direction":"reverse"}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_until","arguments":{"until":"location","location":"main.rs:18"}}}"#.to_string(),
     ];
     let mut out = Vec::new();
     hopper_mcp::serve(d.clone(), std::io::Cursor::new(lines.join("\n")), &mut out).unwrap();
@@ -213,8 +215,13 @@ fn rr_m4_origin_reaches_the_rodata_literal_and_mcp_reproduces_it() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     let stop = &replies.last().unwrap()["result"]["structuredContent"];
+    assert_eq!(
+        stop["moment"],
+        hopper_core::wire::moment_json(&s.at),
+        "{stop}"
+    );
     let moment = stop["moment"].as_str().expect("a moment").to_string();
-    let call = serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"origin","arguments":{"moment": moment, "expr": "(*n).vec[0]"}}});
+    let call = serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"origin","arguments":{"moment": moment, "expr": "(*n).vec[0]"}}});
     let mut out = Vec::new();
     hopper_mcp::serve(d.clone(), std::io::Cursor::new(call.to_string()), &mut out).unwrap();
     let reply: serde_json::Value =

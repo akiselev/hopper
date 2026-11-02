@@ -367,6 +367,7 @@ impl<C: Connection> RrReplica<C> {
     }
 
     fn after_vrun(&mut self, reply: &StopReply) {
+        self.remote.breakpoints_dropped();
         self.remote.forget_selection();
         self.remote.rebase_threads();
         self.visits = None;
@@ -766,22 +767,22 @@ impl<C: Connection> Target for RrReplica<C> {
         } else {
             Some(self.clock()?)
         };
-        match (here, self.sub) {
+        let arrived = match (here, self.sub) {
             (Some(c), SubPosition::Known(k)) if c == target && k <= to.sub => {
-                self.step_within_ticks(target, to.sub - k)?;
+                self.step_within_ticks(target, to.sub - k)
             }
-            _ => {
-                let arrived = self
-                    .seek_clock_forward(target)
-                    .and_then(|_| self.step_within_ticks(target, to.sub));
-                let reinserted = self.remote.reinsert_all();
-                if let Err(e) = arrived {
-                    self.sub = SubPosition::Unmeasured;
-                    return Err(e);
-                }
-                reinserted?;
-            }
+            _ => self
+                .seek_clock_forward(target)
+                .and_then(|_| self.step_within_ticks(target, to.sub)),
+        };
+        // Put back the breakpoints a `vRun` dropped, this one's or an earlier walk's (a no-op
+        // when rr holds them).
+        let reinserted = self.remote.reinsert_all();
+        if let Err(e) = arrived {
+            self.sub = SubPosition::Unmeasured;
+            return Err(e);
         }
+        reinserted?;
         self.sub = SubPosition::Known(to.sub);
         Ok(StopEvent {
             tid: to.tid,

@@ -67,7 +67,11 @@ impl Breakpoint {
 pub enum StopReason {
     /// A code breakpoint at this address.
     Breakpoint { addr: u64 },
-    /// A watchpoint fired. `addr` is the watched address the target reported.
+    /// A watchpoint fired. `addr` is the watched address the target reported. Running forward
+    /// the target stops just after the access; running in reverse, just before it (the
+    /// accessing instruction is the next one forward), as rr and gdb do. So repeating a
+    /// continue in either direction moves on to the next access, and after a reverse stop
+    /// the watched place still holds its value from before the write.
     Watchpoint { kind: BreakKind, addr: u64 },
     /// A single step finished.
     Step,
