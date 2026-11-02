@@ -52,24 +52,71 @@ fn cores_dir() -> PathBuf {
     d
 }
 
+/// Build the cargo project at `manifest_dir` (debug) with `toolchain` (`None`: the repository's
+/// pinned one) into `target/test-programs/<name>-<toolchain>/`, and return the binary `name`.
+/// Skips when that toolchain is not installed.
+pub fn build_program(manifest_dir: &Path, name: &str, toolchain: Option<&str>) -> Option<PathBuf> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tag = toolchain.unwrap_or("pinned");
+    let target = repo_root().join("target/test-programs").join(format!("{name}-{tag}"));
+    let mut cmd = Command::new("cargo");
+    if let Some(t) = toolchain {
+        cmd.arg(format!("+{t}"));
+    }
+    cmd.args(["build", "--quiet", "--manifest-path"])
+        .arg(manifest_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS");
+    // Cargo's own variables from the test's build would leak into the nested build.
+    for (k, _) in std::env::vars() {
+        if k.starts_with("CARGO_") && k != "CARGO_HOME" && k != "CARGO_TARGET_DIR" {
+            cmd.env_remove(&k);
+        }
+    }
+    if toolchain.is_some() {
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+    let out = cmd.output().ok()?;
+    let binary = target.join("debug").join(name);
+    if out.status.success() && binary.exists() {
+        Some(binary)
+    } else {
+        skip(&format!(
+            "could not build {} with {tag}: {}",
+            manifest_dir.display(),
+            String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")
+        ))
+    }
+}
+
 /// A core file of fixture `name` stopped at the gdb breakpoint `location` (`values::stop_here`,
 /// `main.rs:14`). Made once per binary build and cached under `target/test-cores/`.
 pub fn core_at(name: &str, location: &str) -> Option<(PathBuf, PathBuf)> {
+    let binary = fixture_binary(name)?;
+    let core = core_of(&binary, location, name)?;
+    Some((binary, core))
+}
+
+/// A core file of `binary` stopped at `location`, cached under `target/test-cores/` as
+/// `<tag>-<location>.core` and remade when the binary is newer.
+pub fn core_of(binary: &Path, location: &str, tag: &str) -> Option<PathBuf> {
     static LOCK: Mutex<()> = Mutex::new(());
     if !gdb_available() {
         return skip("gdb is not installed");
     }
-    let binary = fixture_binary(name)?;
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let tag: String =
+    let loc_tag: String =
         location.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    let core = cores_dir().join(format!("{name}-{tag}.core"));
-    let fresh = match (std::fs::metadata(&core), std::fs::metadata(&binary)) {
+    let core = cores_dir().join(format!("{tag}-{loc_tag}.core"));
+    let fresh = match (std::fs::metadata(&core), std::fs::metadata(binary)) {
         (Ok(c), Ok(b)) => c.modified().ok() >= b.modified().ok(),
         _ => false,
     };
     if !fresh {
         let tmp = core.with_extension("tmp");
+        let _ = std::fs::remove_file(&tmp);
         let out = Command::new("gdb")
             .args(["-batch", "-nx", "-iex", "set debuginfod enabled off"])
             .args(["-ex", "set pagination off"])
@@ -77,7 +124,7 @@ pub fn core_at(name: &str, location: &str) -> Option<(PathBuf, PathBuf)> {
             .args(["-ex", "run"])
             .args(["-ex", &format!("gcore {}", tmp.display())])
             .args(["-ex", "kill"])
-            .arg(&binary)
+            .arg(binary)
             .output()
             .ok()?;
         if !tmp.exists() {
@@ -88,7 +135,7 @@ pub fn core_at(name: &str, location: &str) -> Option<(PathBuf, PathBuf)> {
         }
         std::fs::rename(&tmp, &core).ok()?;
     }
-    Some((binary, core))
+    Some(core)
 }
 
 /// The directory with Rust's gdb pretty printers (`<sysroot>/lib/rustlib/etc`), which the

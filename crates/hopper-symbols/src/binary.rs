@@ -188,16 +188,16 @@ impl Binary {
 
         let segments = file
             .segments()
-            .filter_map(|seg| {
+            .map(|seg| {
                 let (file_offset, filesz) = seg.file_range();
                 // Only PT_LOAD segments are reported by `segments()` for ELF.
-                Some(LoadSegment {
+                LoadSegment {
                     vaddr: seg.address(),
                     memsz: seg.size(),
                     file_offset,
                     filesz,
                     executable: is_executable_segment(&file, seg.address()),
-                })
+                }
             })
             .collect();
 

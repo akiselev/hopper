@@ -252,10 +252,13 @@ impl Type {
     }
 }
 
+/// One binary's parsed types; the `Arc` keeps the binary (and so the cache key) alive.
+type BinaryTypes = (Arc<Binary>, HashMap<TypeId, Arc<Type>>);
+
 /// Parsed types, per binary. Shared by every evaluation.
 #[derive(Debug, Default)]
 pub struct TypeCache {
-    by_binary: Mutex<HashMap<usize, (Arc<Binary>, HashMap<TypeId, Arc<Type>>)>>,
+    by_binary: Mutex<HashMap<usize, BinaryTypes>>,
 }
 
 impl TypeCache {
@@ -667,7 +670,7 @@ fn array_len(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result<Option<
             let lower = e.attr_value(gimli::DW_AT_lower_bound).and_then(|v| v.udata_value()).unwrap_or(0);
             e.attr_value(gimli::DW_AT_upper_bound)
                 .and_then(|v| match v {
-                    AttributeValue::Sdata(s) => Some(s as i64 as u64),
+                    AttributeValue::Sdata(s) => Some(s as u64),
                     other => other.udata_value(),
                 })
                 .map(|u| u.wrapping_sub(lower).wrapping_add(1))

@@ -122,6 +122,10 @@ pub fn evaluate_expr(
     frame: &FrameContext<'_>,
     memory: &mut dyn Memory,
 ) -> Result<ValueLocation> {
+    // An empty expression is a location description with no location (DWARF 5 §2.6.1.1.1).
+    if gimli::Reader::is_empty(&expr.0) {
+        return Ok(ValueLocation::OptimisedOut);
+    }
     let mut eval: Evaluation<Reader> = expr.evaluation(unit.unit.encoding());
     let mut res = eval.evaluate().map_err(eval_err)?;
     loop {

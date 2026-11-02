@@ -167,8 +167,8 @@ impl SymbolSet {
                 };
                 if let Some(row) = row {
                     let section_data = match source {
-                        FdeSource::EhFrame => cfi.eh_frame.as_ref().map(|s| expr_section(s)),
-                        FdeSource::DebugFrame => cfi.debug_frame.as_ref().map(|s| expr_section(s)),
+                        FdeSource::EhFrame => cfi.eh_frame.clone().map(ExprSection::Eh),
+                        FdeSource::DebugFrame => cfi.debug_frame.clone().map(ExprSection::Debug),
                     };
                     let ra = fde.cie().return_address_register();
                     if let Some(step) =
@@ -192,26 +192,6 @@ struct Step {
 enum ExprSection {
     Eh(gimli::EhFrame<Reader>),
     Debug(gimli::DebugFrame<Reader>),
-}
-
-trait IntoExprSection {
-    fn into_expr_section(&self) -> ExprSection;
-}
-
-impl IntoExprSection for gimli::EhFrame<Reader> {
-    fn into_expr_section(&self) -> ExprSection {
-        ExprSection::Eh(self.clone())
-    }
-}
-
-impl IntoExprSection for gimli::DebugFrame<Reader> {
-    fn into_expr_section(&self) -> ExprSection {
-        ExprSection::Debug(self.clone())
-    }
-}
-
-fn expr_section<S: IntoExprSection>(s: &S) -> ExprSection {
-    s.into_expr_section()
 }
 
 impl ExprSection {

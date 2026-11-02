@@ -10,7 +10,8 @@
 //! (MIT). See `THIRD_PARTY_NOTICES.md`. Paths are followed, then newtype wrappers
 //! (`NonNull { pointer }`, `Unique { pointer, _marker }`, `UsizeNoHighBit(usize)`,
 //! `Cell { value }`, `UnsafeCell { value }`) are unwrapped down to a scalar or pointer, so a
-//! wrapper added in a future release usually needs no new row.
+//! wrapper added in a future release usually needs no new row. A `*` segment follows a pointer
+//! (`BorrowRef.borrow` is a `&Cell<isize>` into the `RefCell`).
 
 use hopper_symbols::RustcVersion;
 
@@ -336,12 +337,12 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     StdLayout {
         kind: StdKind::Ref,
         pattern: TypePattern::Path { root: "core", name: "Ref", generic: true },
-        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow"])],
+        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow", "*"])],
     },
     StdLayout {
         kind: StdKind::RefMut,
         pattern: TypePattern::Path { root: "core", name: "RefMut", generic: true },
-        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow"])],
+        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow", "*"])],
     },
     StdLayout {
         kind: StdKind::NonZero,

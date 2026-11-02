@@ -1,0 +1,12 @@
+[package]
+name = "std-types"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Not part of hopper's workspace: a debuggee the evaluator's tests build and inspect.
+[workspace]
+
+[profile.dev]
+debug = 2
+opt-level = 0

@@ -1,0 +1,13 @@
+[package]
+name = "optimised"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Not part of hopper's workspace: an optimised debuggee whose variables live in registers and
+# location lists.
+[workspace]
+
+[profile.dev]
+debug = 2
+opt-level = 2

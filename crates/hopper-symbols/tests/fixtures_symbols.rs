@@ -130,6 +130,14 @@ fn inline_chain_in_main() {
             // The outer frame's location is the call site in main.rs.
             let call = frames[frames.len() - 1].location.as_ref().unwrap();
             assert!(call.file.ends_with("values/src/main.rs"), "{call}");
+            // The inlined frame's scope holds the inlined function's own variables, and main's
+            // scope at the same pc does not include them.
+            let inner = set.scope_at(a, frames[0].die).unwrap();
+            let outer = set.scope_at(a, frames.last().unwrap().die).unwrap();
+            assert_eq!(inner.subprogram, outer.subprogram, "one physical function");
+            assert_ne!(inner.frame_die, outer.frame_die);
+            assert!(outer.variables.iter().all(|v| !inner.variables.contains(v)));
+            assert!(outer.variables.iter().any(|v| v.name == "small"));
             break;
         }
     }
@@ -214,4 +222,54 @@ fn core_threads_of_values() {
     assert_eq!(f.name, "values::stop_here");
     assert!(core.executable().is_some());
     assert!(t.regs.get_bytes(hopper_core::Reg::XMM0).is_some_and(|b| b.len() == 16));
+}
+
+/// Every thread of the threads fixture unwinds through std and libc (CFI from the mapped libc) to
+/// the same frames gdb's `thread apply all bt` shows.
+#[test]
+fn unwinds_every_thread_through_libc() {
+    let Some((binary, core_path)) = core_at("threads", "threads::bump") else { return };
+    let core = CoreFile::open(&core_path).unwrap();
+    let set = core.symbol_set();
+    assert!(set.modules().count() > 1, "libc and the loader are modules too");
+    assert!(core.threads().len() >= 2, "main plus at least one spawned thread");
+    let bt = gdb_output(&binary, Some(&core_path), &["set backtrace past-main on", "thread apply all bt"]);
+    // gdb's pcs per thread, keyed by LWP.
+    let mut gdb_threads: Vec<(i32, Vec<u64>)> = Vec::new();
+    for line in bt.lines() {
+        if line.starts_with("Thread ")
+            && let Some(i) = line.find("(LWP ")
+        {
+            let lwp: String = line[i + 5..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            gdb_threads.push((lwp.parse().unwrap(), Vec::new()));
+        } else if line.starts_with('#')
+            && !line.starts_with("#0 ")
+            && let Some(i) = line.find(" 0x")
+            && let Some((_, pcs)) = gdb_threads.last_mut()
+        {
+            let hex: String = line[i + 3..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            pcs.push(u64::from_str_radix(&hex, 16).unwrap());
+        }
+    }
+    assert_eq!(gdb_threads.len(), core.threads().len(), "{bt}");
+    let mut saw_bump = false;
+    for t in core.threads() {
+        let mut mem = core.memory();
+        let frames = set.unwind(&mut mem, &t.regs).unwrap();
+        let ours: Vec<u64> = frames.iter().map(|f| f.pc).collect();
+        let (_, theirs) = gdb_threads.iter().find(|(lwp, _)| *lwp == t.tid.0).expect("gdb lists the thread");
+        // gdb prints a pc for each physical frame but the innermost (inlined frames have none);
+        // every caller must agree, in order.
+        assert_eq!(&ours[1..], theirs.as_slice(), "thread {}: ours {ours:x?}\n{bt}", t.tid);
+        let stack = set.stack(&mut mem, &t.regs, t.tid).unwrap();
+        if stack[0].frame.function.as_deref() == Some("threads::bump") {
+            saw_bump = true;
+            assert!(
+                stack[1].frame.function.as_deref().is_some_and(|f| f.contains("threads::main::{closure")),
+                "{:?}",
+                stack.iter().map(|f| &f.frame.function).collect::<Vec<_>>()
+            );
+        }
+    }
+    assert!(saw_bump, "the breakpoint thread is stopped in bump");
 }

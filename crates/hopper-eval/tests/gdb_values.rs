@@ -72,10 +72,10 @@ fn gdb_address(text: &str) -> Option<u64> {
 /// gdb prefixes a top-level pointer with its type (`(*mut values::Point) 0x...`); hopper's
 /// summary is the bare address, with the type in `type_name`.
 fn without_pointer_cast(text: &str) -> &str {
-    if text.starts_with("(*") || text.starts_with("(&") {
-        if let Some(i) = text.find(") 0x") {
-            return &text[i + 2..];
-        }
+    if (text.starts_with("(*") || text.starts_with("(&"))
+        && let Some(i) = text.find(") 0x")
+    {
+        return &text[i + 2..];
     }
     text
 }

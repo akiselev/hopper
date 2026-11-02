@@ -155,6 +155,12 @@ fn role_field(layout: &StdLayout, role: Role, v: &Value, s: &mut Session<'_>) ->
 fn follow(v: &Value, s: &mut Session<'_>, path: &[&str]) -> Result<Option<Value>> {
     let mut cur = v.clone();
     for name in path {
+        if *name == "*" {
+            let ptr = unwrap_newtypes(cur, s)?;
+            let Some(pointee) = pointee_of(&ptr) else { return Ok(None) };
+            cur = ptr.pointee(s, &pointee)?;
+            continue;
+        }
         let ty = s.strip(&cur.ty)?;
         let field = match &ty.kind {
             TypeKind::Struct(st) | TypeKind::Union(st) => st.field(name).cloned(),

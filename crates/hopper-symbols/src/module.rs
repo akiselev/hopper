@@ -324,7 +324,7 @@ impl SymbolSet {
             name: sym.name.clone(),
             linkage_name: Some(sym.raw_name.clone()),
             entry: m.to_runtime(sym.address),
-            ranges: vec![m.to_runtime(sym.address)..m.to_runtime(sym.address + sym.size.max(1))],
+            ranges: std::iter::once(m.to_runtime(sym.address)..m.to_runtime(sym.address + sym.size.max(1))).collect(),
             decl: None,
             origin: FunctionOrigin::Symbol,
         })
@@ -430,7 +430,7 @@ impl SymbolSet {
                     name: sym.name.clone(),
                     linkage_name: Some(sym.raw_name.clone()),
                     entry,
-                    ranges: vec![entry..entry + sym.size.max(1)],
+                    ranges: std::iter::once(entry..entry + sym.size.max(1)).collect(),
                     decl: None,
                     origin: FunctionOrigin::Symbol,
                 });

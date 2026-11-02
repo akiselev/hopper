@@ -289,10 +289,12 @@ impl DwarfIndex {
         let end = self.ranges.partition_point(|r| r.0 <= addr);
         let mut seen = Vec::new();
         self.ranges[..end].iter().rev().filter_map(move |&(b, e, u)| {
-            (b <= addr && addr < e && !seen.contains(&u)).then(|| {
+            if b <= addr && addr < e && !seen.contains(&u) {
                 seen.push(u);
-                u
-            })
+                Some(u)
+            } else {
+                None
+            }
         })
     }
 
@@ -682,11 +684,9 @@ fn build_unit_index(
             gimli::DW_TAG_variable if !in_function => {
                 let specification =
                     entry.attr_value(gimli::DW_AT_specification).and_then(reference);
-                let name = string(entry.attr_value(gimli::DW_AT_name)).or_else(|| {
-                    // A definition that points at its declaration.
-                    None
-                });
+                let name = string(entry.attr_value(gimli::DW_AT_name));
                 let has_location = entry.attr(gimli::DW_AT_location).is_some();
+                // A definition that points at its declaration has no name of its own.
                 if let Some(name) = name.or_else(|| specification.map(|_| String::new())) {
                     ix.statics.push(StaticDie {
                         offset: die,
