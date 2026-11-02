@@ -15,7 +15,10 @@ pub struct Element {
 
 impl Element {
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -117,7 +120,11 @@ pub fn elements(doc: &str) -> Result<Vec<Element>> {
             let end = rest.find('<').unwrap_or(rest.len());
             decode_entities(rest[..end].trim())
         };
-        out.push(Element { name: name.to_string(), attrs, text });
+        out.push(Element {
+            name: name.to_string(),
+            attrs,
+            text,
+        });
     }
     Ok(out)
 }
@@ -139,7 +146,10 @@ mod tests {
 </target>"#;
         let els = elements(doc).unwrap();
         let names: Vec<&str> = els.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["target", "architecture", "xi:include", "reg", "thread"]);
+        assert_eq!(
+            names,
+            ["target", "architecture", "xi:include", "reg", "thread"]
+        );
         assert_eq!(els[1].text, "i386:x86-64");
         assert_eq!(els[2].attr("href"), Some("64bit-core.xml"));
         assert_eq!(els[3].attr("bitsize"), Some("64"));

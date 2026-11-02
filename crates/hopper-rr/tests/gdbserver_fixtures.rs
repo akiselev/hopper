@@ -44,7 +44,10 @@ fn breaks_on_main_reads_state_and_steps() {
     assert!(sp > 0x7f00_0000_0000, "stack pointer {sp:#x}");
     assert_eq!(sp % 8, 0);
     assert!(regs.get(Reg::RFLAGS).is_some());
-    assert!(regs.get(Reg::FS_BASE).is_some(), "fs_base from the target description");
+    assert!(
+        regs.get(Reg::FS_BASE).is_some(),
+        "fs_base from the target description"
+    );
     assert!(regs.raw.len() >= 17 * 8);
 
     // gdbserver shadows its breakpoint: memory reads show the program's own bytes.
@@ -57,7 +60,10 @@ fn breaks_on_main_reads_state_and_steps() {
     assert_ne!(u64::from_le_bytes(ret), 0);
     // A page that is never mapped.
     let mut b = [0u8; 4];
-    assert!(matches!(t.read_memory(8, &mut b), Err(HopperError::UnreadableMemory { .. })));
+    assert!(matches!(
+        t.read_memory(8, &mut b),
+        Err(HopperError::UnreadableMemory { .. })
+    ));
 
     let after_break = t.now().unwrap();
     assert!(start.is_before(&after_break));
@@ -65,14 +71,20 @@ fn breaks_on_main_reads_state_and_steps() {
     let ev = t.resume(Resume::Step { tid }, Direction::Forward).unwrap();
     assert_eq!(ev.reason, StopReason::Step);
     let pc = t.registers(tid).unwrap().pc().unwrap();
-    assert!(pc > main && pc < main + 16, "rip advanced from {main:#x} to {pc:#x}");
+    assert!(
+        pc > main && pc < main + 16,
+        "rip advanced from {main:#x} to {pc:#x}"
+    );
     let stepped = t.now().unwrap();
     assert_eq!(stepped.frame_time, after_break.frame_time);
     assert_eq!(stepped.sub, 1);
 
     let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
     assert_eq!(ev.reason, StopReason::Exited { code: 0 });
-    assert!(matches!(t.registers(tid), Err(HopperError::Disconnected(_))));
+    assert!(matches!(
+        t.registers(tid),
+        Err(HopperError::Disconnected(_))
+    ));
 }
 
 #[test]
@@ -80,22 +92,18 @@ fn lists_the_threads_fixture_threads() {
     let exe = fixture("threads");
     let elf = Elf::open(&exe);
     let mut t = launch(&exe, &[]);
-    t.client().record_transcript();
-    t.client().connection().set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
     assert_eq!(t.threads().unwrap().len(), 1);
-    eprintln!("A {}", t.client().take_transcript());
     let bump = runtime_addr(&mut t, &elf, "threads::bump");
     t.insert(Breakpoint::code(bump)).unwrap();
-    eprintln!("B {}", t.client().take_transcript());
     let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
-    eprintln!("C {}", t.client().take_transcript());
     assert_eq!(ev.reason, StopReason::Breakpoint { addr: bump });
-    let threads = t.threads();
-    eprintln!("D {}", t.client().take_transcript());
-    let threads = threads.unwrap();
+    let threads = t.threads().unwrap();
     assert!(threads.len() >= 2, "{threads:?}");
     assert!(threads.contains(&ev.tid));
-    assert!(threads.contains(&hopper_core::Tid(t.info().process.pid)), "the main thread");
+    assert!(
+        threads.contains(&hopper_core::Tid(t.info().process.pid)),
+        "the main thread"
+    );
     // Every thread's registers are readable.
     for tid in &threads {
         assert!(t.registers(*tid).unwrap().pc().is_some());
@@ -153,7 +161,11 @@ fn reports_exit_codes_and_fatal_signals() {
 fn a_live_process_is_a_pool_of_one() {
     let exe = fixture("worked-example");
     let pool = ReplicaPool::new(
-        GdbserverFactory { config: GdbserverConfig::default(), program: exe.clone(), args: vec![] },
+        GdbserverFactory {
+            config: GdbserverConfig::default(),
+            program: exe.clone(),
+            args: vec![],
+        },
         0,
     )
     .unwrap();

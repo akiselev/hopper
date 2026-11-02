@@ -21,7 +21,10 @@ pub enum StopCause {
     Unspecified,
     SoftwareBreak,
     HardwareBreak,
-    Watchpoint { kind: BreakKind, addr: u64 },
+    Watchpoint {
+        kind: BreakKind,
+        addr: u64,
+    },
     /// Reverse execution reached the start of the recording (`replaylog:begin`).
     HistoryBegin,
     /// Forward execution reached the end of the recording (`replaylog:end`).
@@ -43,9 +46,15 @@ pub struct SignalStop {
 pub enum StopReply {
     Stopped(SignalStop),
     /// `W`: the process exited with this status.
-    Exited { code: u8, pid: Option<i32> },
+    Exited {
+        code: u8,
+        pid: Option<i32>,
+    },
     /// `X`: the process was killed by this signal (gdb numbering).
-    Killed { signal: u8, pid: Option<i32> },
+    Killed {
+        signal: u8,
+        pid: Option<i32>,
+    },
 }
 
 fn parse_sig(s: &str) -> Result<u8> {
@@ -125,9 +134,7 @@ impl StopReply {
                     match name {
                         "thread" => stop.thread = Some(ThreadId::parse(value)?),
                         "core" => {
-                            stop.core = Some(
-                                u32::from_str_radix(value, 16).map_err(|_| bad())?,
-                            )
+                            stop.core = Some(u32::from_str_radix(value, 16).map_err(|_| bad())?)
                         }
                         "watch" | "rwatch" | "awatch" => {
                             let kind = match name {
@@ -135,7 +142,10 @@ impl StopReply {
                                 "rwatch" => BreakKind::ReadWatch,
                                 _ => BreakKind::AccessWatch,
                             };
-                            causes.push(StopCause::Watchpoint { kind, addr: parse_hex_u64(value)? });
+                            causes.push(StopCause::Watchpoint {
+                                kind,
+                                addr: parse_hex_u64(value)?,
+                            });
                         }
                         "swbreak" => causes.push(StopCause::SoftwareBreak),
                         "hwbreak" => causes.push(StopCause::HardwareBreak),
@@ -221,8 +231,10 @@ mod tests {
 
     #[test]
     fn parses_gdbserver_t_reply() {
-        let r = StopReply::parse(b"T0506:0000000000000000;07:d0c2ffffff7f0000;thread:p21f9.21f9;core:3;")
-            .unwrap();
+        let r = StopReply::parse(
+            b"T0506:0000000000000000;07:d0c2ffffff7f0000;thread:p21f9.21f9;core:3;",
+        )
+        .unwrap();
         let StopReply::Stopped(s) = r else { panic!() };
         assert_eq!(s.signal, 5);
         assert_eq!(s.thread, Some(ThreadId::new(Some(0x21f9), Tid(0x21f9))));
@@ -237,7 +249,13 @@ mod tests {
     fn parses_rr_reasons() {
         let r = StopReply::parse(b"T05thread:p10.11;watch:7ffd1230;").unwrap();
         let StopReply::Stopped(s) = r else { panic!() };
-        assert_eq!(s.cause, StopCause::Watchpoint { kind: BreakKind::WriteWatch, addr: 0x7ffd1230 });
+        assert_eq!(
+            s.cause,
+            StopCause::Watchpoint {
+                kind: BreakKind::WriteWatch,
+                addr: 0x7ffd1230
+            }
+        );
         let r = StopReply::parse(b"T00thread:p10.10;replaylog:begin;").unwrap();
         let StopReply::Stopped(s) = r else { panic!() };
         assert_eq!(s.signal, 0);
@@ -249,7 +267,10 @@ mod tests {
         let r = StopReply::parse(b"T05thread:10;hwbreak:;").unwrap();
         let StopReply::Stopped(s) = r else { panic!() };
         assert_eq!(s.cause, StopCause::HardwareBreak);
-        for (text, kind) in [("rwatch", BreakKind::ReadWatch), ("awatch", BreakKind::AccessWatch)] {
+        for (text, kind) in [
+            ("rwatch", BreakKind::ReadWatch),
+            ("awatch", BreakKind::AccessWatch),
+        ] {
             let r = StopReply::parse(format!("T05{text}:10;").as_bytes()).unwrap();
             let StopReply::Stopped(s) = r else { panic!() };
             assert_eq!(s.cause, StopCause::Watchpoint { kind, addr: 16 });
@@ -258,21 +279,41 @@ mod tests {
 
     #[test]
     fn parses_exit_forms() {
-        assert_eq!(StopReply::parse(b"W00").unwrap(), StopReply::Exited { code: 0, pid: None });
+        assert_eq!(
+            StopReply::parse(b"W00").unwrap(),
+            StopReply::Exited { code: 0, pid: None }
+        );
         assert_eq!(
             StopReply::parse(b"W03;process:21f9").unwrap(),
-            StopReply::Exited { code: 3, pid: Some(0x21f9) }
+            StopReply::Exited {
+                code: 3,
+                pid: Some(0x21f9)
+            }
         );
-        assert_eq!(StopReply::parse(b"X09").unwrap(), StopReply::Killed { signal: 9, pid: None });
+        assert_eq!(
+            StopReply::parse(b"X09").unwrap(),
+            StopReply::Killed {
+                signal: 9,
+                pid: None
+            }
+        );
         assert_eq!(
             StopReply::parse(b"W0;process:2a").unwrap(),
-            StopReply::Exited { code: 0, pid: Some(0x2a) }
+            StopReply::Exited {
+                code: 0,
+                pid: Some(0x2a)
+            }
         );
         assert_eq!(
             StopReply::parse(b"X9;process:2a").unwrap(),
-            StopReply::Killed { signal: 9, pid: Some(0x2a) }
+            StopReply::Killed {
+                signal: 9,
+                pid: Some(0x2a)
+            }
         );
-        assert!(matches!(StopReply::parse(b"S0b").unwrap(), StopReply::Stopped(s) if s.signal == 11));
+        assert!(
+            matches!(StopReply::parse(b"S0b").unwrap(), StopReply::Stopped(s) if s.signal == 11)
+        );
         assert!(StopReply::parse(b"W").is_err());
         assert!(StopReply::parse(b"W00;pid:1").is_err());
         assert!(StopReply::parse(b"OK").is_err());

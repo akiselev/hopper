@@ -82,7 +82,10 @@ mod tests {
             ThreadId::parse("p21f9.21fa").unwrap(),
             ThreadId::new(Some(0x21f9), Tid(0x21fa))
         );
-        assert_eq!(ThreadId::parse("1a").unwrap(), ThreadId::new(None, Tid(0x1a)));
+        assert_eq!(
+            ThreadId::parse("1a").unwrap(),
+            ThreadId::new(None, Tid(0x1a))
+        );
         assert!(ThreadId::parse("0").is_err());
         assert!(ThreadId::parse("-1").is_err());
         assert!(ThreadId::parse("p12").is_err());
@@ -96,6 +99,9 @@ mod tests {
         assert_eq!(ThreadId::parse(&t.to_string()).unwrap(), t);
         assert_eq!(ThreadSelector::Any.to_string(), "0");
         assert_eq!(ThreadSelector::All.to_string(), "-1");
-        assert_eq!(ThreadSelector::Thread(ThreadId::new(None, Tid(255))).to_string(), "ff");
+        assert_eq!(
+            ThreadSelector::Thread(ThreadId::new(None, Tid(255))).to_string(),
+            "ff"
+        );
     }
 }

@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use hopper_core::target::{Breakpoint, Direction, Resume, StopEvent, StopReason, Target, TargetInfo};
+use hopper_core::target::{
+    Breakpoint, Direction, Resume, StopEvent, StopReason, Target, TargetInfo,
+};
 use hopper_core::{
     CheckpointId, HopperError, Moment, ProcessId, RecordingId, Reg, RegisterSet, Result, Tid,
 };
@@ -116,7 +118,8 @@ impl RrReplica<TcpStream> {
             cmd.arg("-g").arg(ev.to_string());
         }
         cmd.arg(trace_dir).stdout(Stdio::null());
-        let (mut server, addr) = ServerProcess::spawn(cmd, rr_listen_addr, options.startup_timeout)?;
+        let (mut server, addr) =
+            ServerProcess::spawn(cmd, rr_listen_addr, options.startup_timeout)?;
         let stream = server.connect(&addr)?;
         let mut r = RrReplica::attach(stream, recording, Some(rr.version))?;
         r.sub_measure_budget = options.sub_measure_budget;
@@ -129,7 +132,11 @@ impl RrReplica<TcpStream> {
 /// registers and rip. (eflags is left out: its resume flag differs between a breakpoint stop
 /// and a single step to the same instruction.)
 fn position_key(regs: &RegisterSet) -> Vec<(Reg, Vec<u8>)> {
-    regs.values.iter().filter(|(r, _)| r.0 <= Reg::RIP.0).cloned().collect()
+    regs.values
+        .iter()
+        .filter(|(r, _)| r.0 <= Reg::RIP.0)
+        .cloned()
+        .collect()
 }
 
 impl<C: Connection> RrReplica<C> {
@@ -184,6 +191,26 @@ impl<C: Connection> RrReplica<C> {
         Ok(())
     }
 
+    /// Seek to the start of the region after `event` completes (`vRun` to an event number). The
+    /// replica's breakpoints are inserted again; `sub` is measured when next asked.
+    pub fn seek_event(&mut self, event: u64) -> Result<StopEvent> {
+        let reply = self.vrun(RrSeek::Event(event))?;
+        self.remote.reinsert_all()?;
+        self.sub = SubPosition::Unmeasured;
+        let tid = match &reply {
+            StopReply::Stopped(SignalStop {
+                thread: Some(t), ..
+            }) => t.tid,
+            _ => self.remote.current_tid()?,
+        };
+        Ok(StopEvent {
+            tid,
+            reason: StopReason::Other {
+                packet: format!("seek event {event}"),
+            },
+        })
+    }
+
     /// The last event of the recording.
     pub fn last_event(&mut self) -> Result<u64> {
         self.remote.client.rr_when_end()
@@ -196,7 +223,11 @@ impl<C: Connection> RrReplica<C> {
         let tid = self.remote.current_tid()?;
         let frame_time = self.remote.client.rr_when()?;
         let ticks = self.remote.client.rr_when_ticks(Some(tid))?;
-        let c = Clock { frame_time, tid, ticks };
+        let c = Clock {
+            frame_time,
+            tid,
+            ticks,
+        };
         self.clock = Some(c);
         Ok(c)
     }
@@ -206,7 +237,10 @@ impl<C: Connection> RrReplica<C> {
         self.clock = None;
         self.absorb_next_resume = true;
         self.past_end = false;
-        if let StopReply::Stopped(SignalStop { thread: Some(t), .. }) = reply {
+        if let StopReply::Stopped(SignalStop {
+            thread: Some(t), ..
+        }) = reply
+        {
             self.remote.current = Some(*t);
         }
     }
@@ -265,10 +299,14 @@ impl<C: Connection> RrReplica<C> {
     }
 
     fn step_once_checked(&mut self, target: Clock) -> Result<()> {
-        let req = self.remote.request_for(Resume::Step { tid: target.tid }, Direction::Forward);
+        let req = self
+            .remote
+            .request_for(Resume::Step { tid: target.tid }, Direction::Forward);
         let reply = self.resume_absorbing(req)?;
         if !matches!(reply, StopReply::Stopped(_)) {
-            return Err(HopperError::BadMoment("the recording ended inside a seek".into()));
+            return Err(HopperError::BadMoment(
+                "the recording ended inside a seek".into(),
+            ));
         }
         let now = self.clock()?;
         if now != target {
@@ -299,7 +337,9 @@ impl<C: Connection> RrReplica<C> {
                 return Ok(k);
             }
             if k >= self.sub_measure_budget {
-                return Err(HopperError::BudgetExhausted { steps: u64::from(k) });
+                return Err(HopperError::BudgetExhausted {
+                    steps: u64::from(k),
+                });
             }
             self.step_once_checked(at)?;
             k += 1;
@@ -308,20 +348,32 @@ impl<C: Connection> RrReplica<C> {
 
     /// Map rr's stop, folding its end-of-recording stops into `HistoryEnd`.
     fn map_stop(&mut self, reply: &StopReply, how: Resume, dir: Direction) -> Result<StopEvent> {
-        let tid = self.remote.current.map(|t| t.tid).unwrap_or(Tid(self.info.process.pid));
+        let tid = self
+            .remote
+            .current
+            .map(|t| t.tid)
+            .unwrap_or(Tid(self.info.process.pid));
         match reply {
             StopReply::Exited { .. } | StopReply::Killed { .. } => {
                 self.past_end = true;
-                Ok(StopEvent { tid, reason: StopReason::HistoryEnd })
+                Ok(StopEvent {
+                    tid,
+                    reason: StopReason::HistoryEnd,
+                })
             }
             StopReply::Stopped(s)
                 if dir == Direction::Forward
                     && s.signal == GDB_SIGKILL
                     && s.cause == StopCause::Unspecified =>
             {
-                Ok(StopEvent { tid: s.thread.map_or(tid, |t| t.tid), reason: StopReason::HistoryEnd })
+                Ok(StopEvent {
+                    tid: s.thread.map_or(tid, |t| t.tid),
+                    reason: StopReason::HistoryEnd,
+                })
             }
-            _ => self.remote.stop_event(reply, matches!(how, Resume::Step { .. })),
+            _ => self
+                .remote
+                .stop_event(reply, matches!(how, Resume::Step { .. })),
         }
     }
 }
@@ -376,7 +428,9 @@ impl<C: Connection> Target for RrReplica<C> {
                     (Direction::Forward, SubPosition::Known(k)) if same_ticks => {
                         SubPosition::Known(k + 1)
                     }
-                    (Direction::Forward, _) if same_event_and_thread && after.ticks != before.ticks => {
+                    (Direction::Forward, _)
+                        if same_event_and_thread && after.ticks != before.ticks =>
+                    {
                         SubPosition::Known(0)
                     }
                     (Direction::Reverse, SubPosition::Known(k)) if same_ticks && k > 0 => {
@@ -416,9 +470,17 @@ impl<C: Connection> Target for RrReplica<C> {
                 to.recording, self.info.recording
             )));
         }
-        let target = Clock { frame_time: to.frame_time, tid: to.tid, ticks: to.ticks };
+        let target = Clock {
+            frame_time: to.frame_time,
+            tid: to.tid,
+            ticks: to.ticks,
+        };
         // Already inside the right tick count, at or before the instruction: step forward.
-        let here = if self.past_end { None } else { Some(self.clock()?) };
+        let here = if self.past_end {
+            None
+        } else {
+            Some(self.clock()?)
+        };
         match (here, self.sub) {
             (Some(c), SubPosition::Known(k)) if c == target && k <= to.sub => {
                 self.step_within_ticks(target, to.sub - k)?;
@@ -436,7 +498,12 @@ impl<C: Connection> Target for RrReplica<C> {
             }
         }
         self.sub = SubPosition::Known(to.sub);
-        Ok(StopEvent { tid: to.tid, reason: StopReason::Other { packet: format!("seek {to}") } })
+        Ok(StopEvent {
+            tid: to.tid,
+            reason: StopReason::Other {
+                packet: format!("seek {to}"),
+            },
+        })
     }
 
     fn checkpoint(&mut self) -> Result<CheckpointId> {
@@ -454,7 +521,12 @@ impl<C: Connection> Target for RrReplica<C> {
             None => SubPosition::Unmeasured,
         };
         let tid = self.remote.current_tid()?;
-        Ok(StopEvent { tid, reason: StopReason::Other { packet: format!("restore checkpoint {}", id.0) } })
+        Ok(StopEvent {
+            tid,
+            reason: StopReason::Other {
+                packet: format!("restore checkpoint {}", id.0),
+            },
+        })
     }
 
     fn auxv(&mut self) -> Result<Vec<u8>> {

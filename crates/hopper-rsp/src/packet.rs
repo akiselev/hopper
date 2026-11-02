@@ -111,7 +111,7 @@ fn hex_digit(c: u8) -> Option<u8> {
 
 /// Decode an even-length hex string.
 pub fn from_hex(s: &[u8]) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(HopperError::Protocol(format!(
             "odd-length hex string {:?}",
             String::from_utf8_lossy(s)
@@ -130,8 +130,7 @@ pub fn from_hex(s: &[u8]) -> Result<Vec<u8>> {
 
 /// Parse a hex number with no prefix.
 pub fn parse_hex_u64(s: &str) -> Result<u64> {
-    u64::from_str_radix(s, 16)
-        .map_err(|_| HopperError::Protocol(format!("bad hex number {s:?}")))
+    u64::from_str_radix(s, 16).map_err(|_| HopperError::Protocol(format!("bad hex number {s:?}")))
 }
 
 /// What came off the wire.
@@ -144,7 +143,11 @@ pub enum Incoming {
     /// A packet whose checksum matched. The payload is raw: not yet run-length expanded.
     Packet(Vec<u8>),
     /// A packet whose checksum did not match.
-    Corrupt { payload: Vec<u8>, sent: u8, computed: u8 },
+    Corrupt {
+        payload: Vec<u8>,
+        sent: u8,
+        computed: u8,
+    },
     /// `%...#cc`: an asynchronous notification (non-stop mode). hopper never enables non-stop,
     /// so these are skipped.
     Notification(Vec<u8>),
@@ -153,7 +156,7 @@ pub enum Incoming {
 }
 
 /// Incremental parser over a byte stream. Feed bytes with [`Deframer::push`] and take complete
-/// items with [`Deframer::next`].
+/// items with [`Deframer::next_item`].
 #[derive(Debug, Default)]
 pub struct Deframer {
     buf: Vec<u8>,
@@ -166,7 +169,7 @@ impl Deframer {
 
     /// The next complete item, or `None` when more bytes are needed. Bytes outside any packet
     /// (other than acks and the interrupt byte) are discarded, as gdb does.
-    pub fn next(&mut self) -> Result<Option<Incoming>> {
+    pub fn next_item(&mut self) -> Result<Option<Incoming>> {
         loop {
             let Some(&first) = self.buf.first() else {
                 return Ok(None);
@@ -208,7 +211,11 @@ impl Deframer {
                     }
                     let computed = checksum(&payload);
                     if computed != sent {
-                        return Ok(Some(Incoming::Corrupt { payload, sent, computed }));
+                        return Ok(Some(Incoming::Corrupt {
+                            payload,
+                            sent,
+                            computed,
+                        }));
                     }
                     return Ok(Some(Incoming::Packet(payload)));
                 }
@@ -264,17 +271,27 @@ mod tests {
         let mut d = Deframer::default();
         d.push(b"+$OK#9a");
         d.push(b"-junk$O");
-        assert_eq!(d.next().unwrap(), Some(Incoming::Ack));
-        assert_eq!(d.next().unwrap(), Some(Incoming::Packet(b"OK".to_vec())));
-        assert_eq!(d.next().unwrap(), Some(Incoming::Nack));
-        assert_eq!(d.next().unwrap(), None);
+        assert_eq!(d.next_item().unwrap(), Some(Incoming::Ack));
+        assert_eq!(
+            d.next_item().unwrap(),
+            Some(Incoming::Packet(b"OK".to_vec()))
+        );
+        assert_eq!(d.next_item().unwrap(), Some(Incoming::Nack));
+        assert_eq!(d.next_item().unwrap(), None);
         d.push(b"K#00%Stop:T05#00");
         assert_eq!(
-            d.next().unwrap(),
-            Some(Incoming::Corrupt { payload: b"OK".to_vec(), sent: 0, computed: 0x9a })
+            d.next_item().unwrap(),
+            Some(Incoming::Corrupt {
+                payload: b"OK".to_vec(),
+                sent: 0,
+                computed: 0x9a
+            })
         );
-        assert_eq!(d.next().unwrap(), Some(Incoming::Notification(b"Stop:T05".to_vec())));
+        assert_eq!(
+            d.next_item().unwrap(),
+            Some(Incoming::Notification(b"Stop:T05".to_vec()))
+        );
         d.push(&[INTERRUPT]);
-        assert_eq!(d.next().unwrap(), Some(Incoming::Interrupt));
+        assert_eq!(d.next_item().unwrap(), Some(Incoming::Interrupt));
     }
 }

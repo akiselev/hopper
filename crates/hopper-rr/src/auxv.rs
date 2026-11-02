@@ -25,7 +25,7 @@ pub struct Auxv {
 impl Auxv {
     /// Parse a little-endian 64-bit auxv as `qXfer:auxv:read` returns it.
     pub fn parse(bytes: &[u8]) -> Result<Auxv> {
-        if bytes.len() % 16 != 0 {
+        if !bytes.len().is_multiple_of(16) {
             return Err(HopperError::Protocol(format!(
                 "auxv length {} is not a multiple of 16",
                 bytes.len()
@@ -40,7 +40,9 @@ impl Auxv {
             }
             entries.push((ty, val));
         }
-        Err(HopperError::Protocol("auxv has no AT_NULL terminator".into()))
+        Err(HopperError::Protocol(
+            "auxv has no AT_NULL terminator".into(),
+        ))
     }
 
     pub fn get(&self, ty: u64) -> Option<u64> {

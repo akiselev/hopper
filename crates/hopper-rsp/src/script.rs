@@ -74,13 +74,19 @@ impl Script {
 
     /// The client sends `client` and the server sends nothing back.
     pub fn silent(mut self, client: impl AsRef<[u8]>) -> Self {
-        self.steps.push(Step { expect: Expect::Packet(client.as_ref().to_vec()), replies: vec![] });
+        self.steps.push(Step {
+            expect: Expect::Packet(client.as_ref().to_vec()),
+            replies: vec![],
+        });
         self
     }
 
     /// The client sends the interrupt byte; the server answers with `server`.
     pub fn interrupt(mut self, server: impl AsRef<[u8]>) -> Self {
-        self.steps.push(Step { expect: Expect::Interrupt, replies: vec![frame(server.as_ref())] });
+        self.steps.push(Step {
+            expect: Expect::Interrupt,
+            replies: vec![frame(server.as_ref())],
+        });
         self
     }
 
@@ -99,19 +105,33 @@ impl Script {
                 continue;
             }
             if line == ">!" {
-                steps.push(Step { expect: Expect::Interrupt, replies: vec![] });
+                steps.push(Step {
+                    expect: Expect::Interrupt,
+                    replies: vec![],
+                });
             } else if let Some(p) = line.strip_prefix("> ") {
-                steps.push(Step { expect: Expect::Packet(p.as_bytes().to_vec()), replies: vec![] });
+                steps.push(Step {
+                    expect: Expect::Packet(p.as_bytes().to_vec()),
+                    replies: vec![],
+                });
             } else if line == ">" {
-                steps.push(Step { expect: Expect::Packet(Vec::new()), replies: vec![] });
-            } else if let Some(p) = line.strip_prefix("< ").or(if line == "<" { Some("") } else { None })
+                steps.push(Step {
+                    expect: Expect::Packet(Vec::new()),
+                    replies: vec![],
+                });
+            } else if let Some(p) =
+                line.strip_prefix("< ")
+                    .or(if line == "<" { Some("") } else { None })
             {
                 let last = steps
                     .last_mut()
                     .ok_or_else(|| format!("line {}: a reply before any request", n + 1))?;
                 last.replies.push(frame(p.as_bytes()));
             } else {
-                return Err(format!("line {}: expected '> ', '< ' or '>!': {line:?}", n + 1));
+                return Err(format!(
+                    "line {}: expected '> ', '< ' or '>!': {line:?}",
+                    n + 1
+                ));
             }
         }
         Ok(Script { steps })
@@ -139,7 +159,7 @@ impl State {
     fn take_input(&mut self, bytes: &[u8]) {
         self.deframer.push(bytes);
         loop {
-            let item = match self.deframer.next() {
+            let item = match self.deframer.next_item() {
                 Ok(Some(i)) => i,
                 Ok(None) => return,
                 Err(e) => {
@@ -169,7 +189,10 @@ impl State {
                 Incoming::Interrupt => Expect::Interrupt,
             };
             let Some(step) = self.steps.pop_front() else {
-                self.fail(format!("client sent {} after the script ended", describe(&got)));
+                self.fail(format!(
+                    "client sent {} after the script ended",
+                    describe(&got)
+                ));
                 return;
             };
             if step.expect != got {
@@ -258,7 +281,12 @@ impl ScriptedConnection {
             failure: None,
             exchanges_done: 0,
         }));
-        (ScriptedConnection { state: state.clone() }, ScriptLog { state })
+        (
+            ScriptedConnection {
+                state: state.clone(),
+            },
+            ScriptLog { state },
+        )
     }
 }
 
@@ -316,7 +344,9 @@ mod tests {
     #[test]
     fn plays_a_transcript_with_acks() {
         let (mut c, log) = ScriptedConnection::new(
-            Script::new().exchange("QStartNoAckMode", "OK").exchange("?", "S05"),
+            Script::new()
+                .exchange("QStartNoAckMode", "OK")
+                .exchange("?", "S05"),
         );
         c.write_all(&frame(b"QStartNoAckMode")).unwrap();
         let mut buf = [0u8; 64];

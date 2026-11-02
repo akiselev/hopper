@@ -7,7 +7,10 @@ use std::sync::OnceLock;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// The path of fixture `name`, building every fixture the first time.

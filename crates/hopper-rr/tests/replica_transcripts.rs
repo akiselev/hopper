@@ -50,7 +50,10 @@ fn now_measures_sub_with_one_event_seek() {
 #[test]
 fn a_step_after_a_restore_absorbs_rrs_in_place_stop() {
     let script = attached()
-        .exchange(format!("qRRCmd:checkpoint:-1:{}", to_hex(b"x")), rr("Checkpoint 1 at x"))
+        .exchange(
+            format!("qRRCmd:checkpoint:-1:{}", to_hex(b"x")),
+            rr("Checkpoint 1 at x"),
+        )
         .exchange("vRun;;6331", "T05thread:p10.10;")
         .exchange("qRRCmd:when:-1", rr("Completed event: 12"))
         .exchange("qRRCmd:when-ticks:16", rr("Current tick: 100"))
@@ -69,7 +72,9 @@ fn a_step_after_a_restore_absorbs_rrs_in_place_stop() {
     // A checkpoint made outside the replica's knowledge has no remembered moment.
     let id = hopper_core::CheckpointId(r.client().rr_checkpoint("x").unwrap());
     r.restore(id).unwrap();
-    let ev = r.resume(Resume::Step { tid: Tid(16) }, Direction::Forward).unwrap();
+    let ev = r
+        .resume(Resume::Step { tid: Tid(16) }, Direction::Forward)
+        .unwrap();
     assert_eq!(ev.reason, StopReason::Step);
     // The step changed only the ticks: sub is 0 without measuring.
     let m = r.now().unwrap();

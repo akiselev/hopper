@@ -65,7 +65,10 @@ impl GdbserverTarget<TcpStream> {
     /// gdbserver without a shell cannot pass an argument containing whitespace; such arguments
     /// are refused here rather than by gdbserver's exit.
     pub fn launch(config: &GdbserverConfig, program: &Path, args: &[OsString]) -> Result<Self> {
-        if let Some(a) = args.iter().find(|a| a.to_string_lossy().contains(char::is_whitespace)) {
+        if let Some(a) = args
+            .iter()
+            .find(|a| a.to_string_lossy().contains(char::is_whitespace))
+        {
             return Err(HopperError::Invalid(format!(
                 "gdbserver cannot pass the argument {a:?}: it contains whitespace"
             )));
@@ -110,7 +113,13 @@ impl<C: Connection> GdbserverTarget<C> {
             can_seek: false,
             rr_version: None,
         };
-        Ok(GdbserverTarget { remote, info, stops: 0, steps: 0, _server: None })
+        Ok(GdbserverTarget {
+            remote,
+            info,
+            stops: 0,
+            steps: 0,
+            _server: None,
+        })
     }
 
     /// The server's stderr so far (gdbserver's messages and the debuggee's stderr).
@@ -155,7 +164,9 @@ impl<C: Connection> Target for GdbserverTarget<C> {
 
     fn resume(&mut self, how: Resume, dir: Direction) -> Result<StopEvent> {
         if dir == Direction::Reverse {
-            return Err(HopperError::Unsupported("reverse execution on a live gdbserver".into()));
+            return Err(HopperError::Unsupported(
+                "reverse execution on a live gdbserver".into(),
+            ));
         }
         let req = self.remote.request_for(how, dir);
         let reply = self.remote.resume(req)?;
@@ -184,15 +195,21 @@ impl<C: Connection> Target for GdbserverTarget<C> {
     }
 
     fn seek(&mut self, _to: &Moment) -> Result<StopEvent> {
-        Err(HopperError::Unsupported("seeking on a live gdbserver".into()))
+        Err(HopperError::Unsupported(
+            "seeking on a live gdbserver".into(),
+        ))
     }
 
     fn checkpoint(&mut self) -> Result<CheckpointId> {
-        Err(HopperError::Unsupported("checkpoints on a live gdbserver".into()))
+        Err(HopperError::Unsupported(
+            "checkpoints on a live gdbserver".into(),
+        ))
     }
 
     fn restore(&mut self, _id: CheckpointId) -> Result<StopEvent> {
-        Err(HopperError::Unsupported("checkpoints on a live gdbserver".into()))
+        Err(HopperError::Unsupported(
+            "checkpoints on a live gdbserver".into(),
+        ))
     }
 
     fn auxv(&mut self) -> Result<Vec<u8>> {
@@ -213,7 +230,12 @@ mod tests {
 qXfer:features:read+;QStartNoAckMode+;multiprocess+;qXfer:threads:read+;swbreak+;hwbreak+;\
 qXfer:exec-file:read+;vContSupported+";
 
-    fn attach(script: Script) -> (GdbserverTarget<ScriptedConnection>, hopper_rsp::script::ScriptLog) {
+    fn attach(
+        script: Script,
+    ) -> (
+        GdbserverTarget<ScriptedConnection>,
+        hopper_rsp::script::ScriptLog,
+    ) {
         let s = Script::new()
             .exchange(QSUP, GDBSERVER_SUPPORTED)
             .exchange("QStartNoAckMode", "OK")
@@ -241,13 +263,40 @@ qXfer:exec-file:read+;vContSupported+";
     fn counts_stops_and_steps_in_synthetic_time() {
         let tdesc = r#"<target><architecture>i386:x86-64</architecture>
 <reg name="rax" bitsize="64" regnum="0"/><reg name="rip" bitsize="64" regnum="16"/></target>"#;
+        let g = |rip: u64| {
+            format!(
+                "0000000000000000{}",
+                hopper_rsp::packet::to_hex(&rip.to_le_bytes())
+            )
+        };
         let script = Script::new()
             .exchange("Z0,401000,1", "OK")
-            .exchange("vCont?", "vCont;c;C;t;s;S;r")
-            .exchange("vCont;c", "T05swbreak:;10:0010400000000000;thread:p2a.2a;core:1;")
+            // Continue: not at the breakpoint, so no step-over.
+            .exchange("Hgp2a.2a", "OK")
             .exchange("qXfer:features:read:target.xml:0,ffff", format!("l{tdesc}"))
-            .exchange("vCont;s:p2a.2a", "T0510:0110400000000000;thread:p2a.2a;core:1;")
-            .exchange("vCont;s:p2a.2a", "T0510:0410400000000000;thread:p2a.2a;core:1;")
+            .exchange("g", g(0x400000))
+            .exchange("vCont?", "vCont;c;C;t;s;S;r")
+            .exchange(
+                "vCont;c",
+                "T05swbreak:;10:0010400000000000;thread:p2a.2a;core:1;",
+            )
+            // Step from the breakpoint: remove it, step, insert it again.
+            .exchange("Hgp2a.2a", "OK")
+            .exchange("g", g(0x401000))
+            .exchange("z0,401000,1", "OK")
+            .exchange(
+                "vCont;s:p2a.2a",
+                "T0510:0110400000000000;thread:p2a.2a;core:1;",
+            )
+            .exchange("Z0,401000,1", "OK")
+            .exchange("Hgp2a.2a", "OK")
+            .exchange("g", g(0x401001))
+            .exchange(
+                "vCont;s:p2a.2a",
+                "T0510:0410400000000000;thread:p2a.2a;core:1;",
+            )
+            .exchange("Hgp2a.2a", "OK")
+            .exchange("g", g(0x401004))
             .exchange("vCont;c", "W00;process:2a");
         let (mut t, log) = attach(script);
         t.insert(Breakpoint::code(0x401000)).unwrap();
@@ -255,13 +304,26 @@ qXfer:exec-file:read+;vContSupported+";
         assert_eq!(ev.reason, StopReason::Breakpoint { addr: 0x401000 });
         assert_eq!(t.now().unwrap().order_key(), (1, 0, 0));
         let tid = Tid(0x2a);
-        assert_eq!(t.resume(Resume::Step { tid }, Direction::Forward).unwrap().reason, StopReason::Step);
-        assert_eq!(t.resume(Resume::Step { tid }, Direction::Forward).unwrap().reason, StopReason::Step);
+        assert_eq!(
+            t.resume(Resume::Step { tid }, Direction::Forward)
+                .unwrap()
+                .reason,
+            StopReason::Step
+        );
+        assert_eq!(
+            t.resume(Resume::Step { tid }, Direction::Forward)
+                .unwrap()
+                .reason,
+            StopReason::Step
+        );
         assert_eq!(t.now().unwrap().order_key(), (1, 0, 2));
         let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
         assert_eq!(ev.reason, StopReason::Exited { code: 0 });
         assert_eq!(t.now().unwrap().order_key(), (2, 0, 0));
-        assert!(matches!(t.registers(tid), Err(HopperError::Disconnected(_))));
+        assert!(matches!(
+            t.registers(tid),
+            Err(HopperError::Disconnected(_))
+        ));
         log.assert_finished();
     }
 
@@ -269,10 +331,16 @@ qXfer:exec-file:read+;vContSupported+";
     fn refuses_time_travel() {
         let (mut t, log) = attach(Script::new());
         let m = t.now().unwrap();
-        assert!(matches!(t.resume(Resume::Continue, Direction::Reverse), Err(HopperError::Unsupported(_))));
+        assert!(matches!(
+            t.resume(Resume::Continue, Direction::Reverse),
+            Err(HopperError::Unsupported(_))
+        ));
         assert!(matches!(t.seek(&m), Err(HopperError::Unsupported(_))));
         assert!(matches!(t.checkpoint(), Err(HopperError::Unsupported(_))));
-        assert!(matches!(t.restore(CheckpointId(1)), Err(HopperError::Unsupported(_))));
+        assert!(matches!(
+            t.restore(CheckpointId(1)),
+            Err(HopperError::Unsupported(_))
+        ));
         log.assert_finished();
     }
 
@@ -289,7 +357,13 @@ qXfer:exec-file:read+;vContSupported+";
         t.insert(w).unwrap(); // already inserted: nothing sent
         let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
         assert_eq!(ev.tid, Tid(0x2b));
-        assert_eq!(ev.reason, StopReason::Watchpoint { kind: BreakKind::WriteWatch, addr: 0x7ffd0004 });
+        assert_eq!(
+            ev.reason,
+            StopReason::Watchpoint {
+                kind: BreakKind::WriteWatch,
+                addr: 0x7ffd0004
+            }
+        );
         t.remove(w).unwrap();
         assert!(matches!(t.remove(w), Err(HopperError::NotFound(_))));
         log.assert_finished();

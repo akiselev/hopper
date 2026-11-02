@@ -5,8 +5,8 @@
 use hopper_core::target::{BreakKind, Breakpoint, Direction, Resume, StopEvent, StopReason};
 use hopper_core::{HopperError, Reg, RegisterSet, Result, Tid};
 use hopper_rsp::{
-    Connection, ResumeRequest, RspClient, StopCause, StopReply, ThreadId, ThreadOp,
-    ThreadSelector, gdb_signal_to_linux,
+    Connection, ResumeRequest, RspClient, StopCause, StopReply, ThreadId, ThreadOp, ThreadSelector,
+    gdb_signal_to_linux,
 };
 
 /// The gdb signal number of SIGTRAP (the same as Linux's).
@@ -46,7 +46,10 @@ impl<C: Connection> Remote<C> {
 
     pub fn check_alive(&self) -> Result<()> {
         match &self.ended {
-            Some(e) => Err(HopperError::Disconnected(format!("the process has ended: {:?}", e.reason))),
+            Some(e) => Err(HopperError::Disconnected(format!(
+                "the process has ended: {:?}",
+                e.reason
+            ))),
             None => Ok(()),
         }
     }
@@ -64,9 +67,9 @@ impl<C: Connection> Remote<C> {
     }
 
     pub fn current_tid(&self) -> Result<Tid> {
-        self.current
-            .map(|t| t.tid)
-            .ok_or_else(|| HopperError::Protocol("the server has not named a current thread".into()))
+        self.current.map(|t| t.tid).ok_or_else(|| {
+            HopperError::Protocol("the server has not named a current thread".into())
+        })
     }
 
     /// `?`, recording the thread it names. Returns the raw reply.
@@ -82,7 +85,9 @@ impl<C: Connection> Remote<C> {
                 }
             }
             StopReply::Exited { .. } | StopReply::Killed { .. } => {
-                return Err(HopperError::Disconnected("the process is not running".into()));
+                return Err(HopperError::Disconnected(
+                    "the process is not running".into(),
+                ));
             }
         }
         Ok(reply)
@@ -91,7 +96,11 @@ impl<C: Connection> Remote<C> {
     pub fn threads(&mut self) -> Result<Vec<Tid>> {
         self.check_alive()?;
         let ids = if self.client.features().supports("qXfer:threads:read") {
-            self.client.thread_info()?.into_iter().map(|t| t.id).collect()
+            self.client
+                .thread_info()?
+                .into_iter()
+                .map(|t| t.id)
+                .collect()
         } else {
             self.client.thread_list()?
         };
@@ -101,7 +110,8 @@ impl<C: Connection> Remote<C> {
     fn select(&mut self, tid: Tid) -> Result<()> {
         let id = self.thread_id(tid);
         if self.selected != Some(id) {
-            self.client.select_thread(ThreadOp::General, ThreadSelector::Thread(id))?;
+            self.client
+                .select_thread(ThreadOp::General, ThreadSelector::Thread(id))?;
             self.selected = Some(id);
         }
         Ok(())
@@ -134,7 +144,10 @@ impl<C: Connection> Remote<C> {
     pub fn remove(&mut self, bp: Breakpoint) -> Result<()> {
         self.check_alive()?;
         let Some(i) = self.breakpoints.iter().position(|b| *b == bp) else {
-            return Err(HopperError::NotFound(format!("no {:?} at {:#x}", bp.kind, bp.addr)));
+            return Err(HopperError::NotFound(format!(
+                "no {:?} at {:#x}",
+                bp.kind, bp.addr
+            )));
         };
         self.client.remove_breakpoint(bp.kind, bp.addr, bp.len)?;
         self.breakpoints.remove(i);
@@ -197,6 +210,13 @@ impl<C: Connection> Remote<C> {
             ResumeRequest::Step(t) => t,
             ResumeRequest::ReverseContinue | ResumeRequest::ReverseStep(_) => return Ok(None),
         };
+        let has_code_breakpoints = self
+            .breakpoints
+            .iter()
+            .any(|b| matches!(b.kind, BreakKind::Software | BreakKind::Hardware));
+        if !has_code_breakpoints {
+            return Ok(None);
+        }
         let here: Vec<Breakpoint> = {
             let pc = self.registers(thread.tid)?.pc();
             self.breakpoints
@@ -236,7 +256,9 @@ impl<C: Connection> Remote<C> {
             && let Some((_, bytes)) = stop.registers.iter().find(|(n, _)| *n == rip.regnum)
             && bytes.len() == 8
         {
-            return Ok(u64::from_le_bytes(bytes.as_slice().try_into().expect("8 bytes")));
+            return Ok(u64::from_le_bytes(
+                bytes.as_slice().try_into().expect("8 bytes"),
+            ));
         }
         self.registers(tid)?
             .pc()
@@ -249,13 +271,25 @@ impl<C: Connection> Remote<C> {
     pub fn stop_event(&mut self, reply: &StopReply, stepped: bool) -> Result<StopEvent> {
         let ev = match reply {
             StopReply::Exited { code, .. } => {
-                let tid = self.current.map(|t| t.tid).unwrap_or(Tid(self.pid.unwrap_or(0)));
-                StopEvent { tid, reason: StopReason::Exited { code: *code } }
+                let tid = self
+                    .current
+                    .map(|t| t.tid)
+                    .unwrap_or(Tid(self.pid.unwrap_or(0)));
+                StopEvent {
+                    tid,
+                    reason: StopReason::Exited { code: *code },
+                }
             }
             StopReply::Killed { signal, .. } => {
-                let tid = self.current.map(|t| t.tid).unwrap_or(Tid(self.pid.unwrap_or(0)));
+                let tid = self
+                    .current
+                    .map(|t| t.tid)
+                    .unwrap_or(Tid(self.pid.unwrap_or(0)));
                 let signo = gdb_signal_to_linux(*signal).unwrap_or(*signal);
-                StopEvent { tid, reason: StopReason::Killed { signo } }
+                StopEvent {
+                    tid,
+                    reason: StopReason::Killed { signo },
+                }
             }
             StopReply::Stopped(s) => {
                 let tid = match s.thread {
@@ -277,9 +311,9 @@ impl<C: Connection> Remote<C> {
                             addr: *addr,
                         }
                     }
-                    StopCause::SoftwareBreak | StopCause::HardwareBreak => {
-                        StopReason::Breakpoint { addr: self.pc_of(tid, s)? }
-                    }
+                    StopCause::SoftwareBreak | StopCause::HardwareBreak => StopReason::Breakpoint {
+                        addr: self.pc_of(tid, s)?,
+                    },
                     StopCause::HistoryBegin => StopReason::HistoryStart,
                     StopCause::HistoryEnd => StopReason::HistoryEnd,
                     StopCause::Unspecified => {
@@ -309,7 +343,10 @@ impl<C: Connection> Remote<C> {
                 StopEvent { tid, reason }
             }
         };
-        if matches!(ev.reason, StopReason::Exited { .. } | StopReason::Killed { .. }) {
+        if matches!(
+            ev.reason,
+            StopReason::Exited { .. } | StopReason::Killed { .. }
+        ) {
             self.ended = Some(ev.clone());
         }
         Ok(ev)

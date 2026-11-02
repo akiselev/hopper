@@ -18,7 +18,8 @@ use crate::xml::elements;
 
 /// The features hopper asks for in `qSupported`: thread ids with pids, the precise breakpoint
 /// stop reasons, the x86 register descriptions and `vCont?`.
-pub const CLIENT_FEATURES: &str = "multiprocess+;swbreak+;hwbreak+;vContSupported+;xmlRegisters=i386";
+pub const CLIENT_FEATURES: &str =
+    "multiprocess+;swbreak+;hwbreak+;vContSupported+;xmlRegisters=i386";
 
 /// The packet size gdb assumes before `qSupported` says otherwise.
 const DEFAULT_PACKET_SIZE: usize = 400;
@@ -193,20 +194,29 @@ fn lossy(b: &[u8]) -> String {
 /// Turn an error reply (`Enn`, `E.text`) or an empty reply into the matching error.
 fn check_reply(request: &str, reply: &[u8]) -> Result<()> {
     if reply.is_empty() {
-        return Err(HopperError::Unsupported(format!("the server does not handle {request}")));
+        return Err(HopperError::Unsupported(format!(
+            "the server does not handle {request}"
+        )));
     }
     let is_error = reply[0] == b'E'
         && (reply.get(1) == Some(&b'.')
             || (reply.len() == 3 && reply[1..].iter().all(u8::is_ascii_hexdigit)));
     if is_error {
-        return Err(HopperError::TargetRefused { request: request.to_string(), reply: lossy(reply) });
+        return Err(HopperError::TargetRefused {
+            request: request.to_string(),
+            reply: lossy(reply),
+        });
     }
     Ok(())
 }
 
 fn short(request: &[u8]) -> String {
     let s = lossy(request);
-    if s.len() > 48 { format!("{}...", &s[..48]) } else { s }
+    if s.len() > 48 {
+        format!("{}...", &s[..48])
+    } else {
+        s
+    }
 }
 
 /// A blocking GDB remote serial protocol client over one connection.
@@ -304,7 +314,9 @@ impl<C: Connection> RspClient<C> {
 
     pub fn interrupt_handle(&self) -> Result<InterruptHandle> {
         let writer = self.conn.interrupt_writer().map_err(io_error)?;
-        Ok(InterruptHandle { writer: Arc::new(Mutex::new(writer)) })
+        Ok(InterruptHandle {
+            writer: Arc::new(Mutex::new(writer)),
+        })
     }
 
     // ------------------------------------------------------------------ framing
@@ -316,13 +328,15 @@ impl<C: Connection> RspClient<C> {
 
     fn read_item(&mut self) -> Result<Incoming> {
         loop {
-            if let Some(item) = self.deframer.next()? {
+            if let Some(item) = self.deframer.next_item()? {
                 return Ok(item);
             }
             let mut buf = [0u8; 65536];
             let n = self.conn.read(&mut buf).map_err(io_error)?;
             if n == 0 {
-                return Err(HopperError::Disconnected("the server closed the connection".into()));
+                return Err(HopperError::Disconnected(
+                    "the server closed the connection".into(),
+                ));
             }
             self.deframer.push(&buf[..n]);
         }
@@ -369,10 +383,16 @@ impl<C: Connection> RspClient<C> {
             match self.read_item()? {
                 Incoming::Ack | Incoming::Notification(_) => {}
                 Incoming::Nack => {
-                    return Err(HopperError::Protocol("unexpected nack while waiting for a reply".into()));
+                    return Err(HopperError::Protocol(
+                        "unexpected nack while waiting for a reply".into(),
+                    ));
                 }
                 Incoming::Interrupt => {}
-                Incoming::Corrupt { payload, sent, computed } => {
+                Incoming::Corrupt {
+                    payload,
+                    sent,
+                    computed,
+                } => {
                     if self.ack_mode {
                         self.write_raw(b"-")?;
                     } else {
@@ -419,11 +439,13 @@ impl<C: Connection> RspClient<C> {
     pub fn wait_stop(&mut self) -> Result<StopReply> {
         loop {
             let reply = self.receive()?;
-            if reply.first() == Some(&b'O') && reply.len() > 1 && reply.len() % 2 == 1 {
-                if let Ok(text) = from_hex(&reply[1..]) {
-                    self.console.extend(text);
-                    continue;
-                }
+            if reply.first() == Some(&b'O')
+                && reply.len() > 1
+                && !reply.len().is_multiple_of(2)
+                && let Ok(text) = from_hex(&reply[1..])
+            {
+                self.console.extend(text);
+                continue;
             }
             if reply.first() == Some(&b'E') {
                 check_reply("resume", &reply)?;
@@ -513,7 +535,11 @@ impl<C: Connection> RspClient<C> {
         let reply = self.request(b"vCont?")?;
         let actions = match lossy(&reply).strip_prefix("vCont") {
             Some(rest) => VContActions {
-                actions: rest.split(';').filter(|a| !a.is_empty()).map(str::to_string).collect(),
+                actions: rest
+                    .split(';')
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             },
             None => VContActions::default(),
         };
@@ -639,8 +665,10 @@ impl<C: Connection> RspClient<C> {
         while done < buf.len() {
             let want = (buf.len() - done).min(chunk);
             let at = addr.wrapping_add(done as u64);
-            let unreadable =
-                || HopperError::UnreadableMemory { addr: at, len: (buf.len() - done) as u64 };
+            let unreadable = || HopperError::UnreadableMemory {
+                addr: at,
+                len: (buf.len() - done) as u64,
+            };
             let bytes = if self.uses_binary_memory() {
                 let req = format!("x{at:x},{want:x}");
                 let reply = self.request(req.as_bytes())?;
@@ -767,7 +795,9 @@ impl<C: Connection> RspClient<C> {
         }
         let reply = self.request(req.as_bytes())?;
         if reply.is_empty() {
-            return Err(HopperError::Unsupported(format!("{name}: not an rr server")));
+            return Err(HopperError::Unsupported(format!(
+                "{name}: not an rr server"
+            )));
         }
         if reply == b"RRCmd_EndDiversion" {
             return Err(HopperError::TargetRefused {
@@ -815,10 +845,12 @@ impl<C: Connection> RspClient<C> {
     /// (rr requires that argument). Returns the checkpoint number.
     pub fn rr_checkpoint(&mut self, label: &str) -> Result<u64> {
         let t = self.rr_cmd("checkpoint", None, &[label])?;
-        let rest = t.strip_prefix("Checkpoint ").ok_or_else(|| HopperError::TargetRefused {
-            request: "qRRCmd:checkpoint".into(),
-            reply: t.clone(),
-        })?;
+        let rest = t
+            .strip_prefix("Checkpoint ")
+            .ok_or_else(|| HopperError::TargetRefused {
+                request: "qRRCmd:checkpoint".into(),
+                reply: t.clone(),
+            })?;
         let num = rest.split(' ').next().unwrap_or_default();
         num.parse()
             .map_err(|_| HopperError::Protocol(format!("bad checkpoint reply {t:?}")))
@@ -830,7 +862,10 @@ impl<C: Connection> RspClient<C> {
         if t.starts_with("Deleted checkpoint ") {
             Ok(())
         } else {
-            Err(HopperError::TargetRefused { request: "qRRCmd:delete checkpoint".into(), reply: t })
+            Err(HopperError::TargetRefused {
+                request: "qRRCmd:delete checkpoint".into(),
+                reply: t,
+            })
         }
     }
 

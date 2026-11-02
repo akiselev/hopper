@@ -27,7 +27,9 @@ fn expected(p: usize) -> Moment {
 }
 
 fn step(r: &mut RrReplica<FakeRr>, dir: Direction) -> StopReason {
-    r.resume(Resume::Step { tid: Tid(TID) }, dir).unwrap().reason
+    r.resume(Resume::Step { tid: Tid(TID) }, dir)
+        .unwrap()
+        .reason
 }
 
 #[test]
@@ -38,7 +40,10 @@ fn attaches_and_describes_the_replay() {
     assert_eq!(info.process.pid, TID);
     assert_eq!(info.executable.to_str(), Some("/tmp/fake-prog"));
     assert_eq!(r.threads().unwrap(), [Tid(TID)]);
-    assert_eq!(r.last_event().unwrap(), fake_rr::frame_time(fake_rr::LEN - 1));
+    assert_eq!(
+        r.last_event().unwrap(),
+        fake_rr::frame_time(fake_rr::LEN - 1)
+    );
     let auxv = Auxv::parse(&r.auxv().unwrap()).unwrap();
     assert_eq!(auxv.entry(), Some(0x1000));
 }
@@ -67,7 +72,11 @@ fn counts_steps_both_ways_without_seeking() {
         assert_eq!(fake.pos(), p);
         assert_eq!(r.now().unwrap(), expected(p), "after a forward step to {p}");
         if p != 13 {
-            assert_eq!(fake.vruns(), vruns, "the step to {p} was counted, not measured");
+            assert_eq!(
+                fake.vruns(),
+                vruns,
+                "the step to {p} was counted, not measured"
+            );
         }
     }
     // The step 12 -> 13 completed an event with the tick count unchanged, so sub at 13 was
@@ -76,7 +85,11 @@ fn counts_steps_both_ways_without_seeking() {
     let vruns = fake.vruns();
     assert_eq!(step(&mut r, Direction::Reverse), StopReason::Step);
     assert_eq!(r.now().unwrap(), expected(13));
-    assert_eq!(fake.vruns(), vruns, "steps that keep the tick count need no seek");
+    assert_eq!(
+        fake.vruns(),
+        vruns,
+        "steps that keep the tick count need no seek"
+    );
     assert_eq!(step(&mut r, Direction::Reverse), StopReason::Step);
     assert_eq!(r.now().unwrap(), expected(12));
     assert_eq!(fake.pos(), 12);
@@ -106,7 +119,11 @@ fn continue_to_a_breakpoint_measures_sub_and_keeps_breakpoints() {
     // Position 2 is ticks 0's third instruction: sub 2, not 0.
     assert_eq!(r.now().unwrap(), expected(2));
     assert_eq!(fake.pos(), 2);
-    assert_eq!(fake.inserted_breakpoints(), [0x1008], "measuring re-inserts breakpoints");
+    assert_eq!(
+        fake.inserted_breakpoints(),
+        [0x1008],
+        "measuring re-inserts breakpoints"
+    );
     let ev = r.resume(Resume::Continue, Direction::Forward).unwrap();
     assert_eq!(ev.reason, StopReason::Breakpoint { addr: 0x1008 });
     assert_eq!(fake.pos(), 12);
@@ -137,7 +154,10 @@ fn seeks_to_captured_moments() {
     let (_, m40, _) = &captured[3];
     r.seek(m40).unwrap();
     let vruns = fake.vruns();
-    let later = Moment { sub: m40.sub + 1, ..*m40 };
+    let later = Moment {
+        sub: m40.sub + 1,
+        ..*m40
+    };
     assert_eq!(fake_rr::sub(41), later.sub);
     r.seek(&later).unwrap();
     assert_eq!(fake.pos(), 41);
@@ -151,10 +171,16 @@ fn seek_restores_breakpoints_and_refuses_other_recordings() {
     r.seek(&expected(30)).unwrap();
     assert_eq!(fake.pos(), 30);
     assert_eq!(fake.inserted_breakpoints(), [0x1010]);
-    let other = Moment { recording: RecordingId([1; 16]), ..expected(3) };
+    let other = Moment {
+        recording: RecordingId([1; 16]),
+        ..expected(3)
+    };
     assert!(matches!(r.seek(&other), Err(HopperError::BadMoment(_))));
     // A moment the recording cannot contain: sub past the end of its tick count.
-    let bogus = Moment { sub: 7, ..expected(30) };
+    let bogus = Moment {
+        sub: 7,
+        ..expected(30)
+    };
     assert!(matches!(r.seek(&bogus), Err(HopperError::BadMoment(_))));
     assert_eq!(fake.inserted_breakpoints(), [0x1010]);
 }
@@ -193,7 +219,13 @@ fn reverse_continues_to_the_last_write() {
     let w = Breakpoint::write_watch(WATCHED, 8);
     r.insert(w).unwrap();
     let ev = r.resume(Resume::Continue, Direction::Reverse).unwrap();
-    assert_eq!(ev.reason, StopReason::Watchpoint { kind: BreakKind::WriteWatch, addr: WATCHED });
+    assert_eq!(
+        ev.reason,
+        StopReason::Watchpoint {
+            kind: BreakKind::WriteWatch,
+            addr: WATCHED
+        }
+    );
     assert_eq!(fake.pos(), 29);
     let mut b = [0u8; 8];
     r.read_memory(WATCHED, &mut b).unwrap();
@@ -201,10 +233,20 @@ fn reverse_continues_to_the_last_write() {
     assert_eq!(r.now().unwrap(), expected(29));
     // The kind hopper inserted is reported even though rr always says `watch:`.
     r.remove(w).unwrap();
-    let a = Breakpoint { kind: BreakKind::AccessWatch, addr: WATCHED, len: 8 };
+    let a = Breakpoint {
+        kind: BreakKind::AccessWatch,
+        addr: WATCHED,
+        len: 8,
+    };
     r.insert(a).unwrap();
     let ev = r.resume(Resume::Continue, Direction::Reverse).unwrap();
-    assert_eq!(ev.reason, StopReason::Watchpoint { kind: BreakKind::AccessWatch, addr: WATCHED });
+    assert_eq!(
+        ev.reason,
+        StopReason::Watchpoint {
+            kind: BreakKind::AccessWatch,
+            addr: WATCHED
+        }
+    );
     assert_eq!(fake.pos(), 17);
 }
 
@@ -216,7 +258,11 @@ fn reaches_both_ends_of_the_recording() {
     assert_eq!(fake.pos(), 0);
     assert_eq!(r.now().unwrap(), expected(0));
     let ev = r.resume(Resume::Continue, Direction::Forward).unwrap();
-    assert_eq!(ev.reason, StopReason::HistoryEnd, "rr's synthetic SIGKILL at the last exit");
+    assert_eq!(
+        ev.reason,
+        StopReason::HistoryEnd,
+        "rr's synthetic SIGKILL at the last exit"
+    );
     let ev = r.resume(Resume::Continue, Direction::Forward).unwrap();
     assert_eq!(ev.reason, StopReason::HistoryEnd, "rr's W00");
     assert!(matches!(
@@ -226,4 +272,18 @@ fn reaches_both_ends_of_the_recording() {
     r.seek(&expected(10)).unwrap();
     assert_eq!(fake.pos(), 10);
     assert_eq!(r.registers(Tid(TID)).unwrap().get(Reg::RAX), Some(10));
+}
+
+#[test]
+fn seeks_to_an_event_number() {
+    let (mut r, fake) = replica(40);
+    r.insert(Breakpoint::code(0x1000)).unwrap();
+    let ev = r.seek_event(2).unwrap();
+    assert_eq!(ev.tid, Tid(TID));
+    assert_eq!(fake.pos(), 13, "the first position of event 2");
+    assert_eq!(r.now().unwrap(), expected(13));
+    assert_eq!(fake.inserted_breakpoints(), [0x1000]);
+    let ev = r.resume(Resume::Continue, Direction::Forward).unwrap();
+    assert_eq!(ev.reason, StopReason::Breakpoint { addr: 0x1000 });
+    assert_eq!(fake.pos(), 20);
 }

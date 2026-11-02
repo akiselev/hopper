@@ -42,7 +42,12 @@ pub struct RrReplicaFactory {
 
 impl ReplicaFactory for RrReplicaFactory {
     fn start(&self, _role: ReplicaRole) -> Result<Box<dyn Target>> {
-        Ok(Box::new(RrReplica::start(&self.rr, &self.trace_dir, &self.options, self.recording)?))
+        Ok(Box::new(RrReplica::start(
+            &self.rr,
+            &self.trace_dir,
+            &self.options,
+            self.recording,
+        )?))
     }
 }
 
@@ -58,9 +63,15 @@ pub struct GdbserverFactory {
 impl ReplicaFactory for GdbserverFactory {
     fn start(&self, role: ReplicaRole) -> Result<Box<dyn Target>> {
         if role != ReplicaRole::Cursor {
-            return Err(HopperError::Unsupported("a live process has only a cursor replica".into()));
+            return Err(HopperError::Unsupported(
+                "a live process has only a cursor replica".into(),
+            ));
         }
-        Ok(Box::new(GdbserverTarget::launch(&self.config, &self.program, &self.args)?))
+        Ok(Box::new(GdbserverTarget::launch(
+            &self.config,
+            &self.program,
+            &self.args,
+        )?))
     }
 }
 
@@ -96,13 +107,20 @@ impl<F: ReplicaFactory> Worker<F> {
         let handle = std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                let mut slot = Slot { factory, role, target: None };
+                let mut slot = Slot {
+                    factory,
+                    role,
+                    target: None,
+                };
                 while let Ok(job) = rx.recv() {
                     job(&mut slot);
                 }
             })
             .map_err(|e| HopperError::Io(format!("cannot start a replica worker: {e}")))?;
-        Ok(Worker { tx: Some(tx), handle: Some(handle) })
+        Ok(Worker {
+            tx: Some(tx),
+            handle: Some(handle),
+        })
     }
 
     fn submit<R, J>(&self, job: J) -> Result<Pending<R>>
@@ -161,9 +179,9 @@ impl<R> Pending<R> {
         match self.rx.try_recv() {
             Ok(r) => Ok(r),
             Err(mpsc::TryRecvError::Empty) => Err(self),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Ok(Err(HopperError::Disconnected("the replica worker dropped the job".into())))
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Ok(Err(HopperError::Disconnected(
+                "the replica worker dropped the job".into(),
+            ))),
         }
     }
 }
@@ -177,7 +195,9 @@ pub struct ReplicaPool<F: ReplicaFactory> {
 
 impl<F: ReplicaFactory> fmt::Debug for ReplicaPool<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ReplicaPool").field("background", &self.background.len()).finish()
+        f.debug_struct("ReplicaPool")
+            .field("background", &self.background.len())
+            .finish()
     }
 }
 
@@ -190,7 +210,11 @@ impl<F: ReplicaFactory> ReplicaPool<F> {
             .map(|i| Worker::spawn(factory.clone(), ReplicaRole::Background(i)))
             .collect::<Result<Vec<_>>>()?;
         let free = (0..background.len()).rev().collect();
-        Ok(ReplicaPool { cursor, background, free: Arc::new((Mutex::new(free), Condvar::new())) })
+        Ok(ReplicaPool {
+            cursor,
+            background,
+            free: Arc::new((Mutex::new(free), Condvar::new())),
+        })
     }
 
     pub fn background_count(&self) -> usize {
@@ -218,10 +242,14 @@ impl<F: ReplicaFactory> ReplicaPool<F> {
     /// Lease a background replica, waiting until one is free. A pool with none refuses.
     pub fn lease(&self) -> Result<Lease<'_, F>> {
         if self.background.is_empty() {
-            return Err(HopperError::Unsupported("this pool has no background replicas".into()));
+            return Err(HopperError::Unsupported(
+                "this pool has no background replicas".into(),
+            ));
         }
         let (lock, cvar) = &*self.free;
-        let mut free = lock.lock().map_err(|_| HopperError::Disconnected("pool lock poisoned".into()))?;
+        let mut free = lock
+            .lock()
+            .map_err(|_| HopperError::Disconnected("pool lock poisoned".into()))?;
         loop {
             if let Some(index) = free.pop() {
                 return Ok(Lease { pool: self, index });
@@ -403,7 +431,11 @@ mod tests {
         let b = pool.lease().unwrap();
         assert_ne!(a.index(), b.index());
         assert!(pool.try_lease().is_none());
-        assert!(a.run(role_of).unwrap().contains(&format!("Background({})", a.index())));
+        assert!(
+            a.run(role_of)
+                .unwrap()
+                .contains(&format!("Background({})", a.index()))
+        );
         let ai = a.index();
         drop(a);
         let c = pool.try_lease().unwrap();
@@ -433,7 +465,10 @@ mod tests {
 
     #[test]
     fn reports_start_failures_and_retries() {
-        let f = Arc::new(CountingFactory { fail_first: true, ..Default::default() });
+        let f = Arc::new(CountingFactory {
+            fail_first: true,
+            ..Default::default()
+        });
         let pool = ReplicaPool::new(f.clone(), 0).unwrap();
         assert!(matches!(pool.cursor(role_of), Err(HopperError::Io(_))));
         assert!(pool.cursor(role_of).is_ok());
@@ -454,7 +489,9 @@ mod tests {
     #[test]
     fn submitted_jobs_run_in_order() {
         let pool = ReplicaPool::new(Arc::new(CountingFactory::default()), 0).unwrap();
-        let p1 = pool.cursor_submit(|t| t.threads().map(|v| v.len())).unwrap();
+        let p1 = pool
+            .cursor_submit(|t| t.threads().map(|v| v.len()))
+            .unwrap();
         let p2 = pool.cursor_submit(|t| format!("{t:?}")).unwrap();
         assert_eq!(p1.wait().unwrap().unwrap(), 1);
         assert!(p2.wait().unwrap().contains("calls: 1"));

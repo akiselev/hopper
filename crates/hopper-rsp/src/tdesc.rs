@@ -49,14 +49,23 @@ impl TargetDescription {
         let mut architecture = None;
         let mut next_regnum = 0u32;
         let mut stack: Vec<String> = Vec::new();
-        Self::walk(root, fetch, &mut regs, &mut architecture, &mut next_regnum, &mut stack)?;
+        Self::walk(
+            root,
+            fetch,
+            &mut regs,
+            &mut architecture,
+            &mut next_regnum,
+            &mut stack,
+        )?;
         Self::from_regs(architecture, regs)
     }
 
     /// Parse a self-contained description; any `xi:include` is an error.
     pub fn parse(doc: &str) -> Result<TargetDescription> {
         Self::parse_with_includes(doc, &mut |href| {
-            Err(HopperError::Protocol(format!("unresolved xi:include {href:?}")))
+            Err(HopperError::Protocol(format!(
+                "unresolved xi:include {href:?}"
+            )))
         })
     }
 
@@ -72,9 +81,9 @@ impl TargetDescription {
             match el.name.as_str() {
                 "architecture" => *architecture = Some(el.text.clone()),
                 "xi:include" => {
-                    let href = el.attr("href").ok_or_else(|| {
-                        HopperError::Protocol("xi:include without href".into())
-                    })?;
+                    let href = el
+                        .attr("href")
+                        .ok_or_else(|| HopperError::Protocol("xi:include without href".into()))?;
                     if stack.iter().any(|h| h == href) || stack.len() > 16 {
                         return Err(HopperError::Protocol(format!(
                             "xi:include cycle or depth limit at {href:?}"
@@ -89,12 +98,12 @@ impl TargetDescription {
                     let name = el
                         .attr("name")
                         .ok_or_else(|| HopperError::Protocol("<reg> without name".into()))?;
-                    let bitsize: u32 = el
-                        .attr("bitsize")
-                        .and_then(|b| b.parse().ok())
-                        .ok_or_else(|| {
-                            HopperError::Protocol(format!("<reg {name}> without a bitsize"))
-                        })?;
+                    let bitsize: u32 =
+                        el.attr("bitsize")
+                            .and_then(|b| b.parse().ok())
+                            .ok_or_else(|| {
+                                HopperError::Protocol(format!("<reg {name}> without a bitsize"))
+                            })?;
                     let regnum = match el.attr("regnum") {
                         Some(n) => n.parse().map_err(|_| {
                             HopperError::Protocol(format!("<reg {name}> bad regnum {n:?}"))
@@ -138,7 +147,10 @@ impl TargetDescription {
                 d
             })
             .collect();
-        Ok(TargetDescription { architecture, registers })
+        Ok(TargetDescription {
+            architecture,
+            registers,
+        })
     }
 
     pub fn by_name(&self, name: &str) -> Option<&RegisterDesc> {
@@ -153,7 +165,7 @@ impl TargetDescription {
     /// hopper models go in `values`; the raw bytes go in `raw`. A register sent as `xx`
     /// (unavailable) decodes as zero bytes in `raw` and is left out of `values`.
     pub fn decode_g(&self, reply: &[u8]) -> Result<RegisterSet> {
-        if reply.len() % 2 != 0 {
+        if !reply.len().is_multiple_of(2) {
             return Err(HopperError::Protocol("odd-length g reply".into()));
         }
         let mut raw = Vec::with_capacity(reply.len() / 2);
@@ -167,7 +179,10 @@ impl TargetDescription {
                 available.push(true);
             }
         }
-        let mut set = RegisterSet { values: Vec::new(), raw: Vec::new() };
+        let mut set = RegisterSet {
+            values: Vec::new(),
+            raw: Vec::new(),
+        };
         for d in &self.registers {
             let Some(reg) = d.reg else { continue };
             let end = d.offset + d.size();
@@ -218,8 +233,11 @@ mod tests {
     fn numbers_and_offsets() {
         let d = sample();
         assert_eq!(d.architecture.as_deref(), Some("i386:x86-64"));
-        let rows: Vec<(&str, u32, usize)> =
-            d.registers.iter().map(|r| (r.name.as_str(), r.regnum, r.offset)).collect();
+        let rows: Vec<(&str, u32, usize)> = d
+            .registers
+            .iter()
+            .map(|r| (r.name.as_str(), r.regnum, r.offset))
+            .collect();
         assert_eq!(
             rows,
             [
@@ -259,10 +277,10 @@ mod tests {
 
     #[test]
     fn rejects_cycles_and_duplicates() {
-        let err = TargetDescription::parse_with_includes(
-            r#"<xi:include href="a.xml"/>"#,
-            &mut |_| Ok(r#"<xi:include href="a.xml"/>"#.into()),
-        );
+        let err =
+            TargetDescription::parse_with_includes(r#"<xi:include href="a.xml"/>"#, &mut |_| {
+                Ok(r#"<xi:include href="a.xml"/>"#.into())
+            });
         assert!(err.is_err());
         let dup = TargetDescription::parse(
             r#"<reg name="a" bitsize="8" regnum="3"/><reg name="b" bitsize="8" regnum="3"/>"#,

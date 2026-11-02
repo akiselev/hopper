@@ -80,7 +80,11 @@ impl ServerProcess {
             })
             .map_err(|e| HopperError::Io(format!("cannot start stderr reader: {e}")))?;
 
-        let mut server = ServerProcess { child, stderr_tail: tail, description };
+        let mut server = ServerProcess {
+            child,
+            stderr_tail: tail,
+            description,
+        };
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -159,8 +163,16 @@ impl Drop for ServerProcess {
 
 /// gdbserver prints `Listening on port 33785` (to stderr).
 pub fn gdbserver_listen_addr(line: &str) -> Option<ListenAddr> {
-    let port = line.trim().strip_prefix("Listening on port ")?.trim().parse().ok()?;
-    Some(ListenAddr { host: "127.0.0.1".into(), port })
+    let port = line
+        .trim()
+        .strip_prefix("Listening on port ")?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(ListenAddr {
+        host: "127.0.0.1".into(),
+        port,
+    })
 }
 
 /// `rr replay -s` prints `Launch debugger with` and then the gdb command line, each argument in
@@ -179,8 +191,15 @@ pub fn rr_listen_addr(line: &str) -> Option<ListenAddr> {
         let (h, p) = target.rsplit_once(':')?;
         (h.to_string(), p)
     };
-    let host = if host.is_empty() { "127.0.0.1".to_string() } else { host };
-    Some(ListenAddr { host, port: port.parse().ok()? })
+    let host = if host.is_empty() {
+        "127.0.0.1".to_string()
+    } else {
+        host
+    };
+    Some(ListenAddr {
+        host,
+        port: port.parse().ok()?,
+    })
 }
 
 #[cfg(test)]
@@ -191,9 +210,15 @@ mod tests {
     fn finds_gdbserver_port() {
         assert_eq!(
             gdbserver_listen_addr("Listening on port 33785"),
-            Some(ListenAddr { host: "127.0.0.1".into(), port: 33785 })
+            Some(ListenAddr {
+                host: "127.0.0.1".into(),
+                port: 33785
+            })
         );
-        assert_eq!(gdbserver_listen_addr("Process /x created; pid = 8697"), None);
+        assert_eq!(
+            gdbserver_listen_addr("Process /x created; pid = 8697"),
+            None
+        );
     }
 
     #[test]
@@ -202,10 +227,19 @@ mod tests {
                     'target extended-remote 127.0.0.1:45677' '/tmp/prog' ";
         assert_eq!(
             rr_listen_addr(line),
-            Some(ListenAddr { host: "127.0.0.1".into(), port: 45677 })
+            Some(ListenAddr {
+                host: "127.0.0.1".into(),
+                port: 45677
+            })
         );
         let v6 = "'-ex' 'target extended-remote tcp6:[::1]:9000' '/tmp/prog'";
-        assert_eq!(rr_listen_addr(v6), Some(ListenAddr { host: "::1".into(), port: 9000 }));
+        assert_eq!(
+            rr_listen_addr(v6),
+            Some(ListenAddr {
+                host: "::1".into(),
+                port: 9000
+            })
+        );
         assert_eq!(rr_listen_addr("Launch debugger with"), None);
         assert_eq!(rr_listen_addr("target extended-remote nowhere"), None);
     }
@@ -214,8 +248,8 @@ mod tests {
     fn reports_a_server_that_exits_early() {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "echo oops >&2; exit 3"]);
-        let err = ServerProcess::spawn(cmd, gdbserver_listen_addr, Duration::from_secs(10))
-            .unwrap_err();
+        let err =
+            ServerProcess::spawn(cmd, gdbserver_listen_addr, Duration::from_secs(10)).unwrap_err();
         match err {
             HopperError::Disconnected(m) => assert!(m.contains("oops"), "{m}"),
             other => panic!("{other:?}"),

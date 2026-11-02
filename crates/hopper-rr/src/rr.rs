@@ -36,7 +36,11 @@ impl RrVersion {
         let major = next()?;
         let minor = next()?;
         let patch = next().unwrap_or(0);
-        Ok(RrVersion { major, minor, patch })
+        Ok(RrVersion {
+            major,
+            minor,
+            patch,
+        })
     }
 
     pub fn is_supported(&self) -> bool {
@@ -136,7 +140,9 @@ pub fn parse_ps(text: &str) -> Result<Vec<PsRow>> {
     let mut lines = text.lines();
     let header = lines.next().unwrap_or_default();
     if header.trim() != "PID\tPPID\tEXIT\tCMD" {
-        return Err(HopperError::Protocol(format!("unexpected rr ps header {header:?}")));
+        return Err(HopperError::Protocol(format!(
+            "unexpected rr ps header {header:?}"
+        )));
     }
     let mut rows = Vec::new();
     for line in lines.filter(|l| !l.is_empty()) {
@@ -162,10 +168,20 @@ pub fn parse_ps(text: &str) -> Result<Vec<PsRow>> {
             "none" => ProcessExit::Running,
             n => {
                 let v: i32 = n.parse().map_err(|_| bad())?;
-                if v < 0 { ProcessExit::Signal(-v) } else { ProcessExit::Code(v) }
+                if v < 0 {
+                    ProcessExit::Signal(-v)
+                } else {
+                    ProcessExit::Code(v)
+                }
             }
         };
-        rows.push(PsRow { pid, namespace_pid, ppid, exit, command });
+        rows.push(PsRow {
+            pid,
+            namespace_pid,
+            ppid,
+            exit,
+            command,
+        });
     }
     Ok(rows)
 }
@@ -260,12 +276,23 @@ impl Rr {
             None => {
                 let root = default_trace_root()?;
                 std::fs::create_dir_all(&root)?;
-                let name = program.file_name().unwrap_or(OsStr::new("program")).to_string_lossy();
-                root.join(format!("{name}-hopper-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]))
+                let name = program
+                    .file_name()
+                    .unwrap_or(OsStr::new("program"))
+                    .to_string_lossy();
+                root.join(format!(
+                    "{name}-hopper-{}",
+                    &uuid::Uuid::new_v4().simple().to_string()[..12]
+                ))
             }
         };
         let mut cmd = self.command();
-        cmd.arg("record").arg("-o").arg(&trace_dir).args(&options.rr_args).arg(program).args(args);
+        cmd.arg("record")
+            .arg("-o")
+            .arg(&trace_dir)
+            .args(&options.rr_args)
+            .arg(program)
+            .args(args);
         for (k, v) in &options.env {
             cmd.env(k, v);
         }
@@ -273,7 +300,12 @@ impl Rr {
         if !trace_dir.join("version").is_file() {
             return Err(failed("rr record", &out));
         }
-        Ok(Recorded { trace_dir, status: out.status, stdout: out.stdout, stderr: out.stderr })
+        Ok(Recorded {
+            trace_dir,
+            status: out.status,
+            stdout: out.stdout,
+            stderr: out.stderr,
+        })
     }
 
     /// `rr ps <trace>`.
@@ -321,9 +353,20 @@ mod tests {
     #[test]
     fn parses_versions() {
         let v = RrVersion::parse("rr version 5.10.0 \n").unwrap();
-        assert_eq!(v, RrVersion { major: 5, minor: 10, patch: 0 });
+        assert_eq!(
+            v,
+            RrVersion {
+                major: 5,
+                minor: 10,
+                patch: 0
+            }
+        );
         assert!(v.is_supported());
-        assert!(RrVersion::parse("rr version 5.9.0 extra").unwrap().is_supported());
+        assert!(
+            RrVersion::parse("rr version 5.9.0 extra")
+                .unwrap()
+                .is_supported()
+        );
         assert!(!RrVersion::parse("rr version 5.8.0").unwrap().is_supported());
         assert!(!RrVersion::parse("rr version 6.0").unwrap().is_supported());
         assert!(RrVersion::parse("gdb 15").is_err());

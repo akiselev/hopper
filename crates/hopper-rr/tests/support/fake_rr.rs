@@ -38,7 +38,9 @@ fn writes_before(p: usize) -> u64 {
 }
 /// The first position with the same (event, ticks): where `sub` is 0.
 pub fn region_start(p: usize) -> usize {
-    (0..=p).find(|q| frame_time(*q) == frame_time(p) && ticks(*q) == ticks(p)).unwrap()
+    (0..=p)
+        .find(|q| frame_time(*q) == frame_time(p) && ticks(*q) == ticks(p))
+        .unwrap()
 }
 pub fn sub(p: usize) -> u32 {
     (p - region_start(p)) as u32
@@ -91,7 +93,10 @@ impl Sim {
 
     fn watch_hit(&self, p: usize) -> bool {
         WRITES.contains(&p)
-            && self.watches.iter().any(|(a, l)| WATCHED < a + l && *a < WATCHED + 8)
+            && self
+                .watches
+                .iter()
+                .any(|(a, l)| WATCHED < a + l && *a < WATCHED + 8)
     }
 
     fn forward(&mut self, step: bool) -> String {
@@ -345,7 +350,10 @@ impl Read for FakeRr {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut s = self.sim.lock().unwrap();
         if s.out.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "fake rr has nothing to say"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fake rr has nothing to say",
+            ));
         }
         let n = buf.len().min(s.out.len());
         for (slot, b) in buf.iter_mut().zip(s.out.drain(..n)) {
@@ -359,7 +367,7 @@ impl Write for FakeRr {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut s = self.sim.lock().unwrap();
         s.deframer.push(buf);
-        while let Some(item) = s.deframer.next().unwrap() {
+        while let Some(item) = s.deframer.next_item().unwrap() {
             match item {
                 Incoming::Packet(p) => {
                     if s.ack {

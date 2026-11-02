@@ -17,7 +17,9 @@ hwbreak+;swbreak+;ConditionalBreakpoints+;vContSupported+;QPassSignals+;ReverseC
 ReverseStep+";
 
 fn handshake(supported: &str) -> Script {
-    Script::new().exchange(QSUPPORTED, supported).exchange("QStartNoAckMode", "OK")
+    Script::new()
+        .exchange(QSUPPORTED, supported)
+        .exchange("QStartNoAckMode", "OK")
 }
 
 fn client(script: Script) -> (RspClient<ScriptedConnection>, ScriptLog) {
@@ -43,7 +45,9 @@ fn handshake_switches_to_no_ack_mode() {
 #[test]
 fn stays_in_ack_mode_when_not_offered() {
     let (mut c, log) = client(
-        Script::new().exchange(QSUPPORTED, "PacketSize=20;qXfer:auxv:read+").exchange("qC", "QC1f"),
+        Script::new()
+            .exchange(QSUPPORTED, "PacketSize=20;qXfer:auxv:read+")
+            .exchange("qC", "QC1f"),
     );
     assert!(c.is_ack_mode());
     assert_eq!(c.features().packet_size(), 0x20);
@@ -63,7 +67,9 @@ fn resends_on_nack_and_rejects_corrupt_reply_without_acks() {
     assert_eq!(c.current_thread().unwrap(), ThreadId::new(None, Tid(1)));
     assert!(log.failure().is_none());
 
-    let (mut c, _log) = client(handshake("PacketSize=400;QStartNoAckMode+").exchange_raw("qC", b"$QC1#00".as_slice()));
+    let (mut c, _log) = client(
+        handshake("PacketSize=400;QStartNoAckMode+").exchange_raw("qC", b"$QC1#00".as_slice()),
+    );
     match c.current_thread() {
         Err(HopperError::Protocol(m)) => assert!(m.contains("bad checksum"), "{m}"),
         other => panic!("{other:?}"),
@@ -108,14 +114,20 @@ const RR_TARGET_XML: &str = r#"<?xml version="1.0"?>
 </target>"#;
 
 fn xfer_whole(annex: &str, body: &str) -> (String, String) {
-    (format!("qXfer:features:read:{annex}:0,7fff0"), format!("l{body}"))
+    (
+        format!("qXfer:features:read:{annex}:0,7fff0"),
+        format!("l{body}"),
+    )
 }
 
 fn tdesc_script() -> Script {
     let (q1, r1) = xfer_whole("target.xml", RR_TARGET_XML);
     let (q2, r2) = xfer_whole("64bit-core.xml", CORE_XML);
     let (q3, r3) = xfer_whole("64bit-seg.xml", SEG_XML);
-    Script::new().exchange(q1, r1).exchange(q2, r2).exchange(q3, r3)
+    Script::new()
+        .exchange(q1, r1)
+        .exchange(q2, r2)
+        .exchange(q3, r3)
 }
 
 #[test]
@@ -167,7 +179,10 @@ fn reads_memory_in_packet_sized_chunks() {
     let mut small = [0u8; 8];
     assert_eq!(
         c.read_memory(0x2000, &mut small),
-        Err(HopperError::UnreadableMemory { addr: 0x2000, len: 8 })
+        Err(HopperError::UnreadableMemory {
+            addr: 0x2000,
+            len: 8
+        })
     );
     log.assert_finished();
 }
@@ -185,7 +200,10 @@ fn reads_binary_memory_when_offered() {
     c.read_memory(0x400000, &mut buf).unwrap();
     assert_eq!(buf, data);
     let mut one = [0u8; 1];
-    assert!(matches!(c.read_memory(0x500000, &mut one), Err(HopperError::UnreadableMemory { .. })));
+    assert!(matches!(
+        c.read_memory(0x500000, &mut one),
+        Err(HopperError::UnreadableMemory { .. })
+    ));
     log.assert_finished();
 }
 
@@ -202,11 +220,16 @@ fn sets_and_clears_breakpoints_and_watchpoints() {
         .exchange("z2,7ffd0000,8", "OK")
         .exchange("Z1,0,1", "");
     let (mut c, log) = client(script);
-    c.insert_breakpoint(BreakKind::Software, 0x401000, 1).unwrap();
-    c.insert_breakpoint(BreakKind::Hardware, 0x401004, 1).unwrap();
-    c.insert_breakpoint(BreakKind::WriteWatch, 0x7ffd0000, 8).unwrap();
-    c.insert_breakpoint(BreakKind::ReadWatch, 0x7ffd0010, 4).unwrap();
-    c.insert_breakpoint(BreakKind::AccessWatch, 0x7ffd0020, 1).unwrap();
+    c.insert_breakpoint(BreakKind::Software, 0x401000, 1)
+        .unwrap();
+    c.insert_breakpoint(BreakKind::Hardware, 0x401004, 1)
+        .unwrap();
+    c.insert_breakpoint(BreakKind::WriteWatch, 0x7ffd0000, 8)
+        .unwrap();
+    c.insert_breakpoint(BreakKind::ReadWatch, 0x7ffd0010, 4)
+        .unwrap();
+    c.insert_breakpoint(BreakKind::AccessWatch, 0x7ffd0020, 1)
+        .unwrap();
     // A fifth watchpoint: rr runs out of debug registers and refuses.
     match c.insert_breakpoint(BreakKind::WriteWatch, 0x7ffd0040, 8) {
         Err(HopperError::TargetRefused { request, reply }) => {
@@ -215,8 +238,10 @@ fn sets_and_clears_breakpoints_and_watchpoints() {
         }
         other => panic!("{other:?}"),
     }
-    c.remove_breakpoint(BreakKind::Software, 0x401000, 1).unwrap();
-    c.remove_breakpoint(BreakKind::WriteWatch, 0x7ffd0000, 8).unwrap();
+    c.remove_breakpoint(BreakKind::Software, 0x401000, 1)
+        .unwrap();
+    c.remove_breakpoint(BreakKind::WriteWatch, 0x7ffd0000, 8)
+        .unwrap();
     assert!(matches!(
         c.insert_breakpoint(BreakKind::Hardware, 0, 1),
         Err(HopperError::Unsupported(_))
@@ -236,12 +261,21 @@ fn lists_and_selects_threads() {
         .exchange("Hg0", "OK")
         .exchange("Hgp10.99", "E01");
     let (mut c, log) = client(script);
-    assert_eq!(c.thread_list().unwrap(), [tid(0x10, 0x10), tid(0x10, 0x11), tid(0x10, 0x12)]);
+    assert_eq!(
+        c.thread_list().unwrap(),
+        [tid(0x10, 0x10), tid(0x10, 0x11), tid(0x10, 0x12)]
+    );
     assert_eq!(c.current_thread().unwrap(), tid(0x10, 0x11));
-    c.select_thread(ThreadOp::General, ThreadSelector::Thread(tid(0x10, 0x11))).unwrap();
-    c.select_thread(ThreadOp::Continue, ThreadSelector::All).unwrap();
-    c.select_thread(ThreadOp::General, ThreadSelector::Any).unwrap();
-    assert!(c.select_thread(ThreadOp::General, ThreadSelector::Thread(tid(0x10, 0x99))).is_err());
+    c.select_thread(ThreadOp::General, ThreadSelector::Thread(tid(0x10, 0x11)))
+        .unwrap();
+    c.select_thread(ThreadOp::Continue, ThreadSelector::All)
+        .unwrap();
+    c.select_thread(ThreadOp::General, ThreadSelector::Any)
+        .unwrap();
+    assert!(
+        c.select_thread(ThreadOp::General, ThreadSelector::Thread(tid(0x10, 0x99)))
+            .is_err()
+    );
     log.assert_finished();
 }
 
@@ -252,7 +286,7 @@ fn reads_threads_auxv_and_exec_file_with_qxfer() {
 <thread id="p21f9.21fa" core="1" name="worker"/>
 </threads>
 "#;
-    let auxv: Vec<u8> = (0..40u8).chain([b'#', b'*']).collect();
+    let auxv: Vec<u8> = (0..40u8).chain(*b"#*").collect();
     let mut auxv_tail = b"l".to_vec();
     auxv_tail.extend(hopper_rsp::packet::escape_binary(&auxv[20..]));
     let mut auxv_head = b"m".to_vec();
@@ -271,7 +305,10 @@ fn reads_threads_auxv_and_exec_file_with_qxfer() {
     assert_eq!(t[0].core, Some(3));
     assert_eq!(c.auxv().unwrap(), auxv);
     assert_eq!(c.exec_file(Some(0x21f9)).unwrap(), "/tmp/prog");
-    assert!(matches!(c.exec_file(None), Err(HopperError::TargetRefused { .. })));
+    assert!(matches!(
+        c.exec_file(None),
+        Err(HopperError::TargetRefused { .. })
+    ));
     log.assert_finished();
 }
 
@@ -283,26 +320,42 @@ fn resumes_forward_with_vcont_and_reads_stop_replies() {
         .exchange("vCont?", "vCont;c;C;s;S;")
         .exchange_many(
             "vCont;c",
-            &[b"O68690a".as_slice(), b"T05thread:p10.10;swbreak:;".as_slice()],
+            &[
+                b"O68690a".as_slice(),
+                b"T05thread:p10.10;swbreak:;".as_slice(),
+            ],
         )
         .exchange("vCont;s:p10.10", "T05thread:p10.10;")
         .exchange("vCont;c", "T05thread:p10.11;watch:7ffd1230;")
         .exchange("vCont;c", "W00;process:10");
     let (mut c, log) = client(script);
     assert!(matches!(c.stop_reason().unwrap(), StopReply::Stopped(s) if s.signal == 5));
-    let StopReply::Stopped(s) = c.resume(ResumeRequest::Continue).unwrap() else { panic!() };
+    let StopReply::Stopped(s) = c.resume(ResumeRequest::Continue).unwrap() else {
+        panic!()
+    };
     assert_eq!(s.cause, StopCause::SoftwareBreak);
     assert_eq!(c.take_console(), b"hi\n");
     let StopReply::Stopped(s) = c.resume(ResumeRequest::Step(tid(0x10, 0x10))).unwrap() else {
         panic!()
     };
     assert_eq!(s.cause, StopCause::Unspecified);
-    let StopReply::Stopped(s) = c.resume(ResumeRequest::Continue).unwrap() else { panic!() };
+    let StopReply::Stopped(s) = c.resume(ResumeRequest::Continue).unwrap() else {
+        panic!()
+    };
     assert_eq!(s.thread, Some(tid(0x10, 0x11)));
-    assert_eq!(s.cause, StopCause::Watchpoint { kind: BreakKind::WriteWatch, addr: 0x7ffd1230 });
+    assert_eq!(
+        s.cause,
+        StopCause::Watchpoint {
+            kind: BreakKind::WriteWatch,
+            addr: 0x7ffd1230
+        }
+    );
     assert_eq!(
         c.resume(ResumeRequest::Continue).unwrap(),
-        StopReply::Exited { code: 0, pid: Some(0x10) }
+        StopReply::Exited {
+            code: 0,
+            pid: Some(0x10)
+        }
     );
     log.assert_finished();
 }
@@ -316,7 +369,8 @@ fn falls_back_to_plain_packets_without_vcont() {
         .exchange("s", "S05");
     let (mut c, log) = client(script);
     c.resume(ResumeRequest::Continue).unwrap();
-    c.resume(ResumeRequest::Step(ThreadId::new(None, Tid(0x1f)))).unwrap();
+    c.resume(ResumeRequest::Step(ThreadId::new(None, Tid(0x1f))))
+        .unwrap();
     log.assert_finished();
 }
 
@@ -327,14 +381,20 @@ fn reverses_with_bc_and_bs() {
         .exchange("Hcp10.10", "OK")
         .exchange("bs", "T05thread:p10.10;");
     let (mut c, log) = client(script);
-    let StopReply::Stopped(s) = c.resume(ResumeRequest::ReverseContinue).unwrap() else { panic!() };
+    let StopReply::Stopped(s) = c.resume(ResumeRequest::ReverseContinue).unwrap() else {
+        panic!()
+    };
     assert_eq!(s.cause, StopCause::HistoryBegin);
-    c.resume(ResumeRequest::ReverseStep(tid(0x10, 0x10))).unwrap();
+    c.resume(ResumeRequest::ReverseStep(tid(0x10, 0x10)))
+        .unwrap();
     log.assert_finished();
 
     // gdbserver offers no reverse execution: the client refuses without sending anything.
     let (mut c, log) = client(handshake("PacketSize=400;QStartNoAckMode+"));
-    assert!(matches!(c.resume(ResumeRequest::ReverseContinue), Err(HopperError::Unsupported(_))));
+    assert!(matches!(
+        c.resume(ResumeRequest::ReverseContinue),
+        Err(HopperError::Unsupported(_))
+    ));
     assert!(matches!(
         c.resume(ResumeRequest::ReverseStep(tid(1, 1))),
         Err(HopperError::Unsupported(_))
@@ -351,8 +411,12 @@ fn interrupts_a_running_target() {
     let (mut c, log) = client(script);
     c.start_resume(ResumeRequest::Continue).unwrap();
     let handle = c.interrupt_handle().unwrap();
-    std::thread::spawn(move || handle.interrupt().unwrap()).join().unwrap();
-    let StopReply::Stopped(s) = c.wait_stop().unwrap() else { panic!() };
+    std::thread::spawn(move || handle.interrupt().unwrap())
+        .join()
+        .unwrap();
+    let StopReply::Stopped(s) = c.wait_stop().unwrap() else {
+        panic!()
+    };
     assert_eq!(s.signal, 2);
     log.assert_finished();
 }
@@ -368,8 +432,14 @@ fn seeks_with_rr_vrun_forms() {
         .exchange("vRun;;31323334", "T05thread:p10.10;")
         .exchange("vRun;;6339", "E01");
     let (mut c, log) = client(script);
-    assert!(matches!(c.rr_seek(RrSeek::Event(1234)).unwrap(), StopReply::Stopped(_)));
-    assert!(matches!(c.rr_seek(RrSeek::Checkpoint(9)), Err(HopperError::TargetRefused { .. })));
+    assert!(matches!(
+        c.rr_seek(RrSeek::Event(1234)).unwrap(),
+        StopReply::Stopped(_)
+    ));
+    assert!(matches!(
+        c.rr_seek(RrSeek::Checkpoint(9)),
+        Err(HopperError::TargetRefused { .. })
+    ));
     log.assert_finished();
 }
 
@@ -383,13 +453,22 @@ fn runs_rr_commands_hex_encoded() {
         .exchange("qRRCmd:when:-1", hex("Completed event: 42\n"))
         .exchange("qRRCmd:when-ticks:4096", hex("Current tick: 123456\n"))
         .exchange("qRRCmd:when-tid:-1", hex("Current tid: 4096\n"))
-        .exchange("qRRCmd:when-end:-1", hex("Event at end of recording: 900\n"))
+        .exchange(
+            "qRRCmd:when-end:-1",
+            hex("Event at end of recording: 900\n"),
+        )
         .exchange(
             format!("qRRCmd:checkpoint:-1:{}", hex("main at main.rs:12")),
             hex("Checkpoint 3 at main at main.rs:12\n"),
         )
-        .exchange(format!("qRRCmd:delete checkpoint:-1:{}", hex("3")), hex("Deleted checkpoint 3.\n"))
-        .exchange(format!("qRRCmd:delete checkpoint:-1:{}", hex("7")), hex("No checkpoint number 7.\n"))
+        .exchange(
+            format!("qRRCmd:delete checkpoint:-1:{}", hex("3")),
+            hex("Deleted checkpoint 3.\n"),
+        )
+        .exchange(
+            format!("qRRCmd:delete checkpoint:-1:{}", hex("7")),
+            hex("No checkpoint number 7.\n"),
+        )
         .exchange("qRRCmd:bogus:-1", hex("Command 'bogus' not found.\n"))
         .exchange("qRRCmd:when:-1", "RRCmd_EndDiversion")
         .exchange(
@@ -404,9 +483,18 @@ fn runs_rr_commands_hex_encoded() {
     assert_eq!(c.rr_checkpoint("main at main.rs:12").unwrap(), 3);
     c.rr_delete_checkpoint(3).unwrap();
     assert!(c.rr_delete_checkpoint(7).is_err());
-    assert!(matches!(c.rr_cmd("bogus", None, &[]), Err(HopperError::Unsupported(_))));
-    assert!(matches!(c.rr_when(), Err(HopperError::TargetRefused { .. })));
-    assert!(matches!(c.rr_checkpoint("x"), Err(HopperError::TargetRefused { .. })));
+    assert!(matches!(
+        c.rr_cmd("bogus", None, &[]),
+        Err(HopperError::Unsupported(_))
+    ));
+    assert!(matches!(
+        c.rr_when(),
+        Err(HopperError::TargetRefused { .. })
+    ));
+    assert!(matches!(
+        c.rr_checkpoint("x"),
+        Err(HopperError::TargetRefused { .. })
+    ));
     log.assert_finished();
 }
 
@@ -420,7 +508,9 @@ fn rr_commands_on_a_plain_server_are_unsupported() {
 
 #[test]
 fn records_a_transcript_that_replays() {
-    let script = handshake(RR_SUPPORTED).exchange("qC", "QCp10.10").exchange("m10,2", "abcd");
+    let script = handshake(RR_SUPPORTED)
+        .exchange("qC", "QCp10.10")
+        .exchange("m10,2", "abcd");
     let (mut c, log) = client(script);
     c.record_transcript();
     c.current_thread().unwrap();
@@ -430,8 +520,10 @@ fn records_a_transcript_that_replays() {
     assert_eq!(text, "> qC\n< QCp10.10\n> m10,2\n< abcd\n");
     log.assert_finished();
 
-    let replay = Script::parse(&format!("> {QSUPPORTED}\n< {RR_SUPPORTED}\n> QStartNoAckMode\n< OK\n{text}"))
-        .unwrap();
+    let replay = Script::parse(&format!(
+        "> {QSUPPORTED}\n< {RR_SUPPORTED}\n> QStartNoAckMode\n< OK\n{text}"
+    ))
+    .unwrap();
     let (mut c, log) = client(replay);
     c.current_thread().unwrap();
     c.read_memory(0x10, &mut b).unwrap();
