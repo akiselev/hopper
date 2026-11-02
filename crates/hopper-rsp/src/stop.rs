@@ -29,6 +29,8 @@ pub enum StopCause {
     HistoryBegin,
     /// Forward execution reached the end of the recording (`replaylog:end`).
     HistoryEnd,
+    /// The stop's thread was just created (`create:`, reported after `QThreadEvents:1`).
+    ThreadCreated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +57,12 @@ pub enum StopReply {
         signal: u8,
         pid: Option<i32>,
     },
+    /// `w`: one thread exited with this status while others go on (reported after
+    /// `QThreadEvents:1`).
+    ThreadExited {
+        status: u8,
+        thread: ThreadId,
+    },
 }
 
 fn parse_sig(s: &str) -> Result<u8> {
@@ -76,7 +84,7 @@ fn parse_process_suffix(rest: &str) -> Result<Option<i32>> {
 impl StopReply {
     /// Whether `payload` (run-length expanded) is a stop reply at all.
     pub fn is_stop_reply(payload: &[u8]) -> bool {
-        matches!(payload.first(), Some(b'T' | b'S' | b'W' | b'X'))
+        matches!(payload.first(), Some(b'T' | b'S' | b'W' | b'X' | b'w'))
     }
 
     pub fn parse(payload: &[u8]) -> Result<StopReply> {
@@ -102,6 +110,17 @@ impl StopReply {
                     StopReply::Exited { code: n, pid }
                 } else {
                     StopReply::Killed { signal: n, pid }
+                })
+            }
+            'w' => {
+                // `w<status>;<thread id>`, gdbserver sends the status without padding (`w0;p1.2`).
+                let (num, thread) = body.split_once(';').ok_or_else(bad)?;
+                if num.is_empty() {
+                    return Err(bad());
+                }
+                Ok(StopReply::ThreadExited {
+                    status: parse_sig(num)?,
+                    thread: ThreadId::parse(thread)?,
                 })
             }
             'S' => {
@@ -149,6 +168,7 @@ impl StopReply {
                         }
                         "swbreak" => causes.push(StopCause::SoftwareBreak),
                         "hwbreak" => causes.push(StopCause::HardwareBreak),
+                        "create" => causes.push(StopCause::ThreadCreated),
                         "replaylog" => causes.push(match value {
                             "begin" => StopCause::HistoryBegin,
                             "end" => StopCause::HistoryEnd,
@@ -169,7 +189,8 @@ impl StopReply {
                     StopCause::HistoryBegin | StopCause::HistoryEnd => 1,
                     StopCause::HardwareBreak => 2,
                     StopCause::SoftwareBreak => 3,
-                    StopCause::Unspecified => 4,
+                    StopCause::ThreadCreated => 4,
+                    StopCause::Unspecified => 5,
                 };
                 causes.sort_by_key(rank);
                 if let Some(c) = causes.into_iter().next() {
@@ -243,6 +264,23 @@ mod tests {
         assert_eq!(s.registers.len(), 2);
         assert_eq!(s.registers[1].0, 7);
         assert_eq!(s.registers[1].1[0], 0xd0);
+    }
+
+    #[test]
+    fn parses_thread_events() {
+        let r = StopReply::parse(b"T05create:;06:00;thread:p241c.242b;core:2;").unwrap();
+        let StopReply::Stopped(s) = r else { panic!() };
+        assert_eq!(s.cause, StopCause::ThreadCreated);
+        assert_eq!(s.thread, Some(ThreadId::new(Some(0x241c), Tid(0x242b))));
+        assert!(StopReply::is_stop_reply(b"w0;p241c.242b"));
+        assert_eq!(
+            StopReply::parse(b"w0;p241c.242b").unwrap(),
+            StopReply::ThreadExited {
+                status: 0,
+                thread: ThreadId::new(Some(0x241c), Tid(0x242b))
+            }
+        );
+        assert!(StopReply::parse(b"w0").is_err());
     }
 
     #[test]

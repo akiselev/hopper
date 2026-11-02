@@ -32,13 +32,29 @@
 //!   `__rg_*`. libc names match only unqualified C symbols, never a Rust `my::free`. Not covered:
 //!   `valloc`/`pvalloc`, `mmap`-based allocators and arenas inside the program (bump allocators
 //!   are invisible at the allocator boundary).
-//! - **Timeline**: thread entries ([`IndexConfig::thread_entries`]) start a thread and their
-//!   matched return ends it; a thread first seen without one starts where it was first seen;
-//!   the main thread starts at the first moment; process exit ends the process and every thread
-//!   still running; [`IndexConfig::anchors`] add named anchors.
+//! - **Timeline**: the target's thread events ([`Target::enable_thread_events`]) start and end
+//!   threads. With [`ThreadEventSource::ServerReports`] (gdbserver) each event has its own
+//!   moment and the thread-entry heuristic is not planned. Otherwise the heuristic stays: thread
+//!   entries ([`IndexConfig::thread_entries`]) start a thread and their matched return ends it,
+//!   at the exact moment; with [`ThreadEventSource::ThreadListDiff`] (rr) the thread-list
+//!   differences add the threads the heuristic does not see (threads not started by std), at the
+//!   first stop that sees them, and whichever names a start or an exit first wins. A thread
+//!   first seen at a stop without either starts there; the main thread starts at the first
+//!   moment; process exit ends the process and every thread still running;
+//!   [`IndexConfig::anchors`] add named anchors. A start or exit seen at a stop of another
+//!   thread is stored at that stop's position with the started (or exited) thread's tid.
 //! - **Shared libraries**: the dynamic linker's `link_map` is read at the start, at the main
 //!   executable's entry point and at every hit of `r_debug.r_brk`; libraries not in the symbol
 //!   set are added and planned (allocators, anchors, thread entries, matching functions).
+//!
+//! **Cheap moments.** At a breakpoint stop phase A asks [`Target::now_at_stop`], which an rr
+//! replica answers without seeking, with a [`RegionVisit`] (see `hopper_rr::replica`). The
+//! records of a batch carry their visit until the batch is flushed: then
+//! [`Target::resolve_visits`] turns all of the batch's visits into moments in one forward sweep
+//! (one checkpoint restore per batch instead of one per stop), the records get their exact
+//! moments, and only then are they committed. So every stored moment is exact and seekable,
+//! and the index's queries and ordering need nothing new. A target without visits (gdbserver)
+//! answers with exact moments and the sweep is empty.
 //!
 //! **Honest completeness.** A breakpoint address that reaches
 //! [`IndexConfig::max_hits_per_address`] is removed and recorded as capped from that moment;
@@ -57,9 +73,12 @@ use std::time::{Duration, Instant};
 
 use hopper_core::api::TimelineKind;
 use hopper_core::target::{
-    Breakpoint, Direction, Memory, Resume, StopReason, Target, TargetMemory,
+    Breakpoint, Direction, Memory, Resume, StopReason, Target, TargetMemory, ThreadChange,
+    ThreadEventSource, ThreadEventTime,
 };
-use hopper_core::{HopperError, Moment, ProcessId, Reg, RegisterSet, Result, SourceLoc, Tid};
+use hopper_core::{
+    HopperError, ProcessId, Reg, RegionVisit, RegisterSet, Result, SourceLoc, StopMoment, Tid,
+};
 use hopper_symbols::{Binary, Module, ModuleId, SymbolSet};
 use serde::{Deserialize, Serialize};
 
@@ -229,17 +248,59 @@ struct State {
     config_key: String,
 }
 
+/// The moment of a buffered record: exact, or the visit (an index into the batch's visits)
+/// that names it until the batch is flushed. `stamp` is then the visit's region start, with the
+/// record's thread.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct At {
+    stamp: Stamp,
+    visit: Option<u32>,
+}
+
+impl At {
+    fn exact(stamp: Stamp) -> At {
+        At { stamp, visit: None }
+    }
+
+    /// The same moment, stored under thread `tid` (a thread event seen at another thread's stop).
+    fn for_thread(self, tid: Tid) -> At {
+        At {
+            stamp: Stamp(self.stamp.0, tid.0, self.stamp.2, self.stamp.3),
+            ..self
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Stream {
+    Calls,
+    Lines,
+    Allocs,
+    Timeline,
+}
+
 #[derive(Debug, Default)]
 struct Buffers {
     calls: Vec<Record>,
     lines: Vec<Record>,
     allocs: Vec<Record>,
     timeline: Vec<Record>,
+    /// Records whose moment is a visit: (stream, index, visit).
+    patches: Vec<(Stream, usize, u32)>,
 }
 
 impl Buffers {
     fn len(&self) -> usize {
         self.calls.len() + self.lines.len() + self.allocs.len() + self.timeline.len()
+    }
+
+    fn stream(&mut self, s: Stream) -> &mut Vec<Record> {
+        match s {
+            Stream::Calls => &mut self.calls,
+            Stream::Lines => &mut self.lines,
+            Stream::Allocs => &mut self.allocs,
+            Stream::Timeline => &mut self.timeline,
+        }
     }
 }
 
@@ -250,6 +311,13 @@ struct Runner<'a> {
     st: State,
     buf: Buffers,
     summary: PhaseASummary,
+    /// The batch's stops named by visits, resolved at the next flush.
+    visits: Vec<RegionVisit>,
+    /// `st.capped` entries whose `from` is a visit: (index, visit).
+    cap_patches: Vec<(usize, u32)>,
+    /// The moment of the last stop handled (`st.last` once resolved).
+    last_at: Option<At>,
+    thread_source: ThreadEventSource,
 }
 
 fn config_key(c: &IndexConfig) -> String {
@@ -355,6 +423,10 @@ impl PhaseA {
             st: State::default(),
             buf: Buffers::default(),
             summary,
+            visits: Vec::new(),
+            cap_patches: Vec::new(),
+            last_at: None,
+            thread_source: ThreadEventSource::Unavailable,
         };
         let result = match resume {
             Some(state) => runner
@@ -367,7 +439,7 @@ impl PhaseA {
                     .and_then(|()| runner.run_loop(target, control))
             }
         };
-        let flushed = runner.flush(result.as_ref().is_ok_and(|ended| *ended));
+        let flushed = runner.flush(target, result.as_ref().is_ok_and(|ended| *ended));
         runner.summary.elapsed = started.elapsed();
         runner.summary.capped = runner.st.capped.iter().map(|c| c.key.clone()).collect();
         runner.summary.libraries = runner.st.libraries.iter().map(|(p, _)| p.clone()).collect();
@@ -433,9 +505,121 @@ impl Runner<'_> {
         for (a, name) in p.anchors {
             self.add_role(a, Role::Anchor(name));
         }
-        for a in p.thread_entries {
-            self.add_role(a, Role::ThreadEntry);
+        // The server reports every thread start and exit: the heuristic would only repeat it.
+        if self.thread_source != ThreadEventSource::ServerReports {
+            for a in p.thread_entries {
+                self.add_role(a, Role::ThreadEntry);
+            }
         }
+    }
+
+    /// Buffer `r`, whose moment is `at`, in `stream`.
+    fn emit(&mut self, stream: Stream, r: Record, at: At) {
+        let buf = self.buf.stream(stream);
+        if let Some(v) = at.visit {
+            let i = buf.len();
+            self.buf.patches.push((stream, i, v));
+        }
+        self.buf.stream(stream).push(r);
+    }
+
+    /// Record that `key` is capped from `at` on.
+    fn cap(&mut self, key: CapKey, at: At) {
+        if let Some(v) = at.visit {
+            self.cap_patches.push((self.st.capped.len(), v));
+        }
+        self.st.capped.push(Capped {
+            key,
+            from: at.stamp,
+        });
+    }
+
+    /// The buffered moment of a stop.
+    fn at_of(&mut self, m: &StopMoment) -> At {
+        match m {
+            StopMoment::Exact(m) => At::exact(Stamp::of(m)),
+            StopMoment::Visit(v) => {
+                let i = self.visits.len() as u32;
+                self.visits.push(*v);
+                At {
+                    stamp: Stamp::of(&v.region),
+                    visit: Some(i),
+                }
+            }
+        }
+    }
+
+    /// Turn the batch's visits into moments and patch every record, cap and `st.last` that
+    /// waited on one.
+    fn resolve_moments(&mut self, target: &mut dyn Target) -> Result<()> {
+        if !self.visits.is_empty() {
+            let resolved: Vec<Stamp> = target
+                .resolve_visits(&self.visits)?
+                .iter()
+                .map(Stamp::of)
+                .collect();
+            // The placeholder keeps the record's thread (a thread event may store another one).
+            let patch = |s: &mut Stamp, v: u32| {
+                let r = resolved[v as usize];
+                *s = Stamp(r.0, s.1, r.2, r.3);
+            };
+            for (stream, i, v) in std::mem::take(&mut self.buf.patches) {
+                if let Some(s) = self.buf.stream(stream)[i].stamp_mut() {
+                    patch(s, v);
+                }
+            }
+            for (i, v) in std::mem::take(&mut self.cap_patches) {
+                patch(&mut self.st.capped[i].from, v);
+            }
+            if let Some(At {
+                mut stamp,
+                visit: Some(v),
+            }) = self.last_at
+            {
+                patch(&mut stamp, v);
+                self.last_at = Some(At::exact(stamp));
+            }
+            self.visits.clear();
+        }
+        self.st.last = self.last_at.map(|a| a.stamp);
+        Ok(())
+    }
+
+    /// Record the thread starts and exits the target saw. `here` is the current stop's moment,
+    /// named on demand for events seen by comparing thread lists.
+    fn take_thread_events(&mut self, target: &mut dyn Target, here: &mut Option<At>) -> Result<()> {
+        if self.thread_source == ThreadEventSource::Unavailable {
+            return Ok(());
+        }
+        for e in target.take_thread_events()? {
+            let at = match e.time {
+                ThreadEventTime::At(m) => At::exact(Stamp::of(&m)),
+                ThreadEventTime::ByCurrentStop => match *here {
+                    Some(a) => a,
+                    None => {
+                        let m = target.now_at_stop()?;
+                        let a = self.at_of(&m);
+                        *here = Some(a);
+                        a
+                    }
+                },
+            }
+            .for_thread(e.tid);
+            match e.change {
+                ThreadChange::Started => {
+                    if self.st.known_threads.insert(e.tid.0) {
+                        self.timeline(at, TimelineKind::ThreadStart);
+                    }
+                }
+                ThreadChange::Exited => {
+                    self.st.known_threads.insert(e.tid.0);
+                    if self.st.exited_threads.insert(e.tid.0) {
+                        self.timeline(at, TimelineKind::ThreadExit);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn insert_all(&mut self, target: &mut dyn Target) -> Result<()> {
@@ -457,7 +641,7 @@ impl Runner<'_> {
                 // An address the target will not break on: leave it out rather than fail the
                 // run, and say so, as a cap from now (the recording start before the first stop).
                 Err(HopperError::TargetRefused { .. }) => {
-                    let from = self.st.last.unwrap_or(Stamp(0, 0, 0, 0));
+                    let from = self.last_at.unwrap_or(At::exact(Stamp(0, 0, 0, 0)));
                     let roles = self
                         .st
                         .sites
@@ -466,7 +650,7 @@ impl Runner<'_> {
                         .unwrap_or_default();
                     for r in roles {
                         if let Some(key) = r.cap_key(&self.st) {
-                            self.st.capped.push(Capped { key, from });
+                            self.cap(key, from);
                         }
                     }
                 }
@@ -479,6 +663,7 @@ impl Runner<'_> {
     fn start(&mut self, target: &mut dyn Target) -> Result<()> {
         self.st.config_key = config_key(self.config());
         self.st.process = Some(target.info().process);
+        self.thread_source = target.enable_thread_events()?;
         let ids: Vec<(ModuleId, String)> = self
             .symbols
             .modules()
@@ -508,9 +693,10 @@ impl Runner<'_> {
             StartPoint::Here => Some(stamp),
         };
         self.st.last = Some(stamp);
+        self.last_at = Some(At::exact(stamp));
         let tid = target.current_thread()?;
         self.st.known_threads.insert(tid.0);
-        self.timeline(stamp, TimelineKind::ThreadStart);
+        self.timeline(At::exact(stamp), TimelineKind::ThreadStart);
         Ok(())
     }
 
@@ -525,10 +711,12 @@ impl Runner<'_> {
             }
         }
         self.st = state;
+        self.last_at = Some(At::exact(at));
         for s in self.st.sites.values_mut() {
             s.inserted = false;
         }
         target.seek(&at.moment(target.info().recording))?;
+        self.thread_source = target.enable_thread_events()?;
         self.insert_all(target)
     }
 
@@ -567,8 +755,12 @@ impl Runner<'_> {
         Ok(())
     }
 
-    fn timeline(&mut self, at: Stamp, kind: TimelineKind) {
-        self.buf.timeline.push(Record::Timeline { at, kind });
+    fn timeline(&mut self, at: At, kind: TimelineKind) {
+        self.emit(
+            Stream::Timeline,
+            Record::Timeline { at: at.stamp, kind },
+            at,
+        );
         self.summary.timeline_events += 1;
     }
 
@@ -604,12 +796,14 @@ impl Runner<'_> {
             self.summary.stops += 1;
             match ev.reason {
                 StopReason::Breakpoint { addr } => {
-                    let now = target.now()?;
-                    self.on_breakpoint(target, ev.tid, addr, &now)?;
+                    let now = target.now_at_stop()?;
+                    let at = self.at_of(&now);
+                    self.take_thread_events(target, &mut Some(at))?;
+                    self.on_breakpoint(target, ev.tid, addr, at)?;
                     if let Some(end) = self.job.expected_end
                         && end > 0
                     {
-                        control.set_progress("phase-a", now.frame_time as f32 / end as f32);
+                        control.set_progress("phase-a", now.frame_time() as f32 / end as f32);
                     }
                 }
                 StopReason::Exited { code } => {
@@ -622,10 +816,10 @@ impl Runner<'_> {
                 }
                 // Signals, steps and anything else: keep going. (gdbserver drops a signal that
                 // is not passed back on resume; rr replays signals regardless.)
-                _ => {}
+                _ => self.take_thread_events(target, &mut None)?,
             }
             if self.buf.len() >= self.config().flush_every {
-                self.flush(false)?;
+                self.flush(target, false)?;
             }
         }
     }
@@ -633,12 +827,13 @@ impl Runner<'_> {
     fn on_end(&mut self, target: &mut dyn Target, tid: Tid, code: Option<i32>) -> Result<()> {
         // A process that has exited has no clock to read; the end is just after the last stop.
         let at = match target.now() {
-            Ok(m) => Stamp::of(&m),
+            Ok(m) => At::exact(Stamp::of(&m)),
             Err(_) => {
-                let l = self.st.last.unwrap_or(Stamp(0, tid.0, 0, 0));
-                Stamp(l.0 + 1, tid.0, 0, 0)
+                let l = self.last_at.map_or(Stamp(0, tid.0, 0, 0), |a| a.stamp);
+                At::exact(Stamp(l.0 + 1, tid.0, 0, 0))
             }
         };
+        self.take_thread_events(target, &mut Some(at))?;
         let mut threads: Vec<i32> = self
             .st
             .known_threads
@@ -648,17 +843,11 @@ impl Runner<'_> {
             .collect();
         threads.sort_unstable();
         for t in threads {
-            self.timeline(Stamp(at.0, t, at.2, at.3), TimelineKind::ThreadExit);
+            self.timeline(at.for_thread(Tid(t)), TimelineKind::ThreadExit);
         }
         self.timeline(at, TimelineKind::ProcessExit { code });
-        self.st.last = Some(at);
+        self.last_at = Some(at);
         Ok(())
-    }
-
-    fn see_thread(&mut self, tid: Tid, at: Stamp, starting: bool) {
-        if self.st.known_threads.insert(tid.0) && !starting {
-            self.timeline(at, TimelineKind::ThreadStart);
-        }
     }
 
     fn on_breakpoint(
@@ -666,15 +855,17 @@ impl Runner<'_> {
         target: &mut dyn Target,
         tid: Tid,
         addr: u64,
-        now: &Moment,
+        at: At,
     ) -> Result<()> {
-        let at = Stamp::of(now);
-        self.st.last = Some(at);
+        self.last_at = Some(at);
         let Some(site) = self.st.sites.get(&addr).cloned() else {
             return Ok(());
         };
-        let starts_thread = site.roles.contains(&Role::ThreadEntry);
-        self.see_thread(tid, at, starts_thread);
+        // A thread first seen here starts here, unless this is its entry (the role says so).
+        let first_seen = self.st.known_threads.insert(tid.0);
+        if first_seen && !site.roles.contains(&Role::ThreadEntry) {
+            self.timeline(at, TimelineKind::ThreadStart);
+        }
         let regs = target.registers(tid)?;
         if site.return_refs > 0 {
             self.on_return(target, tid, addr, &regs, at)?;
@@ -691,7 +882,14 @@ impl Runner<'_> {
                             location: self.st.lines[*lid as usize].clone(),
                         });
                     }
-                    self.buf.lines.push(Record::LineHit { lid: *lid, at });
+                    self.emit(
+                        Stream::Lines,
+                        Record::LineHit {
+                            lid: *lid,
+                            at: at.stamp,
+                        },
+                        at,
+                    );
                     self.summary.line_hits += 1;
                 }
                 Role::Entry(fid) => self.on_entry(target, tid, *fid, &regs, at)?,
@@ -702,7 +900,9 @@ impl Runner<'_> {
                     self.timeline(at, TimelineKind::Anchor { name: name.clone() })
                 }
                 Role::ThreadEntry => {
-                    self.timeline(at, TimelineKind::ThreadStart);
+                    if first_seen {
+                        self.timeline(at, TimelineKind::ThreadStart);
+                    }
                     self.push_pending(target, tid, &regs, Purpose::ThreadEntry)?;
                 }
                 Role::LibraryHook => {
@@ -720,7 +920,7 @@ impl Runner<'_> {
         self.count_hit(target, addr, at)
     }
 
-    fn count_hit(&mut self, target: &mut dyn Target, addr: u64, at: Stamp) -> Result<()> {
+    fn count_hit(&mut self, target: &mut dyn Target, addr: u64, at: At) -> Result<()> {
         let cap = self.config().max_hits_per_address;
         let Some(site) = self.st.sites.get_mut(&addr) else {
             return Ok(());
@@ -747,7 +947,7 @@ impl Runner<'_> {
         }
         for r in capped {
             if let Some(key) = r.cap_key(&self.st) {
-                self.st.capped.push(Capped { key, from: at });
+                self.cap(key, at);
             }
         }
         if remove {
@@ -781,7 +981,7 @@ impl Runner<'_> {
         tid: Tid,
         fid: u32,
         regs: &RegisterSet,
-        at: Stamp,
+        at: At,
     ) -> Result<()> {
         let stack = self.st.threads.entry(tid.0).or_default();
         let parent = stack.iter().rev().find_map(|p| match p.purpose {
@@ -802,14 +1002,19 @@ impl Runner<'_> {
                 location,
             });
         }
-        self.buf.calls.push(Record::CallEnter {
-            id,
-            fid,
-            parent,
-            process: self.st.process.unwrap_or(ProcessId::new(0)),
+        let process = self.st.process.unwrap_or(ProcessId::new(0));
+        self.emit(
+            Stream::Calls,
+            Record::CallEnter {
+                id,
+                fid,
+                parent,
+                process,
+                at: at.stamp,
+                depth,
+            },
             at,
-            depth,
-        });
+        );
         self.summary.calls += 1;
         self.push_pending(target, tid, regs, Purpose::Call { id })
     }
@@ -844,7 +1049,7 @@ impl Runner<'_> {
         tid: Tid,
         kind: AllocatorFunction,
         regs: &RegisterSet,
-        at: Stamp,
+        at: At,
     ) -> Result<()> {
         let nested = self.st.threads.get(&tid.0).is_some_and(|s| {
             s.iter()
@@ -857,7 +1062,7 @@ impl Runner<'_> {
         let args = [arg(Reg::RDI), arg(Reg::RSI), arg(Reg::RDX), arg(Reg::RCX)];
         if kind.frees_at_entry() {
             if let Some(id) = self.st.live.remove(&args[0]) {
-                self.buf.allocs.push(Record::Freed { id, at });
+                self.emit(Stream::Allocs, Record::Freed { id, at: at.stamp }, at);
                 self.summary.frees += 1;
             }
             return self.push_pending(
@@ -890,7 +1095,7 @@ impl Runner<'_> {
         tid: Tid,
         addr: u64,
         regs: &RegisterSet,
-        at: Stamp,
+        at: At,
     ) -> Result<()> {
         let Some(sp) = regs.sp() else { return Ok(()) };
         let Some(stack) = self.st.threads.get_mut(&tid.0) else {
@@ -905,10 +1110,18 @@ impl Runner<'_> {
             self.disarm_return(target, p.ret)?;
             let returned = std::ptr::eq(p, &popped[0]);
             match &p.purpose {
-                Purpose::Call { id } => self.buf.calls.push(Record::CallExit { id: *id, at }),
+                Purpose::Call { id } => self.emit(
+                    Stream::Calls,
+                    Record::CallExit {
+                        id: *id,
+                        at: at.stamp,
+                    },
+                    at,
+                ),
                 Purpose::ThreadEntry => {
-                    self.st.exited_threads.insert(tid.0);
-                    self.timeline(at, TimelineKind::ThreadExit);
+                    if self.st.exited_threads.insert(tid.0) {
+                        self.timeline(at, TimelineKind::ThreadExit);
+                    }
                 }
                 Purpose::Allocator {
                     kind,
@@ -931,21 +1144,26 @@ impl Runner<'_> {
         predecessor: Option<u64>,
         requested_by: Option<String>,
         kind: AllocatorFunction,
-        at: Stamp,
+        at: At,
     ) {
         let id = self.st.next_alloc;
         self.st.next_alloc += 1;
         self.st.live.insert(addr, id);
-        self.buf.allocs.push(Record::Allocated {
-            id,
-            process: self.st.process.unwrap_or(ProcessId::new(0)),
+        let process = self.st.process.unwrap_or(ProcessId::new(0));
+        self.emit(
+            Stream::Allocs,
+            Record::Allocated {
+                id,
+                process,
+                at: at.stamp,
+                addr,
+                size,
+                predecessor,
+                requested_by,
+                allocator: kind,
+            },
             at,
-            addr,
-            size,
-            predecessor,
-            requested_by,
-            allocator: kind,
-        });
+        );
         self.summary.allocations += 1;
     }
 
@@ -956,7 +1174,7 @@ impl Runner<'_> {
         args: [u64; 4],
         requested_by: Option<String>,
         rax: u64,
-        at: Stamp,
+        at: At,
     ) -> Result<()> {
         use AllocatorFunction as A;
         let (block, size, old) = match kind {
@@ -978,7 +1196,7 @@ impl Runner<'_> {
             Some(old) if old != 0 && (block != 0 || size == 0) => {
                 let prev = self.st.live.remove(&old);
                 if let Some(id) = prev {
-                    self.buf.allocs.push(Record::Freed { id, at });
+                    self.emit(Stream::Allocs, Record::Freed { id, at: at.stamp }, at);
                     self.summary.frees += 1;
                 }
                 prev
@@ -1003,10 +1221,11 @@ impl Runner<'_> {
         }
     }
 
-    fn flush(&mut self, ended: bool) -> Result<()> {
-        if self.st.last.is_none() {
+    fn flush(&mut self, target: &mut dyn Target, ended: bool) -> Result<()> {
+        if self.last_at.is_none() {
             return Ok(());
         }
+        self.resolve_moments(target)?;
         let cov = self.coverage(ended);
         let resume = if ended {
             None

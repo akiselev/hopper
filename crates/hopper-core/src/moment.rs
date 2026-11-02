@@ -73,6 +73,76 @@ impl fmt::Display for Moment {
     }
 }
 
+/// A breakpoint stop named without counting `sub`: the tick region it is in and which visit of
+/// its PC inside that region it is.
+///
+/// Inside one tick region (one event, one thread, one tick count) no conditional branch retires,
+/// but the same PC can still be reached more than once (a `rep` string instruction, a function
+/// called twice from straight-line code). The region plus "the `visit`-th instruction boundary of
+/// the region whose `rip` is `pc`" names exactly one instruction boundary, as `sub` does; turning
+/// it into a [`Moment`] costs a walk from the region start
+/// ([`crate::target::Target::resolve_visits`]). Two visits are not ordered without resolving them,
+/// unless they are in different regions.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RegionVisit {
+    /// The region's first instruction boundary (`sub` 0).
+    pub region: Moment,
+    /// The PC at the stop.
+    pub pc: u64,
+    /// How many earlier instruction boundaries of the region had this PC (0: the first).
+    pub visit: u32,
+}
+
+impl RegionVisit {
+    /// `(frame_time, ticks)`: regions of one recording are ordered by this key (an event runs
+    /// one thread, so the thread does not order them).
+    pub fn region_key(&self) -> (u64, u64) {
+        (self.region.frame_time, self.region.ticks)
+    }
+
+    /// Whether `m` lies in this visit's tick region.
+    pub fn same_region(&self, m: &Moment) -> bool {
+        m.recording == self.region.recording
+            && m.frame_time == self.region.frame_time
+            && m.tid == self.region.tid
+            && m.ticks == self.region.ticks
+    }
+}
+
+/// The moment of a stop, as [`crate::target::Target::now_at_stop`] reports it: exact, or a
+/// region visit whose `sub` is counted when someone needs it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StopMoment {
+    Exact(Moment),
+    Visit(RegionVisit),
+}
+
+impl StopMoment {
+    /// The moment, when it is already known.
+    pub fn exact(&self) -> Option<Moment> {
+        match self {
+            StopMoment::Exact(m) => Some(*m),
+            StopMoment::Visit(_) => None,
+        }
+    }
+
+    /// rr's event number of the stop (known either way).
+    pub fn frame_time(&self) -> u64 {
+        match self {
+            StopMoment::Exact(m) => m.frame_time,
+            StopMoment::Visit(v) => v.region.frame_time,
+        }
+    }
+
+    /// The thread of the stop.
+    pub fn tid(&self) -> Tid {
+        match self {
+            StopMoment::Exact(m) => m.tid,
+            StopMoment::Visit(v) => v.region.tid,
+        }
+    }
+}
+
 /// A half-open range of moments in one recording. A missing bound is open.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct MomentRange {
@@ -179,6 +249,18 @@ mod tests {
         assert!("hopper://zz/1.2.3.4".parse::<PositionUrl>().is_err());
         assert!(format!("hopper://{}/1.2.3", "ab".repeat(16)).parse::<PositionUrl>().is_err());
         assert!("http://x/1.2.3.4".parse::<PositionUrl>().is_err());
+    }
+
+    #[test]
+    fn region_visits_know_their_region() {
+        let v = RegionVisit { region: m(1, 4, 9, 0), pc: 0x1000, visit: 2 };
+        assert!(v.same_region(&m(1, 4, 9, 7)));
+        assert!(!v.same_region(&m(1, 4, 10, 0)));
+        assert!(!v.same_region(&m(2, 4, 9, 0)));
+        assert_eq!(v.region_key(), (4, 9));
+        let s = StopMoment::Visit(v);
+        assert_eq!((s.exact(), s.frame_time(), s.tid()), (None, 4, Tid(7)));
+        assert_eq!(StopMoment::Exact(m(1, 4, 9, 3)).exact(), Some(m(1, 4, 9, 3)));
     }
 
     #[test]

@@ -378,3 +378,67 @@ fn unwinds_every_thread_through_libc() {
     }
     assert!(saw_bump, "the breakpoint thread is stopped in bump");
 }
+
+#[test]
+fn enumerates_functions_and_statement_rows() {
+    let Some((_path, set)) = static_symbols("worked-example") else {
+        return;
+    };
+    let main = hopper_symbols::ModuleId(0);
+    let functions: Vec<_> = set.functions(main).collect();
+    let mut entries: Vec<u64> = functions.iter().map(|f| f.entry).collect();
+    entries.sort_unstable();
+    let n = entries.len();
+    entries.dedup();
+    assert_eq!(entries.len(), n, "one function per entry address");
+    // The program's own functions are there, named and placed as the lookups name them.
+    for name in ["worked_example::main", "worked_example::load"] {
+        let found = set.find_functions(name);
+        assert!(!found.is_empty(), "{name}");
+        for f in found {
+            let listed = functions
+                .iter()
+                .find(|g| g.entry == f.entry)
+                .unwrap_or_else(|| panic!("{name} at {:#x} is not listed", f.entry));
+            assert_eq!(listed.name, f.name);
+        }
+    }
+    // Symbol-table-only functions (no DWARF subprogram) are listed too.
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.origin == hopper_symbols::FunctionOrigin::Symbol)
+    );
+    assert_eq!(set.functions(hopper_symbols::ModuleId(7)).count(), 0);
+
+    let rows: Vec<(u64, hopper_core::SourceLoc)> = set
+        .statement_rows(main)
+        .filter(|(_, l)| l.file.ends_with("worked-example/src/main.rs"))
+        .collect();
+    assert!(!rows.is_empty());
+    let lines: std::collections::BTreeSet<u32> = rows.iter().map(|(_, l)| l.line).collect();
+    for line in [7u32, 12, 13, 14, 15, 16, 17, 18] {
+        assert!(lines.contains(&line), "line {line} has a statement row");
+    }
+    for (addr, loc) in &rows {
+        assert!(loc.file.starts_with('/'), "{loc:?}");
+        // The row's address is inside the main module's code and maps back to the same file.
+        assert_eq!(set.location(*addr).map(|l| l.file), Some(loc.file.clone()));
+    }
+    // gdb's `break main.rs:14` address is the lowest statement row of line 14 (or past the
+    // prologue when that row is a function's entry).
+    let line14: Vec<u64> = rows
+        .iter()
+        .filter(|(_, l)| l.line == 14)
+        .map(|(a, _)| *a)
+        .collect();
+    for a in set.addresses_for_line("main.rs", 14) {
+        assert!(
+            line14.contains(&a.address)
+                || set
+                    .function_at(a.address)
+                    .is_some_and(|f| line14.contains(&f.entry)),
+            "{a:?}"
+        );
+    }
+}

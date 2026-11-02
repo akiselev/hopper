@@ -454,6 +454,12 @@ impl<C: Connection> RspClient<C> {
         }
     }
 
+    /// `QThreadEvents:1`: report thread creation (`create:` stops) and thread exits (`w`
+    /// replies) from now on. `Unsupported` when the server does not know the packet (rr).
+    pub fn enable_thread_events(&mut self) -> Result<()> {
+        self.expect_ok("QThreadEvents:1")
+    }
+
     /// `?`: why the target last stopped.
     pub fn stop_reason(&mut self) -> Result<StopReply> {
         self.send(b"?")?;

@@ -662,6 +662,80 @@ impl SymbolSet {
         out
     }
 
+    /// Every function of module `module`: its concrete DWARF subprograms with code (inlined
+    /// copies are not functions of their own here; see [`SymbolSet::find_functions`]), then the
+    /// symbol-table functions no subprogram starts at. In DWARF unit order, then symbol-table
+    /// order. Empty for an unknown module.
+    pub fn functions(&self, module: ModuleId) -> impl Iterator<Item = FunctionInfo> + '_ {
+        let mut out = Vec::new();
+        if let Some(m) = self.module(module) {
+            let binary = m.binary();
+            let mut entries = std::collections::HashSet::new();
+            if let Ok(dwarf) = binary.dwarf() {
+                for unit in 0..dwarf.units().len() {
+                    let Ok(index) = dwarf.unit_index(unit) else {
+                        continue;
+                    };
+                    for f in &index.functions {
+                        if !f.ranges.iter().any(|r| binary.contains_code(r.start)) {
+                            continue;
+                        }
+                        let info = self.subprogram_info(module, m, dwarf, unit, f);
+                        entries.insert(info.entry);
+                        out.push(info);
+                    }
+                }
+            }
+            for sym in binary.symbols() {
+                if sym.kind != SymbolKind::Function
+                    || sym.address == 0
+                    || !binary.contains_code(sym.address)
+                {
+                    continue;
+                }
+                let entry = m.to_runtime(sym.address);
+                if !entries.insert(entry) {
+                    continue;
+                }
+                out.push(FunctionInfo {
+                    module,
+                    name: sym.name.clone(),
+                    linkage_name: Some(sym.raw_name.clone()),
+                    entry,
+                    ranges: std::iter::once(entry..entry + sym.size.max(1)).collect(),
+                    decl: None,
+                    origin: FunctionOrigin::Symbol,
+                });
+            }
+        }
+        out.into_iter()
+    }
+
+    /// Every statement row (`is_stmt`, with a source line) of module `module`'s line tables:
+    /// the runtime address and its location, file paths rendered as everywhere in this crate
+    /// (compilation directory, the file's directory, its name). In DWARF unit order, then address
+    /// order within each sequence; an address can appear more than once (several lines start
+    /// there). Rows outside the module's code segments (discarded functions) are left out.
+    /// Empty for an unknown module or one without DWARF.
+    pub fn statement_rows(&self, module: ModuleId) -> impl Iterator<Item = (u64, SourceLoc)> + '_ {
+        let found = self
+            .module(module)
+            .and_then(|m| m.binary().dwarf().ok().map(|d| (m, d)));
+        found.into_iter().flat_map(|(m, dwarf)| {
+            (0..dwarf.units().len())
+                .filter_map(move |unit| dwarf.line_table(unit).ok())
+                .flat_map(move |table| {
+                    table.rows().filter_map(move |(_, _, row)| {
+                        if !row.is_stmt || !m.binary().contains_code(row.address) {
+                            return None;
+                        }
+                        let location = table.row_location(row)?;
+                        Some((m.to_runtime(row.address), location))
+                    })
+                })
+        })
+    }
+
     /// The addresses of the line containing `pc`: the contiguous rows around `pc` with the same
     /// file and line. Stepping over or into a line runs until the PC leaves this range.
     pub fn line_range_at(&self, pc: u64) -> Option<LineRange> {

@@ -5,7 +5,10 @@ mod support;
 use std::ffi::OsString;
 use std::path::Path;
 
-use hopper_core::target::{Breakpoint, Direction, Resume, StopReason, Target};
+use hopper_core::target::{
+    Breakpoint, Direction, Resume, StopReason, Target, ThreadChange, ThreadEventSource,
+    ThreadEventTime,
+};
 use hopper_core::{HopperError, Reg};
 use hopper_rr::{Auxv, GdbserverConfig, GdbserverFactory, GdbserverTarget, ReplicaPool};
 use support::fixtures::{Elf, fixture};
@@ -125,6 +128,66 @@ fn lists_the_threads_fixture_threads() {
         }
     }
     assert_eq!(hits, 6);
+}
+
+#[test]
+fn reports_thread_starts_and_exits_with_their_own_moments() {
+    let exe = fixture("threads");
+    let elf = Elf::open(&exe);
+    let mut t = launch(&exe, &[]);
+    assert_eq!(
+        t.enable_thread_events().unwrap(),
+        ThreadEventSource::ServerReports
+    );
+    let main = hopper_core::Tid(t.info().process.pid);
+    let bump = runtime_addr(&mut t, &elf, "threads::bump");
+    t.insert(Breakpoint::code(bump)).unwrap();
+    let mut events = Vec::new();
+    let mut bump_threads = std::collections::BTreeSet::new();
+    let mut last_stop = t.now().unwrap();
+    loop {
+        let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
+        let now = t.now().unwrap();
+        for e in t.take_thread_events().unwrap() {
+            // Each event is its own stop, after the previous stop and before this one.
+            let ThreadEventTime::At(at) = e.time else {
+                panic!("a continue times its events: {e:?}")
+            };
+            assert!(last_stop.is_before(&at) && at.is_before(&now), "{e:?}");
+            assert_eq!(at.tid, e.tid);
+            events.push(e);
+        }
+        last_stop = now;
+        match ev.reason {
+            StopReason::Breakpoint { .. } => {
+                bump_threads.insert(ev.tid);
+            }
+            StopReason::Exited { code } => {
+                assert_eq!(code, 0);
+                break;
+            }
+            other => panic!("unexpected stop {other:?}"),
+        }
+    }
+    // Two spawned threads, each started before it first bumps and exited before the end.
+    let started: Vec<_> = events
+        .iter()
+        .filter(|e| e.change == ThreadChange::Started)
+        .map(|e| e.tid)
+        .collect();
+    let exited: Vec<_> = events
+        .iter()
+        .filter(|e| e.change == ThreadChange::Exited)
+        .map(|e| e.tid)
+        .collect();
+    assert_eq!(started.len(), 2, "{events:?}");
+    assert!(!started.contains(&main));
+    let mut s = started.clone();
+    s.sort();
+    let mut x = exited.clone();
+    x.sort();
+    assert_eq!(s, x, "every spawned thread exits: {events:?}");
+    assert_eq!(bump_threads, started.iter().copied().collect());
 }
 
 /// Run a shell script under gdbserver (gdbserver passes no argument containing whitespace).

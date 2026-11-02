@@ -194,3 +194,42 @@ fn rr_rerun_moments_match_replica() {
     let tid = w.at.tid;
     assert_eq!(t.registers(tid).unwrap().pc(), Some(w.pc));
 }
+
+#[test]
+#[ignore = "needs rr and a PMU"]
+fn rr_phase_a_cheap_moments_seek_to_their_stops() {
+    let rr = rr();
+    let (trace, _keep) = record(&rr, "threads");
+    let mut t = replica(&rr, &trace);
+    let (symbols, meta) = symbols_for(&mut t, "threads");
+    let dir = index_dir("rr-cheap");
+    let index = Index::open(dir.path(), meta).unwrap();
+    // Small batches: several flushes, each resolving its batch's visits.
+    let config = IndexConfig {
+        flush_every: 16,
+        ..IndexConfig::default()
+    };
+    PhaseA::new(symbols.clone(), config)
+        .run(&mut t, &index, &IndexControl::new())
+        .unwrap();
+    let fib = symbols.find_functions("threads::fib")[0].entry;
+    let calls = index
+        .calls(
+            &CallFilter {
+                function: Some("threads::fib".into()),
+                ..Default::default()
+            },
+            PageReq::first(u32::MAX),
+        )
+        .unwrap();
+    assert!(calls.items.len() > 20);
+    // Every stored moment is exact: seeking there with a fresh replica lands on the stop.
+    let mut other = replica(&rr, &trace);
+    let mut moments: Vec<_> = calls.items.iter().map(|c| (c.entry, c.tid)).collect();
+    moments.sort_by_key(|(m, _)| m.order_key());
+    for (m, tid) in moments.iter().step_by(3) {
+        other.seek(m).unwrap();
+        assert_eq!(other.registers(*tid).unwrap().pc(), Some(fib), "{m}");
+        assert_eq!(other.now().unwrap(), *m);
+    }
+}

@@ -2,7 +2,10 @@
 //! it (the selected thread, the inserted breakpoints, the last stop) and the mapping from stop
 //! replies to hopper-core's [`StopEvent`].
 
-use hopper_core::target::{BreakKind, Breakpoint, Direction, Resume, StopEvent, StopReason};
+use hopper_core::target::{
+    BreakKind, Breakpoint, Direction, Resume, StopEvent, StopReason, ThreadChange, ThreadEvent,
+    ThreadEventSource, ThreadEventTime,
+};
 use hopper_core::{HopperError, Reg, RegisterSet, Result, Tid};
 use hopper_rsp::{
     Connection, ResumeRequest, RspClient, StopCause, StopReply, ThreadId, ThreadOp, ThreadSelector,
@@ -11,6 +14,22 @@ use hopper_rsp::{
 
 /// The gdb signal number of SIGTRAP (the same as Linux's).
 pub(crate) const GDB_SIGTRAP: u8 = 5;
+
+/// How the connection observes thread starts and exits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ThreadWatch {
+    Off,
+    /// The server reports them (`QThreadEvents:1`); [`Remote::resume_raw`] absorbs the reports
+    /// and collects them here until the target names their time.
+    Reported {
+        seen: Vec<(Tid, ThreadChange)>,
+    },
+    /// The thread list is compared at every forward stop with the one at the previous stop.
+    /// `None`: re-read it at the next stop without reporting anything (after a seek).
+    Diff {
+        known: Option<Vec<Tid>>,
+    },
+}
 
 #[derive(Debug)]
 pub(crate) struct Remote<C: Connection> {
@@ -25,6 +44,9 @@ pub(crate) struct Remote<C: Connection> {
     pub breakpoints: Vec<Breakpoint>,
     /// Set once the process exited or was killed: the stop that ended it.
     pub ended: Option<StopEvent>,
+    pub thread_watch: ThreadWatch,
+    /// Thread events with their times, for [`hopper_core::target::Target::take_thread_events`].
+    pub thread_events: Vec<ThreadEvent>,
 }
 
 impl<C: Connection> Remote<C> {
@@ -36,6 +58,73 @@ impl<C: Connection> Remote<C> {
             selected: None,
             breakpoints: Vec::new(),
             ended: None,
+            thread_watch: ThreadWatch::Off,
+            thread_events: Vec::new(),
+        }
+    }
+
+    /// Ask the server for thread events; fall back to comparing thread lists when it does not
+    /// know `QThreadEvents` (rr answers it with an empty reply).
+    pub fn enable_thread_events(&mut self) -> Result<ThreadEventSource> {
+        match &self.thread_watch {
+            ThreadWatch::Reported { .. } => return Ok(ThreadEventSource::ServerReports),
+            ThreadWatch::Diff { .. } => return Ok(ThreadEventSource::ThreadListDiff),
+            ThreadWatch::Off => {}
+        }
+        self.check_alive()?;
+        match self.client.enable_thread_events() {
+            Ok(()) => {
+                self.thread_watch = ThreadWatch::Reported { seen: Vec::new() };
+                Ok(ThreadEventSource::ServerReports)
+            }
+            Err(HopperError::Unsupported(_)) => {
+                let known = self.threads()?;
+                self.thread_watch = ThreadWatch::Diff { known: Some(known) };
+                Ok(ThreadEventSource::ThreadListDiff)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The thread events the server reported during the last resume, without times.
+    pub fn take_reported(&mut self) -> Vec<(Tid, ThreadChange)> {
+        match &mut self.thread_watch {
+            ThreadWatch::Reported { seen } => std::mem::take(seen),
+            _ => Vec::new(),
+        }
+    }
+
+    /// In diff mode, compare the thread list with the previous stop's and record the
+    /// difference as events of the current stop.
+    pub fn diff_threads(&mut self) -> Result<()> {
+        if !matches!(self.thread_watch, ThreadWatch::Diff { .. }) || self.ended.is_some() {
+            return Ok(());
+        }
+        let now = self.threads()?;
+        if let ThreadWatch::Diff { known } = &mut self.thread_watch {
+            if let Some(before) = known.as_ref() {
+                let event = |tid: Tid, change| ThreadEvent {
+                    tid,
+                    change,
+                    time: ThreadEventTime::ByCurrentStop,
+                };
+                for t in before.iter().filter(|t| !now.contains(t)) {
+                    self.thread_events.push(event(*t, ThreadChange::Exited));
+                }
+                for t in now.iter().filter(|t| !before.contains(t)) {
+                    self.thread_events.push(event(*t, ThreadChange::Started));
+                }
+            }
+            *known = Some(now);
+        }
+        Ok(())
+    }
+
+    /// In diff mode, forget the previous thread list: the target moved without executing
+    /// forward (a seek, a restore, reverse execution), so a difference is not an event.
+    pub fn rebase_threads(&mut self) {
+        if let ThreadWatch::Diff { known } = &mut self.thread_watch {
+            *known = None;
         }
     }
 
@@ -87,6 +176,11 @@ impl<C: Connection> Remote<C> {
             StopReply::Exited { .. } | StopReply::Killed { .. } => {
                 return Err(HopperError::Disconnected(
                     "the process is not running".into(),
+                ));
+            }
+            StopReply::ThreadExited { .. } => {
+                return Err(HopperError::Protocol(
+                    "the server answered `?` with a thread exit".into(),
                 ));
             }
         }
@@ -174,17 +268,43 @@ impl<C: Connection> Remote<C> {
         }
     }
 
-    /// Send a resume as it is and wait for its stop reply.
+    /// Send a resume as it is and wait for its stop reply. With server thread events on, the
+    /// thread-created stops and thread-exit replies on the way are collected and the request is
+    /// sent again, except when the thread a step was for exited: that reply is returned.
     pub fn resume_raw(&mut self, req: ResumeRequest) -> Result<StopReply> {
         self.check_alive()?;
-        self.forget_selection();
-        let reply = self.client.resume(req)?;
-        if let StopReply::Stopped(s) = &reply
-            && let Some(t) = s.thread
-        {
-            self.note_thread(t);
+        loop {
+            self.forget_selection();
+            let reply = self.client.resume(req)?;
+            if let ThreadWatch::Reported { seen } = &mut self.thread_watch {
+                match &reply {
+                    StopReply::Stopped(s) if s.cause == StopCause::ThreadCreated => {
+                        if let Some(t) = s.thread {
+                            if let Some(p) = t.pid {
+                                self.pid = Some(p);
+                            }
+                            seen.push((t.tid, ThreadChange::Started));
+                        }
+                        continue;
+                    }
+                    StopReply::ThreadExited { thread, .. } => {
+                        seen.push((thread.tid, ThreadChange::Exited));
+                        let stepped_it =
+                            matches!(req, ResumeRequest::Step(t) if t.tid == thread.tid);
+                        if !stepped_it {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let StopReply::Stopped(s) = &reply
+                && let Some(t) = s.thread
+            {
+                self.note_thread(t);
+            }
+            return Ok(reply);
         }
-        Ok(reply)
     }
 
     /// Resume forward or backward. A forward resume of a thread that sits on one of hopper's
@@ -291,6 +411,13 @@ impl<C: Connection> Remote<C> {
                     reason: StopReason::Killed { signo },
                 }
             }
+            // Only a step of the thread that exited returns this (see `resume_raw`).
+            StopReply::ThreadExited { status, thread } => StopEvent {
+                tid: thread.tid,
+                reason: StopReason::Other {
+                    packet: format!("w{status:02x};{thread}"),
+                },
+            },
             StopReply::Stopped(s) => {
                 let tid = match s.thread {
                     Some(t) => t.tid,
@@ -316,6 +443,10 @@ impl<C: Connection> Remote<C> {
                     },
                     StopCause::HistoryBegin => StopReason::HistoryStart,
                     StopCause::HistoryEnd => StopReason::HistoryEnd,
+                    // Absorbed by `resume_raw` when thread events are on; never sent otherwise.
+                    StopCause::ThreadCreated => StopReason::Other {
+                        packet: format!("T{:02x}create:", s.signal),
+                    },
                     StopCause::Unspecified => {
                         if stepped && (s.signal == GDB_SIGTRAP || s.signal == 0) {
                             StopReason::Step

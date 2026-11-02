@@ -24,26 +24,63 @@ pub const WATCHED: u64 = 0x8000;
 pub const WRITES: [usize; 3] = [5, 17, 29];
 pub const TID: i32 = 0x10;
 
+/// The shape of the fake program's timeline. [`Layout::DEFAULT`] is the one described above;
+/// others make a PC come round again inside one tick region.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Layout {
+    /// `rip = 0x1000 + 4 * (p % pc_period)`.
+    pub pc_period: usize,
+    /// The tick count rises after every `tick_every` instructions.
+    pub tick_every: usize,
+    /// An event completes every `event_every` instructions.
+    pub event_every: usize,
+}
+
+impl Layout {
+    pub const DEFAULT: Layout = Layout {
+        pc_period: 10,
+        tick_every: 3,
+        event_every: 13,
+    };
+
+    pub fn rip(&self, p: usize) -> u64 {
+        0x1000 + 4 * (p % self.pc_period) as u64
+    }
+    pub fn ticks(&self, p: usize) -> u64 {
+        (p / self.tick_every) as u64
+    }
+    pub fn frame_time(&self, p: usize) -> u64 {
+        1 + (p / self.event_every) as u64
+    }
+    /// The first position with the same (event, ticks): where `sub` is 0.
+    pub fn region_start(&self, p: usize) -> usize {
+        (0..=p)
+            .find(|q| self.frame_time(*q) == self.frame_time(p) && self.ticks(*q) == self.ticks(p))
+            .unwrap()
+    }
+    pub fn sub(&self, p: usize) -> u32 {
+        (p - self.region_start(p)) as u32
+    }
+}
+
 pub fn rip(p: usize) -> u64 {
-    0x1000 + 4 * (p as u64 % 10)
+    Layout::DEFAULT.rip(p)
 }
 pub fn ticks(p: usize) -> u64 {
-    p as u64 / 3
+    Layout::DEFAULT.ticks(p)
 }
 pub fn frame_time(p: usize) -> u64 {
-    1 + p as u64 / 13
+    Layout::DEFAULT.frame_time(p)
 }
 fn writes_before(p: usize) -> u64 {
     WRITES.iter().filter(|w| **w <= p).count() as u64
 }
 /// The first position with the same (event, ticks): where `sub` is 0.
 pub fn region_start(p: usize) -> usize {
-    (0..=p)
-        .find(|q| frame_time(*q) == frame_time(p) && ticks(*q) == ticks(p))
-        .unwrap()
+    Layout::DEFAULT.region_start(p)
 }
 pub fn sub(p: usize) -> u32 {
-    (p - region_start(p)) as u32
+    Layout::DEFAULT.sub(p)
 }
 
 const SUPPORTED: &str = "PacketSize=100000;QStartNoAckMode+;qXfer:features:read+;\
@@ -68,6 +105,7 @@ pub struct Stats {
 
 #[derive(Debug)]
 struct Sim {
+    layout: Layout,
     pos: usize,
     breakpoints: Vec<u64>,
     watches: Vec<(u64, u64)>,
@@ -111,6 +149,11 @@ impl Sim {
             self.exited = true;
             return "W00".into();
         }
+        // A continue that starts on a breakpoint executes its trap at once (which is why
+        // debuggers step over a breakpoint before continuing from it).
+        if !step && self.breakpoints.contains(&self.layout.rip(self.pos)) {
+            return format!("T05{}swbreak:;", thread_field());
+        }
         loop {
             if self.pos + 1 >= LEN {
                 self.at_exit = true;
@@ -123,7 +166,7 @@ impl Sim {
             if step {
                 return format!("T05{}", thread_field());
             }
-            if self.breakpoints.contains(&rip(self.pos)) {
+            if self.breakpoints.contains(&self.layout.rip(self.pos)) {
                 return format!("T05{}swbreak:;", thread_field());
             }
         }
@@ -151,7 +194,7 @@ impl Sim {
                 self.pos = leaving;
                 return format!("T05{}watch:{WATCHED:x};", thread_field());
             }
-            if self.breakpoints.contains(&rip(self.pos)) {
+            if self.breakpoints.contains(&self.layout.rip(self.pos)) {
                 return format!("T05{}swbreak:;", thread_field());
             }
         }
@@ -165,10 +208,13 @@ impl Sim {
             .map(|a| String::from_utf8(from_hex(a.as_bytes()).unwrap()).unwrap())
             .collect();
         let text = match name {
-            "when" => format!("Completed event: {}", frame_time(self.pos)),
-            "when-ticks" => format!("Current tick: {}", ticks(self.pos)),
+            "when" => format!("Completed event: {}", self.layout.frame_time(self.pos)),
+            "when-ticks" => format!("Current tick: {}", self.layout.ticks(self.pos)),
             "when-tid" => format!("Current tid: {TID}"),
-            "when-end" => format!("Event at end of recording: {}", frame_time(LEN - 1)),
+            "when-end" => format!(
+                "Event at end of recording: {}",
+                self.layout.frame_time(LEN - 1)
+            ),
             "checkpoint" => {
                 let where_ = args.first().expect("rr requires the where argument");
                 self.next_checkpoint += 1;
@@ -198,13 +244,15 @@ impl Sim {
             }
         } else if let Some(t) = arg.strip_prefix('t') {
             let t: u64 = t.parse().unwrap();
-            match (0..LEN).find(|p| ticks(*p) == t) {
+            match (0..LEN).find(|p| self.layout.ticks(*p) == t) {
                 Some(p) => p,
                 None => return "E01".into(),
             }
         } else {
             let e: u64 = arg.parse().unwrap();
-            (0..LEN).find(|p| frame_time(*p) == e).unwrap_or(LEN - 1)
+            (0..LEN)
+                .find(|p| self.layout.frame_time(*p) == e)
+                .unwrap_or(LEN - 1)
         };
         self.pos = target;
         self.breakpoints.clear();
@@ -250,7 +298,7 @@ impl Sim {
             let mut b = Vec::new();
             b.extend((self.pos as u64).to_le_bytes());
             b.extend(0x7ff0u64.to_le_bytes());
-            b.extend(rip(self.pos).to_le_bytes());
+            b.extend(self.layout.rip(self.pos).to_le_bytes());
             to_hex(&b)
         } else if let Some(rest) = p.strip_prefix('m') {
             let (a, l) = rest.split_once(',').unwrap();
@@ -309,8 +357,14 @@ pub struct FakeRr {
 impl FakeRr {
     /// A server stopped at position `start`.
     pub fn new(start: usize) -> FakeRr {
+        FakeRr::with_layout(start, Layout::DEFAULT)
+    }
+
+    /// A server for a program with timeline `layout`, stopped at position `start`.
+    pub fn with_layout(start: usize, layout: Layout) -> FakeRr {
         FakeRr {
             sim: Arc::new(Mutex::new(Sim {
+                layout,
                 pos: start,
                 breakpoints: vec![],
                 watches: vec![],

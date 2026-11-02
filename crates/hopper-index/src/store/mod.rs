@@ -2,8 +2,10 @@
 //!
 //! A directory holds `catalogue.redb` and one `chunks-<kind>.bin` per [`IndexKind`]. A chunk
 //! ([`chunk`]) is a 64-byte header carrying its first moment's order key and one zstd frame of
-//! records. The catalogue has three tables:
-//! - `chunks`: `(kind, seq)` → offset, length, record count and moment range of every chunk;
+//! records. The catalogue has four tables:
+//! - `chunks`: `(kind, seq)` → offset, length, record count, moment range and keys of every
+//!   chunk (for line chunks, the line ids it holds, so a line query reads only those chunks);
+//! - `lines`: line id → its source location (the dictionary of the line chunks);
 //! - `coverage`: kind → the moment intervals that kind covers and the addresses that were capped;
 //! - `meta`: the recording id, the binaries' build ids, the index format version and the resume
 //!   state of an unfinished phase A.
@@ -29,18 +31,19 @@ pub use records::{Record, Stamp};
 
 /// The index format version stored in the catalogue. A catalogue with another version is
 /// refused, not migrated.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 const CHUNKS: TableDefinition<(u8, u64), &[u8]> = TableDefinition::new("chunks");
 const COVERAGE: TableDefinition<u8, &[u8]> = TableDefinition::new("coverage");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+const LINES: TableDefinition<u32, &[u8]> = TableDefinition::new("lines");
 
 fn db_err(e: impl std::fmt::Display) -> HopperError {
     HopperError::Index(format!("catalogue: {e}"))
 }
 
 /// One row of the chunk table.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkEntry {
     pub kind: IndexKind,
     pub seq: u64,
@@ -52,6 +55,45 @@ pub struct ChunkEntry {
     /// The earliest and latest stamps of the chunk's records.
     pub first: Option<Stamp>,
     pub last: Option<Stamp>,
+    /// What the chunk's records are about, sorted: for line chunks, the line ids of its records.
+    /// Empty for other kinds.
+    pub keys: Vec<u32>,
+}
+
+impl ChunkEntry {
+    /// Whether the chunk may hold records inside `range` (a chunk without moments may: it
+    /// holds dictionary records).
+    pub fn overlaps(&self, range: &MomentRange) -> bool {
+        match (self.first, self.last) {
+            (Some(f), Some(l)) => {
+                range.end.is_none_or(|e| f.key() < e.order_key())
+                    && range.start.is_none_or(|s| l.key() >= s.order_key())
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether any of `keys` (sorted) is one of the chunk's keys.
+    pub fn has_any_key(&self, keys: &[u32]) -> bool {
+        keys.iter().any(|k| self.keys.binary_search(k).is_ok())
+    }
+}
+
+/// The chunk keys of `records` of `kind` (see [`ChunkEntry::keys`]).
+fn chunk_keys(kind: IndexKind, records: &[Record]) -> Vec<u32> {
+    if kind != IndexKind::Lines {
+        return Vec::new();
+    }
+    let mut keys: Vec<u32> = records
+        .iter()
+        .filter_map(|r| match r {
+            Record::LineHit { lid, .. } | Record::Line { lid, .. } => Some(*lid),
+            _ => None,
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Which threads a covered interval speaks for.
@@ -276,6 +318,7 @@ impl Store {
         }
         txn.open_table(CHUNKS).map_err(db_err)?;
         txn.open_table(COVERAGE).map_err(db_err)?;
+        txn.open_table(LINES).map_err(db_err)?;
         txn.commit().map_err(db_err)?;
         Ok(())
     }
@@ -324,14 +367,23 @@ impl Store {
         Ok(self
             .chunks(kind)?
             .into_iter()
-            .filter(|c| match (c.first, c.last) {
-                (Some(f), Some(l)) => {
-                    range.end.is_none_or(|e| f.key() < e.order_key())
-                        && range.start.is_none_or(|s| l.key() >= s.order_key())
-                }
-                _ => true,
-            })
+            .filter(|c| c.overlaps(range))
             .collect())
+    }
+
+    /// The line dictionary: every line id the line chunks name, with its location.
+    pub fn line_dictionary(&self) -> Result<Vec<(u32, SourceLoc)>> {
+        let txn = self.db.begin_read().map_err(db_err)?;
+        let t = txn.open_table(LINES).map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in t.iter().map_err(db_err)? {
+            let (k, v) = row.map_err(db_err)?;
+            out.push((
+                k.value(),
+                serde_json::from_slice(v.value()).map_err(db_err)?,
+            ));
+        }
+        Ok(out)
     }
 
     /// Read and decode one chunk.
@@ -378,7 +430,7 @@ impl Store {
             let (seq, offset) = match next_seq.get(kind) {
                 Some(s) => *s,
                 None => {
-                    let last = self.chunks(*kind)?.last().copied();
+                    let last = self.chunks(*kind)?.pop();
                     last.map_or((0, 0), |c| (c.seq + 1, c.offset + c.len))
                 }
             };
@@ -406,6 +458,7 @@ impl Store {
                 count: records.len() as u32,
                 first: bounds.map(|b| b.0),
                 last: bounds.map(|b| b.1),
+                keys: chunk_keys(*kind, records),
             });
             next_seq.insert(*kind, (seq + 1, offset + bytes.len() as u64));
         }
@@ -416,6 +469,15 @@ impl Store {
                 let v = serde_json::to_vec(e).map_err(db_err)?;
                 t.insert((e.kind.code(), e.seq), v.as_slice())
                     .map_err(db_err)?;
+            }
+            let mut lines = txn.open_table(LINES).map_err(db_err)?;
+            for (_, records) in batch.chunks.iter().filter(|(k, _)| *k == IndexKind::Lines) {
+                for r in records {
+                    if let Record::Line { lid, location } = r {
+                        let v = serde_json::to_vec(location).map_err(db_err)?;
+                        lines.insert(*lid, v.as_slice()).map_err(db_err)?;
+                    }
+                }
             }
             let mut c = txn.open_table(COVERAGE).map_err(db_err)?;
             for (kind, cov) in &batch.coverage {
@@ -449,6 +511,10 @@ impl Store {
                 t.retain_in((k.code(), 0)..=(k.code(), u64::MAX), |_, _| false)
                     .map_err(db_err)?;
                 c.remove(k.code()).map_err(db_err)?;
+            }
+            if kinds.contains(&IndexKind::Lines) {
+                let mut lines = txn.open_table(LINES).map_err(db_err)?;
+                lines.retain(|_, _| false).map_err(db_err)?;
             }
             let mut m = txn.open_table(META).map_err(db_err)?;
             m.remove("resume").map_err(db_err)?;

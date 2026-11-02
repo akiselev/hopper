@@ -18,6 +18,8 @@ let index = Arc::new(Index::open(&dir, RecordingMeta {
 - `dir` is beside the trace (for example `<trace>.hopper-index/`), never inside it: `open`
   refuses a directory inside an rr trace (one holding `events` and `mmaps`), a catalogue of
   another recording or other build ids, and another index format version (`HopperError::Index`).
+  The format is version 2 since lane I (2026-11-02: chunk keys and the line dictionary); an
+  index written by version 1 is refused and has to be deleted and rebuilt.
 - `Index` is `Send + Sync`; share one `Arc<Index>` between the phase-A job, phase-B jobs and the
   `Debugger` methods. Queries see what has been committed so far.
 - Reopening the same directory reuses the finished work.
@@ -50,6 +52,17 @@ let summary: PhaseASummary = job.run(&mut target /* &mut dyn Target */, &index, 
 - `job.plan()` lists the functions, lines, allocator symbols and anchors before running.
 - The symbol set needs only the main executable: shared libraries (libc's malloc family) are
   found from the dynamic linker's `link_map` during the run.
+- **Moments (lane I).** At breakpoint stops phase A asks `Target::now_at_stop`; an rr replica
+  answers with a `RegionVisit` (the tick region plus which visit of the PC inside it) instead
+  of seeking to count `sub`. Each flush resolves the batch's visits with
+  `Target::resolve_visits` (one forward sweep: one checkpoint restore per batch instead of one
+  per stop) before committing, so every stored moment is exact and seekable and queries are
+  unchanged. Design: `hopper_rr::replica` module docs.
+- **Threads (lane I).** Phase A calls `Target::enable_thread_events`: gdbserver reports thread
+  starts and exits (`QThreadEvents`) with their own moments and the `thread_start` heuristic is
+  not planned; on rr (no thread events) thread-list differences at each stop add threads the
+  heuristic misses. A start or exit seen at another thread's stop is stored at that stop's
+  position with the started or exited thread's tid.
 
 ## Queries (match the `Debugger` methods)
 
@@ -57,8 +70,8 @@ let summary: PhaseASummary = job.run(&mut target /* &mut dyn Target */, &index, 
 |---|---|---|
 | `calls(filter, page)` | `index.calls(&filter, page) -> Result<Page<CallNode>>` | no parent + function filter searches the whole tree |
 | — | `index.call(CallId) -> Result<Option<CallNode>>` | |
-| `line_hits(loc, range, page)` | `index.line_hits(&loc, range, page) -> Result<Page<Moment>>` | file by path suffix, exact line, column ignored |
-| `allocation(process, addr, at)` | `index.allocation_at(process, addr, at) -> Result<Answer<Option<AllocationInfo>>>` | `.value` for the trait; `.completeness` for display |
+| `line_hits(loc, range, page)` | `index.line_hits(&loc, range, page) -> Result<Page<Moment>>` | file by path suffix, exact line, column ignored; reads only the chunks holding the line in the range |
+| `allocation(process, addr, at)` | `index.allocation_at(process, addr, at) -> Result<Answer<Option<AllocationInfo>>>` | `.value` for the trait; `.completeness` for display; an interval index, not a scan |
 | — | `index.allocation(AllocationId)`, `index.allocations(range, page)` | lineage: follow `predecessor` |
 | `timeline(range, page)` | `index.timeline(range, page) -> Result<Page<TimelineEvent>>` | ThreadStart/ThreadExit/ProcessExit/Anchor |
 | `last_write(place, before)` | `index.last_write(place, before) -> Result<Answer<Option<LoggedWrite>>>` | phase-B data only |
@@ -82,6 +95,8 @@ use hopper_index::writes::{log_writes_by_stepping, StepWindow, WindowEnd};
 
 let mut w = StepWindow::new(WindowEnd::Moment(end));   // or Pc(addr), Steps(n), ProcessExit
 w.start = Some(start);                                 // seekable targets seek; others must be there
+// w.threads: SteppedThreads::All (default) steps every thread in rr's recorded order
+// (Target::scheduled_thread) and covers all threads; a live gdbserver steps w.tid only.
 let summary = log_writes_by_stepping(&mut target, &w, &index, &control)?;
 ```
 

@@ -4,8 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use hopper_core::SourceLoc;
 use hopper_core::source::file_suffix_match;
-use hopper_symbols::gimli::{self, AttributeValue, Reader as _};
-use hopper_symbols::{ModuleId, Reader, SymbolKind, SymbolSet, UnitInfo};
+use hopper_symbols::{ModuleId, SymbolKind, SymbolSet, UnitInfo};
 
 use super::AllocatorFunction;
 use crate::config::{FunctionSelection, IndexConfig, SourceSelection, is_toolchain_path};
@@ -36,41 +35,6 @@ pub(crate) struct ModulePlan {
     /// (address, function name)
     pub anchors: Vec<(u64, String)>,
     pub thread_entries: Vec<u64>,
-}
-
-fn push_path(path: &mut String, p: &str) {
-    if p.starts_with('/') || path.is_empty() {
-        *path = p.to_string();
-    } else {
-        if !path.ends_with('/') {
-            path.push('/');
-        }
-        path.push_str(p);
-    }
-}
-
-/// A line-table file's path, rendered the way hopper-symbols renders it (compilation directory,
-/// then the file's directory, then its name; an absolute component replaces what came before).
-fn render_file(
-    dwarf: &gimli::Dwarf<Reader>,
-    info: &UnitInfo,
-    header: &gimli::LineProgramHeader<Reader>,
-    file: &gimli::FileEntry<Reader>,
-) -> Option<String> {
-    let mut path = info.comp_dir.clone().unwrap_or_default();
-    let attr_str = |v: AttributeValue<Reader>| {
-        dwarf
-            .attr_string(&info.unit, v)
-            .ok()
-            .and_then(|r| r.to_string_lossy().ok().map(|s| s.into_owned()))
-    };
-    if file.directory_index() != 0
-        && let Some(dir) = file.directory(header).and_then(attr_str)
-    {
-        push_path(&mut path, &dir);
-    }
-    push_path(&mut path, &attr_str(file.path_name())?);
-    Some(path)
 }
 
 /// The directories holding the module's own crates: compilation directories of Rust units
@@ -195,41 +159,16 @@ pub(crate) fn plan_module(
         }
     }
 
-    // Line rows of the selected files.
-    if config.lines != SourceSelection::Nothing
-        && let Ok(dwarf) = binary.dwarf()
-    {
+    // Statement rows of the selected files.
+    if config.lines != SourceSelection::Nothing {
         let mut rows: BTreeMap<(String, u32), Vec<u64>> = BTreeMap::new();
-        for info in dwarf.units() {
-            let Some(program) = info.unit.line_program.clone() else {
-                continue;
-            };
-            let header = program.header().clone();
-            let mut selected_file: HashMap<u64, Option<String>> = HashMap::new();
-            let mut it = program.rows();
-            while let Ok(Some((_, row))) = it.next_row() {
-                if row.end_sequence() || !row.is_stmt() || row.address() == 0 {
-                    continue;
-                }
-                let Some(line) = row.line().map(|l| l.get() as u32) else {
-                    continue;
-                };
-                let fi = row.file_index();
-                let path = selected_file
-                    .entry(fi)
-                    .or_insert_with(|| {
-                        let file = header.file(fi)?;
-                        let p = render_file(dwarf.dwarf(), info, &header, file)?;
-                        file_selected(&config.lines, &dirs, &p).then_some(p)
-                    })
-                    .clone();
-                if let Some(p) = path
-                    && binary.contains_code(row.address())
-                {
-                    rows.entry((p, line))
-                        .or_default()
-                        .push(m.to_runtime(row.address()));
-                }
+        let mut selected_file: HashMap<String, bool> = HashMap::new();
+        for (addr, loc) in symbols.statement_rows(id) {
+            let selected = *selected_file
+                .entry(loc.file.clone())
+                .or_insert_with(|| file_selected(&config.lines, &dirs, &loc.file));
+            if selected {
+                rows.entry((loc.file, loc.line)).or_default().push(addr);
             }
         }
         for ((file, line), addrs) in rows {

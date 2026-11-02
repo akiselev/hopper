@@ -83,6 +83,20 @@ pub enum Record {
 }
 
 impl Record {
+    /// The record's moment, for changing it in place.
+    pub fn stamp_mut(&mut self) -> Option<&mut Stamp> {
+        match self {
+            Record::Function { .. } | Record::Line { .. } => None,
+            Record::CallEnter { at, .. }
+            | Record::CallExit { at, .. }
+            | Record::LineHit { at, .. }
+            | Record::Allocated { at, .. }
+            | Record::Freed { at, .. }
+            | Record::Timeline { at, .. }
+            | Record::Write { at, .. } => Some(at),
+        }
+    }
+
     /// The record's moment, when it has one.
     pub fn stamp(&self) -> Option<Stamp> {
         match self {

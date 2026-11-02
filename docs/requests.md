@@ -114,6 +114,10 @@ and reads functions from the ELF symbol table. Ask: `SymbolSet::functions(module
 and `SymbolSet::statement_rows(module) -> impl Iterator<Item = (u64, SourceLoc)>` (runtime
 addresses, `is_stmt` rows). *Meanwhile:* the private copy, which follows hopper-symbols' rendering
 rule exactly.
+*Done (lane I, 2026-11-02):* `SymbolSet::functions(module)` and `SymbolSet::statement_rows(module)`;
+phase A plans its line breakpoints from `statement_rows`, and its copy of `render_file` and the
+gimli walk are gone. Function sites still come from the symbol table: allocator, anchor and
+thread-entry matching is by linkage symbol (libc has no DWARF), and the call tree keeps its names.
 
 ### hopper-rr (owner: lane A)
 
@@ -125,8 +129,21 @@ get the moment of a breakpoint stop without re-stepping, for example `sub` count
 instruction counter, or a lazily resolved moment (event, ticks, rip and a register fingerprint)
 that the index stores and resolves only when asked. *Meanwhile:* phase A calls `Target::now` and is
 correct but slow on rr; not measured here (no PMU).
+*Done (lane I, 2026-11-02):* `Target::now_at_stop` returns a `StopMoment` (core): an rr replica
+names a breakpoint stop by a `RegionVisit` (region start + PC + visit number) counted as it runs,
+without seeking; `Target::resolve_visits` turns a batch of visits into moments in one forward
+sweep. Phase A resolves each batch before committing it, so stored moments stay exact. Design in
+`hopper_rr::replica`'s module docs; fake-rr tests in `replica_cheap_moments.rs`; on a PMU host
+`rr_cheap_moments_at_breakpoints_resolve_to_the_measured_ones` and
+`rr_phase_a_cheap_moments_seek_to_their_stops` (not run here).
 
 **RR2. Thread events.** Neither target enables `QThreadEvents`, so phase A finds thread starts and
 exits from std's `thread_start` entry and return, and from the first stop on an unknown thread.
 Non-Rust threads that never hit a breakpoint do not appear on the timeline. Ask: `QThreadEvents:1`
 on gdbserver and `StopReason` variants for thread create and exit, if rr reports them.
+*Done (lane I, 2026-11-02):* `Target::enable_thread_events` / `take_thread_events` (core
+`ThreadEvent`, no new `StopReason`): gdbserver uses `QThreadEvents:1` and the target absorbs the
+`create:` stops and `w` replies (hopper-rsp parses both); rr ignores `QThreadEvents` and reports
+only the last thread's exit (rr `ca20dcb`, `GdbServerConnection::set_var`,
+`GdbServer::maybe_notify_stop`), so rr replicas compare thread lists at every forward stop. Phase A
+uses the events, keeping the `thread_start` heuristic when the server does not report them.

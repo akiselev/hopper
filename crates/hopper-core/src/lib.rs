@@ -24,7 +24,7 @@ pub mod wire;
 
 pub use error::{HopperError, Result};
 pub use ids::{CheckpointId, FrameId, ProcessId, RecordingId, Tid};
-pub use moment::{Moment, MomentRange, PositionUrl};
+pub use moment::{Moment, MomentRange, PositionUrl, RegionVisit, StopMoment};
 pub use place::Place;
 pub use regs::{Reg, RegisterSet};
 pub use source::SourceLoc;

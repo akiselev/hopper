@@ -4,6 +4,14 @@
 //! Time on a live target is synthetic: `frame_time` counts stops (every resume that is not a
 //! single step adds one), `ticks` is 0, and `sub` counts the single steps since the last such
 //! resume. Reverse execution, seeking and checkpoints are [`HopperError::Unsupported`].
+//!
+//! **Thread events.** [`Target::enable_thread_events`] sends `QThreadEvents:1`. gdbserver then
+//! stops at every thread creation (`T05create:` naming the new thread) and reports every exit of
+//! a thread that is not the last (`w<status>;<thread>`). The target resumes through those stops
+//! and keeps them as events: during a continue each one counts as a stop of its own (so it gets
+//! its own `frame_time`, before the stop the continue ends at); during a single step it is
+//! [`ThreadEventTime::ByCurrentStop`]. A server without `QThreadEvents` gets thread-list
+//! comparisons at every stop instead.
 
 use std::ffi::OsString;
 use std::net::TcpStream;
@@ -11,7 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use hopper_core::target::{Breakpoint, Direction, Resume, StopEvent, Target, TargetInfo};
+use hopper_core::target::{
+    Breakpoint, Direction, Resume, StopEvent, Target, TargetInfo, ThreadEvent, ThreadEventSource,
+    ThreadEventTime,
+};
 use hopper_core::{
     CheckpointId, HopperError, Moment, ProcessId, RecordingId, RegisterSet, Result, Tid,
 };
@@ -171,13 +182,32 @@ impl<C: Connection> Target for GdbserverTarget<C> {
         let req = self.remote.request_for(how, dir);
         let reply = self.remote.resume(req)?;
         let stepped = matches!(how, Resume::Step { .. });
+        for (tid, change) in self.remote.take_reported() {
+            let time = if stepped {
+                ThreadEventTime::ByCurrentStop
+            } else {
+                self.stops += 1;
+                ThreadEventTime::At(Moment {
+                    recording: self.info.recording,
+                    frame_time: self.stops,
+                    tid,
+                    ticks: 0,
+                    sub: 0,
+                })
+            };
+            self.remote
+                .thread_events
+                .push(ThreadEvent { tid, change, time });
+        }
         if stepped {
             self.steps += 1;
         } else {
             self.stops += 1;
             self.steps = 0;
         }
-        self.remote.stop_event(&reply, stepped)
+        let ev = self.remote.stop_event(&reply, stepped)?;
+        self.remote.diff_threads()?;
+        Ok(ev)
     }
 
     fn now(&mut self) -> Result<Moment> {
@@ -215,6 +245,14 @@ impl<C: Connection> Target for GdbserverTarget<C> {
     fn auxv(&mut self) -> Result<Vec<u8>> {
         self.remote.check_alive()?;
         self.remote.client.auxv()
+    }
+
+    fn enable_thread_events(&mut self) -> Result<ThreadEventSource> {
+        self.remote.enable_thread_events()
+    }
+
+    fn take_thread_events(&mut self) -> Result<Vec<ThreadEvent>> {
+        Ok(std::mem::take(&mut self.remote.thread_events))
     }
 }
 
@@ -324,6 +362,85 @@ qXfer:exec-file:read+;vContSupported+";
             t.registers(tid),
             Err(HopperError::Disconnected(_))
         ));
+        log.assert_finished();
+    }
+
+    #[test]
+    fn absorbs_reported_thread_events_and_times_them() {
+        let script = Script::new()
+            .exchange("QThreadEvents:1", "OK")
+            .exchange("vCont?", "vCont;c;C;t;s;S;r")
+            .exchange("vCont;c", "T05create:;thread:p2a.2b;core:1;")
+            .exchange("vCont;c", "w0;p2a.2b")
+            .exchange("vCont;c", "W00;process:2a");
+        let (mut t, log) = attach(script);
+        assert_eq!(
+            t.enable_thread_events().unwrap(),
+            ThreadEventSource::ServerReports
+        );
+        let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
+        assert_eq!(ev.reason, StopReason::Exited { code: 0 });
+        let events = t.take_thread_events().unwrap();
+        let at = |ft| {
+            ThreadEventTime::At(Moment {
+                recording: RecordingId([7; 16]),
+                frame_time: ft,
+                tid: Tid(0x2b),
+                ticks: 0,
+                sub: 0,
+            })
+        };
+        use hopper_core::target::ThreadChange;
+        assert_eq!(
+            events,
+            vec![
+                ThreadEvent {
+                    tid: Tid(0x2b),
+                    change: ThreadChange::Started,
+                    time: at(1)
+                },
+                ThreadEvent {
+                    tid: Tid(0x2b),
+                    change: ThreadChange::Exited,
+                    time: at(2)
+                },
+            ]
+        );
+        // The continue's own stop comes after both.
+        assert_eq!(t.now().unwrap().frame_time, 3);
+        assert!(t.take_thread_events().unwrap().is_empty());
+        log.assert_finished();
+    }
+
+    #[test]
+    fn compares_thread_lists_without_qthreadevents() {
+        let script = Script::new()
+            .exchange("QThreadEvents:1", "")
+            .exchange(
+                "qXfer:threads:read::0,ffff",
+                r#"l<threads><thread id="p2a.2a"/></threads>"#,
+            )
+            .exchange("vCont?", "vCont;c;C;t;s;S;r")
+            .exchange("vCont;c", "T00thread:p2a.2c;core:1;")
+            .exchange(
+                "qXfer:threads:read::0,ffff",
+                r#"l<threads><thread id="p2a.2a"/><thread id="p2a.2c"/></threads>"#,
+            );
+        let (mut t, log) = attach(script);
+        assert_eq!(
+            t.enable_thread_events().unwrap(),
+            ThreadEventSource::ThreadListDiff
+        );
+        t.resume(Resume::Continue, Direction::Forward).unwrap();
+        let events = t.take_thread_events().unwrap();
+        assert_eq!(
+            events,
+            vec![ThreadEvent {
+                tid: Tid(0x2c),
+                change: hopper_core::target::ThreadChange::Started,
+                time: ThreadEventTime::ByCurrentStop
+            }]
+        );
         log.assert_finished();
     }
 

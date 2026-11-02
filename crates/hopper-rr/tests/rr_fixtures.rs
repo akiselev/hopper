@@ -6,7 +6,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use hopper_core::target::{BreakKind, Breakpoint, Direction, Resume, StopReason, Target};
-use hopper_core::{HopperError, Reg, Tid};
+use hopper_core::{HopperError, Reg, StopMoment, Tid};
 use hopper_rr::{Auxv, PackMode, ProcessExit, RecordOptions, ReplayOptions, Rr, RrReplica};
 use support::fixtures::{Elf, fixture};
 
@@ -267,4 +267,101 @@ fn rr_refuses_moments_of_other_recordings() {
         ..m
     };
     assert!(matches!(t.seek(&other), Err(HopperError::BadMoment(_))));
+}
+
+#[test]
+#[ignore = "needs rr and a PMU"]
+fn rr_cheap_moments_at_breakpoints_resolve_to_the_measured_ones() {
+    let rr = rr();
+    let (trace, _dir) = record(&rr, "threads");
+    let elf = Elf::open(&fixture("threads"));
+    // The same breakpoints on two replicas: one names each stop by its region visit, the
+    // other measures `sub` at each stop.
+    let symbols = ["threads::fib", "threads::bump"];
+    let mut cheap = replay(&rr, &trace);
+    let mut measured = replay(&rr, &trace);
+    for t in [&mut cheap, &mut measured] {
+        for s in symbols {
+            let a = runtime_addr(t, &elf, s);
+            t.insert(Breakpoint::code(a)).unwrap();
+        }
+    }
+    let mut visits = Vec::new();
+    let mut want = Vec::new();
+    let mut exact = Vec::new();
+    loop {
+        let a = cheap.resume(Resume::Continue, Direction::Forward).unwrap();
+        let b = measured
+            .resume(Resume::Continue, Direction::Forward)
+            .unwrap();
+        assert_eq!(a.reason, b.reason);
+        if !matches!(a.reason, StopReason::Breakpoint { .. }) {
+            break;
+        }
+        let m = measured.now().unwrap();
+        match cheap.now_at_stop().unwrap() {
+            StopMoment::Visit(v) => {
+                assert!(v.same_region(&m), "{v:?} is not in the region of {m}");
+                visits.push(v);
+                want.push(m);
+            }
+            StopMoment::Exact(e) => {
+                assert_eq!(e, m);
+                exact.push(e);
+            }
+        }
+    }
+    assert!(
+        visits.len() > exact.len(),
+        "most stops are named cheaply: {} visits, {} measured",
+        visits.len(),
+        exact.len()
+    );
+    let resolved = cheap.resolve_visits(&visits).unwrap();
+    assert_eq!(resolved, want);
+    // And they seek to the same registers.
+    for m in want.iter().rev().take(5) {
+        cheap.seek(m).unwrap();
+        measured.seek(m).unwrap();
+        assert_eq!(
+            cheap.registers(m.tid).unwrap().raw,
+            measured.registers(m.tid).unwrap().raw
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs rr and a PMU"]
+fn rr_reports_the_threads_fixture_threads_by_list_and_schedule() {
+    use hopper_core::target::{ThreadChange, ThreadEventSource};
+    let rr = rr();
+    let (trace, _dir) = record(&rr, "threads");
+    let elf = Elf::open(&fixture("threads"));
+    let mut t = replay(&rr, &trace);
+    assert_eq!(
+        t.enable_thread_events().unwrap(),
+        ThreadEventSource::ThreadListDiff
+    );
+    let bump = runtime_addr(&mut t, &elf, "threads::bump");
+    t.insert(Breakpoint::code(bump)).unwrap();
+    let mut started = Vec::new();
+    loop {
+        let ev = t.resume(Resume::Continue, Direction::Forward).unwrap();
+        for e in t.take_thread_events().unwrap() {
+            if e.change == ThreadChange::Started {
+                started.push(e.tid);
+            }
+        }
+        if !matches!(ev.reason, StopReason::Breakpoint { .. }) {
+            break;
+        }
+        assert!(
+            started.contains(&ev.tid),
+            "{:?} bumped before it started",
+            ev.tid
+        );
+        let next = t.scheduled_thread().unwrap();
+        assert!(next.is_some());
+    }
+    assert_eq!(started.len(), 2);
 }

@@ -20,7 +20,7 @@ use hopper_core::{Moment, Place};
 use hopper_symbols::SymbolSet;
 use serde::{Deserialize, Serialize};
 
-pub use step::{StepWindow, WindowEnd, log_writes_by_stepping};
+pub use step::{StepWindow, SteppedThreads, WindowEnd, log_writes_by_stepping};
 
 /// The bytes a write left behind, when the producer saw them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
