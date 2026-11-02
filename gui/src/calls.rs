@@ -40,7 +40,9 @@ pub struct CallRows {
 impl CallRows {
     pub fn new(tree: Rc<RefCell<CallTree>>) -> Self {
         let columns = vec![
-            Column::new("function", "Function").width(360.0).sortable(false),
+            Column::new("function", "Function")
+                .width(360.0)
+                .sortable(false),
             Column::new("entry", "Entry").width(110.0).sortable(false),
             Column::new("exit", "Exit").width(110.0).sortable(false),
             Column::new("tid", "Thread").width(70.0).sortable(false),
@@ -65,7 +67,10 @@ pub fn label(tree: &CallTree, row: &Row<CallId>) -> String {
         }
         Row::Loading { .. } => format!("{pad}   loading…"),
         Row::More { loaded, total, .. } => match total {
-            Some(t) => format!("{pad}   … {} more (activate to load)", t.saturating_sub(*loaded)),
+            Some(t) => format!(
+                "{pad}   … {} more (activate to load)",
+                t.saturating_sub(*loaded)
+            ),
             None => format!("{pad}   … more (activate to load)"),
         },
     }
@@ -86,12 +91,18 @@ impl RowModel for CallRows {
 
     fn cell(&self, row: usize, col: usize) -> Cell<'_> {
         let tree = self.tree.borrow();
-        let Some(r) = tree.row(row) else { return Cell::Empty };
+        let Some(r) = tree.row(row) else {
+            return Cell::Empty;
+        };
         if col == 0 {
             return Cell::Text(Cow::Owned(label(&tree, r)));
         }
-        let Row::Node { key, .. } = r else { return Cell::Empty };
-        let Some(c) = tree.item(key) else { return Cell::Empty };
+        let Row::Node { key, .. } = r else {
+            return Cell::Empty;
+        };
+        let Some(c) = tree.item(key) else {
+            return Cell::Empty;
+        };
         match col {
             1 => Cell::Text(Cow::Owned(c.entry.to_string())),
             2 => match &c.exit {
@@ -117,7 +128,9 @@ impl RowModel for CallRows {
     fn label(&self, row: usize) -> Option<Cow<'_, str>> {
         let tree = self.tree.borrow();
         let r = tree.row(row)?;
-        let Row::Node { key, .. } = r else { return None };
+        let Row::Node { key, .. } = r else {
+            return None;
+        };
         Some(Cow::Owned(tree.item(key)?.function.clone()))
     }
 }
@@ -128,14 +141,34 @@ mod tests {
     use hopper_core::{Moment, RecordingId, Tid};
 
     fn call(id: u64, f: &str, children: u64) -> (CallId, CallNode) {
-        let m = Moment { recording: RecordingId([0; 16]), frame_time: id, tid: Tid(9), ticks: 0, sub: 0 };
-        (CallId(id), CallNode { id: CallId(id), parent: None, tid: Tid(9), function: f.into(), entry: m, exit: None, depth: 0, child_count: children, location: None })
+        let m = Moment {
+            recording: RecordingId([0; 16]),
+            frame_time: id,
+            tid: Tid(9),
+            ticks: 0,
+            sub: 0,
+        };
+        (
+            CallId(id),
+            CallNode {
+                id: CallId(id),
+                parent: None,
+                tid: Tid(9),
+                function: f.into(),
+                entry: m,
+                exit: None,
+                depth: 0,
+                child_count: children,
+                location: None,
+            },
+        )
     }
 
     #[test]
     fn cells_are_formatted_from_the_tree_as_drawn() {
         let tree = Rc::new(RefCell::new(CallTree::new(50)));
-        tree.borrow_mut().set_roots(vec![call(1, "main", 2), call(2, "exit", 0)]);
+        tree.borrow_mut()
+            .set_roots(vec![call(1, "main", 2), call(2, "exit", 0)]);
         let rows = CallRows::new(tree.clone());
         assert_eq!(rows.len(), 2);
         assert_eq!(rows.cell(0, 0), Cell::Text(Cow::Owned("▸ main".into())));
@@ -143,13 +176,26 @@ mod tests {
         assert_eq!(rows.cell(0, 2), Cell::Text(Cow::Borrowed("(no return)")));
         assert_eq!(rows.cell(0, 3), Cell::Int(9));
         let v = rows.version();
-        let fetch = tree.borrow_mut().toggle(&CallId(1)).expect("fetches main's children");
+        let fetch = tree
+            .borrow_mut()
+            .toggle(&CallId(1))
+            .expect("fetches main's children");
         assert_eq!(fetch.parent, Some(CallId(1)));
         assert!(rows.version() > v);
-        assert_eq!(rows.cell(1, 0), Cell::Text(Cow::Owned("       loading…".into())));
-        tree.borrow_mut().children_loaded(Some(&CallId(1)), 0, vec![call(3, "load", 0)], Some(2));
+        assert_eq!(
+            rows.cell(1, 0),
+            Cell::Text(Cow::Owned("       loading…".into()))
+        );
+        tree.borrow_mut()
+            .children_loaded(Some(&CallId(1)), 0, vec![call(3, "load", 0)], Some(2));
         assert_eq!(rows.cell(0, 0), Cell::Text(Cow::Owned("▾ main".into())));
-        assert_eq!(rows.cell(1, 0), Cell::Text(Cow::Owned("       load".into())));
-        assert_eq!(rows.cell(2, 0), Cell::Text(Cow::Owned("       … 1 more (activate to load)".into())));
+        assert_eq!(
+            rows.cell(1, 0),
+            Cell::Text(Cow::Owned("       load".into()))
+        );
+        assert_eq!(
+            rows.cell(2, 0),
+            Cell::Text(Cow::Owned("       … 1 more (activate to load)".into()))
+        );
     }
 }

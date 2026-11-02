@@ -31,13 +31,20 @@ pub enum Row<K> {
     /// Children of `parent` are being fetched.
     Loading { parent: Option<K>, depth: u32 },
     /// `parent` has more children than are loaded; activating this row fetches the next page.
-    More { parent: Option<K>, depth: u32, loaded: u64, total: Option<u64> },
+    More {
+        parent: Option<K>,
+        depth: u32,
+        loaded: u64,
+        total: Option<u64>,
+    },
 }
 
 impl<K> Row<K> {
     pub fn depth(&self) -> u32 {
         match self {
-            Row::Node { depth, .. } | Row::Loading { depth, .. } | Row::More { depth, .. } => *depth,
+            Row::Node { depth, .. } | Row::Loading { depth, .. } | Row::More { depth, .. } => {
+                *depth
+            }
         }
     }
 }
@@ -132,7 +139,9 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
 
     /// The row showing `key`, if it is visible.
     pub fn position(&self, key: &K) -> Option<usize> {
-        self.rows.iter().position(|r| matches!(r, Row::Node { key: k, .. } if k == key))
+        self.rows
+            .iter()
+            .position(|r| matches!(r, Row::Node { key: k, .. } if k == key))
     }
 
     /// A stable 64-bit key for row `i` (a table's row identity).
@@ -162,9 +171,18 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
         self.roots.clear();
         self.root_total = None;
         self.roots_fetching = true;
-        self.rows.push(Row::Loading { parent: None, depth: 0 });
+        self.rows.push(Row::Loading {
+            parent: None,
+            depth: 0,
+        });
         self.version += 1;
-        Fetch { parent: None, page: PageReq { offset: 0, limit: self.page_size } }
+        Fetch {
+            parent: None,
+            page: PageReq {
+                offset: 0,
+                limit: self.page_size,
+            },
+        }
     }
 
     /// Replaces the tree with these roots, all of them (no paging).
@@ -188,7 +206,17 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
             None | Some(0) => Expansion::Leaf,
             Some(_) => Expansion::Collapsed,
         };
-        self.nodes.insert(key, Entry { item, depth, expansion, children: Vec::new(), total: None, fetching: false });
+        self.nodes.insert(
+            key,
+            Entry {
+                item,
+                depth,
+                expansion,
+                children: Vec::new(),
+                total: None,
+                fetching: false,
+            },
+        );
     }
 
     /// The rows of `key`'s subtree after its own row: its index plus one up to the next row at its
@@ -206,17 +234,30 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
     fn child_rows(&self, key: &K, out: &mut Vec<Row<K>>) {
         let Some(e) = self.nodes.get(key) else { return };
         for c in &e.children {
-            let Some(ce) = self.nodes.get(c) else { continue };
-            out.push(Row::Node { key: c.clone(), depth: ce.depth });
+            let Some(ce) = self.nodes.get(c) else {
+                continue;
+            };
+            out.push(Row::Node {
+                key: c.clone(),
+                depth: ce.depth,
+            });
             if ce.expansion == Expansion::Expanded {
                 self.child_rows(c, out);
             }
         }
         let depth = e.depth + 1;
         if e.fetching {
-            out.push(Row::Loading { parent: Some(key.clone()), depth });
+            out.push(Row::Loading {
+                parent: Some(key.clone()),
+                depth,
+            });
         } else if more_remain(e.children.len() as u64, e.total) {
-            out.push(Row::More { parent: Some(key.clone()), depth, loaded: e.children.len() as u64, total: e.total });
+            out.push(Row::More {
+                parent: Some(key.clone()),
+                depth,
+                loaded: e.children.len() as u64,
+                total: e.total,
+            });
         }
     }
 
@@ -243,7 +284,13 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
         e.expansion = Expansion::Expanded;
         let fetch = if e.children.is_empty() && !e.fetching {
             e.fetching = true;
-            Some(Fetch { parent: Some(key.clone()), page: PageReq { offset: 0, limit: page_size } })
+            Some(Fetch {
+                parent: Some(key.clone()),
+                page: PageReq {
+                    offset: 0,
+                    limit: page_size,
+                },
+            })
         } else {
             None
         };
@@ -258,7 +305,9 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
 
     /// Hides a node's children (they stay cached).
     pub fn collapse(&mut self, key: &K) {
-        let Some(e) = self.nodes.get_mut(key) else { return };
+        let Some(e) = self.nodes.get_mut(key) else {
+            return;
+        };
         if e.expansion != Expansion::Expanded {
             return;
         }
@@ -274,7 +323,12 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
     pub fn activate(&mut self, i: usize) -> Option<Fetch<K>> {
         match self.rows.get(i)?.clone() {
             Row::Node { key, .. } => self.toggle(&key),
-            Row::More { parent, depth, loaded, .. } => {
+            Row::More {
+                parent,
+                depth,
+                loaded,
+                ..
+            } => {
                 let fetching = match &parent {
                     None => &mut self.roots_fetching,
                     Some(p) => &mut self.nodes.get_mut(p)?.fetching,
@@ -283,9 +337,18 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
                     return None;
                 }
                 *fetching = true;
-                self.rows[i] = Row::Loading { parent: parent.clone(), depth };
+                self.rows[i] = Row::Loading {
+                    parent: parent.clone(),
+                    depth,
+                };
                 self.version += 1;
-                Some(Fetch { parent, page: PageReq { offset: loaded, limit: self.page_size } })
+                Some(Fetch {
+                    parent,
+                    page: PageReq {
+                        offset: loaded,
+                        limit: self.page_size,
+                    },
+                })
             }
             Row::Loading { .. } => None,
         }
@@ -293,7 +356,13 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
 
     /// A fetched page of `parent`'s children (`None`: the roots) starting at `offset`, with the
     /// total the source reported. A page for a node that is gone or no longer fetching is ignored.
-    pub fn children_loaded(&mut self, parent: Option<&K>, offset: u64, items: Vec<(K, T)>, total: Option<u64>) {
+    pub fn children_loaded(
+        &mut self,
+        parent: Option<&K>,
+        offset: u64,
+        items: Vec<(K, T)>,
+        total: Option<u64>,
+    ) {
         let depth = match parent {
             None => {
                 if !self.roots_fetching || offset != self.roots.len() as u64 {
@@ -304,7 +373,9 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
                 0
             }
             Some(p) => {
-                let Some(e) = self.nodes.get_mut(p) else { return };
+                let Some(e) = self.nodes.get_mut(p) else {
+                    return;
+                };
                 if !e.fetching || offset != e.children.len() as u64 {
                     return;
                 }
@@ -338,12 +409,23 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
                 (e.children.len() as u64, e.total)
             }
         };
-        let mut rows: Vec<Row<K>> = keys.into_iter().map(|key| Row::Node { key, depth }).collect();
+        let mut rows: Vec<Row<K>> = keys
+            .into_iter()
+            .map(|key| Row::Node { key, depth })
+            .collect();
         if more_remain(loaded, total) {
-            rows.push(Row::More { parent: parent.cloned(), depth, loaded, total });
+            rows.push(Row::More {
+                parent: parent.cloned(),
+                depth,
+                loaded,
+                total,
+            });
         }
         // the loading row this page answers, if the parent is shown
-        let at = self.rows.iter().position(|r| matches!(r, Row::Loading { parent: lp, .. } if lp.as_ref() == parent));
+        let at = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Loading { parent: lp, .. } if lp.as_ref() == parent));
         if let Some(at) = at {
             self.rows.splice(at..at + 1, rows);
         }
@@ -363,7 +445,11 @@ impl<K: Clone + Eq + Hash, T: TreeItem> LazyTree<K, T> {
                 }
             }
         }
-        if let Some(at) = self.rows.iter().position(|r| matches!(r, Row::Loading { parent: lp, .. } if lp.as_ref() == parent)) {
+        if let Some(at) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Loading { parent: lp, .. } if lp.as_ref() == parent))
+        {
             self.rows.remove(at);
         }
         self.version += 1;
@@ -395,7 +481,12 @@ mod tests {
             .map(|r| match r {
                 Row::Node { key, depth } => format!("{}{key}", "  ".repeat(*depth as usize)),
                 Row::Loading { depth, .. } => format!("{}…", "  ".repeat(*depth as usize)),
-                Row::More { depth, loaded, total, .. } => format!("{}+{loaded}/{total:?}", "  ".repeat(*depth as usize)),
+                Row::More {
+                    depth,
+                    loaded,
+                    total,
+                    ..
+                } => format!("{}+{loaded}/{total:?}", "  ".repeat(*depth as usize)),
             })
             .collect()
     }
@@ -404,12 +495,27 @@ mod tests {
     fn roots_page_in_and_end_with_a_more_row() {
         let mut t = LazyTree::<u32, N>::new(2);
         let f = t.reset();
-        assert_eq!(f, Fetch { parent: None, page: PageReq { offset: 0, limit: 2 } });
+        assert_eq!(
+            f,
+            Fetch {
+                parent: None,
+                page: PageReq {
+                    offset: 0,
+                    limit: 2
+                }
+            }
+        );
         assert_eq!(shape(&t), ["…"]);
         t.children_loaded(None, 0, vec![(1, N(None)), (2, N(Some(3)))], Some(3));
         assert_eq!(shape(&t), ["1", "2", "+2/Some(3)"]);
         let f = t.activate(2).expect("more fetches");
-        assert_eq!(f.page, PageReq { offset: 2, limit: 2 });
+        assert_eq!(
+            f.page,
+            PageReq {
+                offset: 2,
+                limit: 2
+            }
+        );
         assert_eq!(shape(&t), ["1", "2", "…"]);
         // activating the loading row does nothing
         assert_eq!(t.activate(2), None);
@@ -433,15 +539,28 @@ mod tests {
         t.toggle(&1);
         assert_eq!(shape(&t), ["1", "9"]);
         assert_eq!(t.toggle(&1), None, "re-expanding uses the cached children");
-        assert_eq!(shape(&t), ["1", "  10", "    100", "  11", "9"], "and keeps their own expansion");
+        assert_eq!(
+            shape(&t),
+            ["1", "  10", "    100", "  11", "9"],
+            "and keeps their own expansion"
+        );
     }
 
     #[test]
     fn a_page_shorter_than_asked_ends_a_level_without_a_total() {
         let mut t = LazyTree::<u32, N>::new(3);
         t.reset();
-        t.children_loaded(None, 0, vec![(1, N(None)), (2, N(None)), (3, N(None))], None);
-        assert_eq!(shape(&t), ["1", "2", "3", "+3/None"], "a full page may have more");
+        t.children_loaded(
+            None,
+            0,
+            vec![(1, N(None)), (2, N(None)), (3, N(None))],
+            None,
+        );
+        assert_eq!(
+            shape(&t),
+            ["1", "2", "3", "+3/None"],
+            "a full page may have more"
+        );
         t.activate(3);
         t.children_loaded(None, 3, vec![(4, N(None))], None);
         assert_eq!(shape(&t), ["1", "2", "3", "4"]);

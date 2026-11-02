@@ -1,16 +1,21 @@
 //! Navigation: the debugger keys, and the GUI's mirror of the engine's navigation history.
 
-use hopper_core::api::{Direction, StepKind};
 use hopper_core::Moment;
+use hopper_core::api::{Direction, StepKind};
 use skelter_base::event::Modifiers;
 use skelter_base::key::Key;
 
 /// What a key (or a toolbar button) asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    Step { kind: StepKind, dir: Direction },
+    Step {
+        kind: StepKind,
+        dir: Direction,
+    },
     /// Run to the next breakpoint (or the end, or the start in reverse).
-    Continue { dir: Direction },
+    Continue {
+        dir: Direction,
+    },
     /// Navigation history: the previous position.
     Back,
     /// Navigation history: the next position.
@@ -27,7 +32,10 @@ pub enum Command {
 impl Command {
     /// Whether the command moves the cursor through the engine.
     pub fn moves(self) -> bool {
-        !matches!(self, Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint)
+        !matches!(
+            self,
+            Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint
+        )
     }
 }
 
@@ -38,12 +46,28 @@ pub fn command_for_key(key: Key, mods: Modifiers) -> Option<Command> {
     let ctrl = mods.contains(Modifiers::CTRL);
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
-    let dir = if ctrl { Direction::Reverse } else { Direction::Forward };
+    let dir = if ctrl {
+        Direction::Reverse
+    } else {
+        Direction::Forward
+    };
     match (key, alt) {
         (Key::F9, false) if !ctrl && !shift => Some(Command::ToggleBreakpoint),
-        (Key::F10, false) if !shift => Some(Command::Step { kind: StepKind::Over, dir }),
-        (Key::F11, false) => Some(Command::Step { kind: if shift { StepKind::Out } else { StepKind::Into }, dir }),
-        (Key::F5, false) => Some(Command::Continue { dir: if ctrl || shift { Direction::Reverse } else { Direction::Forward } }),
+        (Key::F10, false) if !shift => Some(Command::Step {
+            kind: StepKind::Over,
+            dir,
+        }),
+        (Key::F11, false) => Some(Command::Step {
+            kind: if shift { StepKind::Out } else { StepKind::Into },
+            dir,
+        }),
+        (Key::F5, false) => Some(Command::Continue {
+            dir: if ctrl || shift {
+                Direction::Reverse
+            } else {
+                Direction::Forward
+            },
+        }),
         (Key::ArrowLeft, true) if !ctrl && !shift => Some(Command::Back),
         (Key::ArrowRight, true) if !ctrl && !shift => Some(Command::Forward),
         (Key::L, false) if ctrl && !shift => Some(Command::OpenUrlBox),
@@ -142,7 +166,13 @@ mod tests {
     use hopper_core::{RecordingId, Tid};
 
     fn m(ft: u64) -> Moment {
-        Moment { recording: RecordingId([1; 16]), frame_time: ft, tid: Tid(1), ticks: 0, sub: 0 }
+        Moment {
+            recording: RecordingId([1; 16]),
+            frame_time: ft,
+            tid: Tid(1),
+            ticks: 0,
+            sub: 0,
+        }
     }
 
     #[test]
@@ -150,22 +180,90 @@ mod tests {
         let none = Modifiers::default();
         let fwd = Direction::Forward;
         let rev = Direction::Reverse;
-        assert_eq!(command_for_key(Key::F10, none), Some(Command::Step { kind: StepKind::Over, dir: fwd }));
-        assert_eq!(command_for_key(Key::F10, Modifiers::CTRL), Some(Command::Step { kind: StepKind::Over, dir: rev }));
-        assert_eq!(command_for_key(Key::F11, none), Some(Command::Step { kind: StepKind::Into, dir: fwd }));
-        assert_eq!(command_for_key(Key::F11, Modifiers::CTRL), Some(Command::Step { kind: StepKind::Into, dir: rev }));
-        assert_eq!(command_for_key(Key::F11, Modifiers::SHIFT), Some(Command::Step { kind: StepKind::Out, dir: fwd }));
-        assert_eq!(command_for_key(Key::F11, Modifiers::SHIFT.union(Modifiers::CTRL)), Some(Command::Step { kind: StepKind::Out, dir: rev }));
-        assert_eq!(command_for_key(Key::F5, none), Some(Command::Continue { dir: fwd }));
-        assert_eq!(command_for_key(Key::F5, Modifiers::SHIFT), Some(Command::Continue { dir: rev }));
-        assert_eq!(command_for_key(Key::F5, Modifiers::CTRL), Some(Command::Continue { dir: rev }));
-        assert_eq!(command_for_key(Key::ArrowLeft, Modifiers::ALT), Some(Command::Back));
-        assert_eq!(command_for_key(Key::ArrowRight, Modifiers::ALT), Some(Command::Forward));
-        assert_eq!(command_for_key(Key::ArrowLeft, none), None, "plain arrows stay the panes'");
-        assert_eq!(command_for_key(Key::L, Modifiers::CTRL), Some(Command::OpenUrlBox));
-        assert_eq!(command_for_key(Key::C, Modifiers::CTRL.union(Modifiers::SHIFT)), Some(Command::CopyUrl));
-        assert_eq!(command_for_key(Key::C, Modifiers::CTRL), None, "plain copy stays the panes'");
-        assert_eq!(command_for_key(Key::F9, none), Some(Command::ToggleBreakpoint));
+        assert_eq!(
+            command_for_key(Key::F10, none),
+            Some(Command::Step {
+                kind: StepKind::Over,
+                dir: fwd
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F10, Modifiers::CTRL),
+            Some(Command::Step {
+                kind: StepKind::Over,
+                dir: rev
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F11, none),
+            Some(Command::Step {
+                kind: StepKind::Into,
+                dir: fwd
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F11, Modifiers::CTRL),
+            Some(Command::Step {
+                kind: StepKind::Into,
+                dir: rev
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F11, Modifiers::SHIFT),
+            Some(Command::Step {
+                kind: StepKind::Out,
+                dir: fwd
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F11, Modifiers::SHIFT.union(Modifiers::CTRL)),
+            Some(Command::Step {
+                kind: StepKind::Out,
+                dir: rev
+            })
+        );
+        assert_eq!(
+            command_for_key(Key::F5, none),
+            Some(Command::Continue { dir: fwd })
+        );
+        assert_eq!(
+            command_for_key(Key::F5, Modifiers::SHIFT),
+            Some(Command::Continue { dir: rev })
+        );
+        assert_eq!(
+            command_for_key(Key::F5, Modifiers::CTRL),
+            Some(Command::Continue { dir: rev })
+        );
+        assert_eq!(
+            command_for_key(Key::ArrowLeft, Modifiers::ALT),
+            Some(Command::Back)
+        );
+        assert_eq!(
+            command_for_key(Key::ArrowRight, Modifiers::ALT),
+            Some(Command::Forward)
+        );
+        assert_eq!(
+            command_for_key(Key::ArrowLeft, none),
+            None,
+            "plain arrows stay the panes'"
+        );
+        assert_eq!(
+            command_for_key(Key::L, Modifiers::CTRL),
+            Some(Command::OpenUrlBox)
+        );
+        assert_eq!(
+            command_for_key(Key::C, Modifiers::CTRL.union(Modifiers::SHIFT)),
+            Some(Command::CopyUrl)
+        );
+        assert_eq!(
+            command_for_key(Key::C, Modifiers::CTRL),
+            None,
+            "plain copy stays the panes'"
+        );
+        assert_eq!(
+            command_for_key(Key::F9, none),
+            Some(Command::ToggleBreakpoint)
+        );
         assert!(!Command::ToggleBreakpoint.moves());
     }
 
@@ -199,7 +297,11 @@ mod tests {
         assert_eq!(n.entries(), [m(1), m(2), m(9)]);
         assert!(!n.can_forward());
         n.moved(m(9), Move::New);
-        assert_eq!(n.entries().len(), 3, "a step that did not move adds nothing");
+        assert_eq!(
+            n.entries().len(),
+            3,
+            "a step that did not move adds nothing"
+        );
     }
 
     #[test]

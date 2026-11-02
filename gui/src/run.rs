@@ -43,8 +43,14 @@ impl std::fmt::Debug for HopperApp {
 
 impl HopperApp {
     pub fn new(doc: HopperDocument, spawn: SpawnCompositor<CompositorHandle>) -> Self {
-        let cfg = AppConfig { windows: vec![main_window()], exit_on_last_window: true, ..AppConfig::default() };
-        HopperApp { app: App::new(cfg, doc, spawn) }
+        let cfg = AppConfig {
+            windows: vec![main_window()],
+            exit_on_last_window: true,
+            ..AppConfig::default()
+        };
+        HopperApp {
+            app: App::new(cfg, doc, spawn),
+        }
     }
 
     /// After every callback: ask for frames for what changed outside input.
@@ -70,7 +76,9 @@ impl AppHandler for HopperApp {
             if let Some(canvas) = self.app.doc_mut().timeline_canvas() {
                 c.register_canvas(canvas);
             }
-            self.app.doc_mut().set_canvas_notify(Box::new(move |w, id| c.canvas_changed(w, id)));
+            self.app
+                .doc_mut()
+                .set_canvas_notify(Box::new(move |w, id| c.canvas_changed(w, id)));
         }
         self.app.doc_mut().start();
         self.sync();
@@ -110,9 +118,15 @@ impl AppHandler for HopperApp {
 pub fn run(dbg: Arc<dyn Debugger>) -> Result<(), String> {
     let fonts = fonts();
     let doc = HopperDocument::new(Viewer::new(dbg), fonts.clone());
-    let glyphs: Arc<dyn skelter_base::text::GlyphRasterizer> = Arc::new(skelter_text::FontRasterizer::new(fonts));
-    let spawn = skelter::compositor(|clock| skelter_compositor::CompositorConfig::new(clock, Span::from_micros(16_667)), glyphs);
-    skelter::run(Box::new(HopperApp::new(doc, spawn))).map(|_| ()).map_err(|e| format!("skelter: {e}"))
+    let glyphs: Arc<dyn skelter_base::text::GlyphRasterizer> =
+        Arc::new(skelter_text::FontRasterizer::new(fonts));
+    let spawn = skelter::compositor(
+        |clock| skelter_compositor::CompositorConfig::new(clock, Span::from_micros(16_667)),
+        glyphs,
+    );
+    skelter::run(Box::new(HopperApp::new(doc, spawn)))
+        .map(|_| ())
+        .map_err(|e| format!("skelter: {e}"))
 }
 
 /// The window in skelter-test's headless harness.
@@ -124,8 +138,12 @@ pub fn harness(dbg: Arc<dyn Debugger>, size: (f32, f32)) -> Harness {
     let mut doc = HopperDocument::new(Viewer::new(dbg), fonts.clone());
     doc.start();
     let canvas = doc.timeline_canvas();
-    let glyphs: Arc<dyn skelter_base::text::GlyphRasterizer> = Arc::new(skelter_text::FontRasterizer::new(fonts));
-    let mut h = skelter_test::Harness::<HopperDocument>::builder().with_size(Size::new(size.0, size.1)).with_glyphs(glyphs).build_unsettled(doc);
+    let glyphs: Arc<dyn skelter_base::text::GlyphRasterizer> =
+        Arc::new(skelter_text::FontRasterizer::new(fonts));
+    let mut h = skelter_test::Harness::<HopperDocument>::builder()
+        .with_size(Size::new(size.0, size.1))
+        .with_glyphs(glyphs)
+        .build_unsettled(doc);
     if let Some(canvas) = canvas {
         h.set_textures(move |_, gpu| gpu.renderer.register_canvas(canvas.clone()));
     }
@@ -151,7 +169,13 @@ pub fn settle(h: &mut Harness) {
 /// Renders the window headlessly (the environment's wgpu adapter, lavapipe in a container) to
 /// `out` as a PNG, after `keys` (debugger shortcuts such as `F10`, `Alt+Left`) and, with
 /// `select`, after selecting that local (its origin and history fill the query pane).
-pub fn shot(dbg: Arc<dyn Debugger>, size: (f32, f32), keys: &[String], select: Option<&str>, out: &Path) -> Result<(), String> {
+pub fn shot(
+    dbg: Arc<dyn Debugger>,
+    size: (f32, f32),
+    keys: &[String],
+    select: Option<&str>,
+    out: &Path,
+) -> Result<(), String> {
     let mut h = harness(dbg, size);
     for k in keys {
         press(&mut h, k)?;
@@ -160,7 +184,8 @@ pub fn shot(dbg: Arc<dyn Debugger>, size: (f32, f32), keys: &[String], select: O
         select_local(&mut h, name)?;
     }
     let img = h.render().map_err(|e| e.0)?;
-    img.save_png(out).map_err(|e| format!("{}: {e}", out.display()))
+    img.save_png(out)
+        .map_err(|e| format!("{}: {e}", out.display()))
 }
 
 /// Selects the local named `name` in the locals pane and settles.

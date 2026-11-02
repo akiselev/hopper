@@ -45,10 +45,22 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--size" => {
                 let v = it.next().ok_or("--size needs <w>x<h>")?;
                 let (w, h) = v.split_once('x').ok_or("--size needs <w>x<h>")?;
-                a.size = Some((w.parse().map_err(|_| "bad --size")?, h.parse().map_err(|_| "bad --size")?));
+                a.size = Some((
+                    w.parse().map_err(|_| "bad --size")?,
+                    h.parse().map_err(|_| "bad --size")?,
+                ));
             }
-            "--select" => a.select = Some(it.next().ok_or("--select needs a local's name")?.clone()),
-            "--keys" => a.keys = it.next().ok_or("--keys needs a list")?.split(',').map(str::to_owned).collect(),
+            "--select" => {
+                a.select = Some(it.next().ok_or("--select needs a local's name")?.clone())
+            }
+            "--keys" => {
+                a.keys = it
+                    .next()
+                    .ok_or("--keys needs a list")?
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect()
+            }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => a.trace = Some(s.into()),
         }
@@ -95,7 +107,13 @@ fn main() -> ExitCode {
         }
     };
     let result = match &args.shot {
-        Some(out) => hopper_gui::run::shot(dbg, args.size.unwrap_or((1440.0, 900.0)), &args.keys, args.select.as_deref(), out),
+        Some(out) => hopper_gui::run::shot(
+            dbg,
+            args.size.unwrap_or((1440.0, 900.0)),
+            &args.keys,
+            args.select.as_deref(),
+            out,
+        ),
         None => hopper_gui::run::run(dbg),
     };
     match result {

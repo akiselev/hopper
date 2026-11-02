@@ -5,7 +5,18 @@ produced, and explore the recording afterwards in a native desktop GUI. You can 
 forwards, jump to any moment, and ask where any value came from. For Rust programs, the answer
 includes ownership: which move, clone, borrow or drop carried the value to where it is.
 
-Nothing is built yet. Start with:
+The plan is implemented through M7. Everything that runs without rr is tested; the rr paths
+wait for a machine with hardware performance counters. See [`STATUS.md`](STATUS.md) and
+**[`docs/TESTING-AT-HOME.md`](docs/TESTING-AT-HOME.md)** for what to run there.
+
+```sh
+scripts/build-fixtures.sh
+cargo run -p hopper-cli -- record -- target/fixtures/worked-example/debug/worked-example
+cargo run -p hopper-cli -- repl <trace>                 # or: live -- <prog>, show, info, mcp, dap
+(cd gui && cargo run --release -- <trace>)              # needs ../svelters, ../berth, ../quire
+```
+
+Background reading:
 
 - [`docs/plan/2026-11-01-first-implementation.md`](docs/plan/2026-11-01-first-implementation.md):
   the plan. It covers the architecture, crate layout, time model, index, ownership sidecar,

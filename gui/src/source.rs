@@ -21,8 +21,8 @@ use skelter_base::ids::{NodeId, RunId};
 use skelter_base::text::GlyphRun;
 use skelter_base::time::Time;
 use skelter_core::{
-    Event, EventCx, FocusReason, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx, PropDefault, PropId, PropSpec,
-    RecordCx, ValueType,
+    Event, EventCx, FocusReason, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx,
+    PropDefault, PropId, PropSpec, RecordCx, ValueType,
 };
 use skelter_quire::editor::{EditorOptions, SkelterEditor};
 use skelter_quire::layers::translate_prim;
@@ -65,7 +65,11 @@ pub struct SourcePane {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent {
     /// A press in hopper's column on a 1-based line, in one of its zones.
-    GutterClick { node: NodeId, line: u32, zone: GutterZone },
+    GutterClick {
+        node: NodeId,
+        line: u32,
+        zone: GutterZone,
+    },
     /// The editor asked to copy its selection.
     Copy { text: String },
 }
@@ -80,7 +84,9 @@ pub struct SourceHost {
 
 impl std::fmt::Debug for SourceHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SourceHost").field("panes", &self.panes.len()).finish_non_exhaustive()
+        f.debug_struct("SourceHost")
+            .field("panes", &self.panes.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -89,12 +95,18 @@ impl SourceHost {
         let mut theme = EditorTheme::new(true);
         theme.font_family = style::MONO_FONT.into();
         theme.font_size = 13.0;
-        SourceHost { fonts, theme, panes: HashMap::new(), events: Vec::new() }
+        SourceHost {
+            fonts,
+            theme,
+            panes: HashMap::new(),
+            events: Vec::new(),
+        }
     }
 }
 
-static PROPS: [PropSpec; 1] =
-    [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint).default(PropDefault::I64(0)).doc("Bumped by the host after the pane changed.")];
+static PROPS: [PropSpec; 1] = [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint)
+    .default(PropDefault::I64(0))
+    .doc("Bumped by the host after the pane changed.")];
 
 static SPEC: KindSpec = KindSpec {
     props: &PROPS,
@@ -141,11 +153,21 @@ impl SourceKind {
         match &pane.doc {
             None => *self.inner.get_mut() = None,
             Some(doc) if current != Some(pane.generation) => {
-                let options = EditorOptions { read_only: true, inlay_hints: true, ..EditorOptions::default() };
+                let options = EditorOptions {
+                    read_only: true,
+                    inlay_hints: true,
+                    ..EditorOptions::default()
+                };
                 let editor = SkelterEditor::new(host.fonts.clone(), host.theme.clone(), options);
                 let view = EditorView::new(&doc.borrow());
                 let initial_selection = view.selection_version();
-                *self.inner.get_mut() = Some(Inner { doc: doc.clone(), generation: pane.generation, view, editor, initial_selection });
+                *self.inner.get_mut() = Some(Inner {
+                    doc: doc.clone(),
+                    generation: pane.generation,
+                    view,
+                    editor,
+                    initial_selection,
+                });
             }
             Some(_) => {}
         }
@@ -168,15 +190,22 @@ impl Kind for SourceKind {
         known: skelter_core::taffy::Size<Option<f32>>,
         _avail: skelter_core::taffy::Size<skelter_core::taffy::AvailableSpace>,
     ) -> skelter_core::taffy::Size<f32> {
-        skelter_core::taffy::Size { width: known.width.unwrap_or(0.0), height: known.height.unwrap_or(0.0) }
+        skelter_core::taffy::Size {
+            width: known.width.unwrap_or(0.0),
+            height: known.height.unwrap_or(0.0),
+        }
     }
 
     fn prepare(&mut self, cx: &mut PrepareCx) {
         let node = cx.node.id();
         let size = editor_size(cx.size());
         let scale = cx.node.scale();
-        let Some(host) = cx.service::<SourceHost>() else { return };
-        let Some(pane) = host.panes.remove(&node) else { return };
+        let Some(host) = cx.service::<SourceHost>() else {
+            return;
+        };
+        let Some(pane) = host.panes.remove(&node) else {
+            return;
+        };
         self.sync(host, &pane);
         let mut pane = pane;
         if let Some(i) = self.inner.get_mut() {
@@ -206,16 +235,35 @@ impl Kind for SourceKind {
     fn record(&self, cx: &mut RecordCx) {
         let size = cx.node.size();
         let node = cx.node.id();
-        let (arrows, hits, breakpoints, message) = match cx.service::<SourceHost>().and_then(|h| h.panes.get(&node)) {
-            Some(p) => (p.arrows.clone(), p.hits.clone(), p.breakpoints.clone(), p.message.clone()),
-            None => (Vec::new(), HitCounts::default(), Vec::new(), String::new()),
-        };
+        let (arrows, hits, breakpoints, message) =
+            match cx.service::<SourceHost>().and_then(|h| h.panes.get(&node)) {
+                Some(p) => (
+                    p.arrows.clone(),
+                    p.hits.clone(),
+                    p.breakpoints.clone(),
+                    p.message.clone(),
+                ),
+                None => (Vec::new(), HitCounts::default(), Vec::new(), String::new()),
+            };
         let mut slot = self.inner.borrow_mut();
         let Some(i) = slot.as_mut() else {
             record_core(cx, |p, list| {
                 raw::fill(list, Rect::new(0.0, 0.0, size.w, size.h), style::BG, 0.0);
-                let st = TextStyle { family: style::UI_FONT.into(), size: 12.0, weight: 400, italic: true, color: style::MUTED };
-                p.draw(list, &message, &st, Rect::new(12.0, 8.0, size.w - 12.0, 28.0), Align::Start, true);
+                let st = TextStyle {
+                    family: style::UI_FONT.into(),
+                    size: 12.0,
+                    weight: 400,
+                    italic: true,
+                    color: style::MUTED,
+                };
+                p.draw(
+                    list,
+                    &message,
+                    &st,
+                    Rect::new(12.0, 8.0, size.w - 12.0, 28.0),
+                    Align::Start,
+                    true,
+                );
             });
             return;
         };
@@ -250,24 +298,50 @@ impl Kind for SourceKind {
                     Arrow::Frame => style::FRAME_LINE,
                 };
                 let mut band = DisplayList::new();
-                raw::fill(&mut band, Rect::new(COLUMN_W, y, size.w, y + row_h), color, 0.0);
+                raw::fill(
+                    &mut band,
+                    Rect::new(COLUMN_W, y, size.w, y + row_h),
+                    color,
+                    0.0,
+                );
                 for p in band.items {
                     let ink = Rect::new(COLUMN_W, y, size.w, y + row_h);
                     cx.push(p, ink);
                 }
             }
         }
-        let content_d = Vec2::new(sc.text_origin.x - sc.scroll.x, sc.text_origin.y - sc.scroll.y);
-        cx.push_clip(RoundedRect { rect: sc.text_clip.translate(shift), radii: Default::default() });
+        let content_d = Vec2::new(
+            sc.text_origin.x - sc.scroll.x,
+            sc.text_origin.y - sc.scroll.y,
+        );
+        cx.push_clip(RoundedRect {
+            rect: sc.text_clip.translate(shift),
+            radii: Default::default(),
+        });
         put(cx, &sc.content, content_d);
-        if i.editor.is_focused() && i.editor.caret_visible(self.now) && let Some((p, _)) = sc.caret_prim() {
+        if i.editor.is_focused()
+            && i.editor.caret_visible(self.now)
+            && let Some((p, _)) = sc.caret_prim()
+        {
             let (q, ink) = translate_prim(&p, content_d + shift);
             cx.push(q, ink);
         }
         cx.pop_clip();
         if sc.gutter_width > 0.0 {
-            cx.push_clip(RoundedRect { rect: Rect::new(COLUMN_W, 0.0, COLUMN_W + sc.gutter_width, sc.text_clip.max.y), radii: Default::default() });
-            put(cx, &sc.gutter, Vec2::new(0.0, sc.text_origin.y - sc.scroll.y));
+            cx.push_clip(RoundedRect {
+                rect: Rect::new(
+                    COLUMN_W,
+                    0.0,
+                    COLUMN_W + sc.gutter_width,
+                    sc.text_clip.max.y,
+                ),
+                radii: Default::default(),
+            });
+            put(
+                cx,
+                &sc.gutter,
+                Vec2::new(0.0, sc.text_origin.y - sc.scroll.y),
+            );
             cx.pop_clip();
         }
         put(cx, &sc.overlay, Vec2::ZERO);
@@ -276,17 +350,45 @@ impl Kind for SourceKind {
         // hopper's column
         let m = marks(&rows, &hits, &arrows, &breakpoints);
         record_core(cx, |p, list| {
-            raw::fill(list, Rect::new(0.0, 0.0, COLUMN_W, size.h), style::GUTTER_BG, 0.0);
-            raw::fill(list, Rect::new(COLUMN_W - 1.0, 0.0, COLUMN_W, size.h), style::BORDER, 0.0);
+            raw::fill(
+                list,
+                Rect::new(0.0, 0.0, COLUMN_W, size.h),
+                style::GUTTER_BG,
+                0.0,
+            );
+            raw::fill(
+                list,
+                Rect::new(COLUMN_W - 1.0, 0.0, COLUMN_W, size.h),
+                style::BORDER,
+                0.0,
+            );
             for mark in &m {
                 let y = mark.y;
                 if let Some(label) = &mark.label {
-                    let st = TextStyle { family: style::MONO_FONT.into(), size: 11.0, weight: 400, italic: false, color: style::HIT_COUNT };
-                    p.draw(list, label, &st, Rect::new(2.0, y, COLUMN_W - 26.0, y + row_h), Align::End, true);
+                    let st = TextStyle {
+                        family: style::MONO_FONT.into(),
+                        size: 11.0,
+                        weight: 400,
+                        italic: false,
+                        color: style::HIT_COUNT,
+                    };
+                    p.draw(
+                        list,
+                        label,
+                        &st,
+                        Rect::new(2.0, y, COLUMN_W - 26.0, y + row_h),
+                        Align::End,
+                        true,
+                    );
                 }
                 if mark.breakpoint {
                     let c = Point::new(COLUMN_W - 13.0, y + row_h / 2.0);
-                    raw::fill(list, Rect::new(c.x - 5.5, c.y - 5.5, c.x + 5.5, c.y + 5.5), style::BREAKPOINT, 5.5);
+                    raw::fill(
+                        list,
+                        Rect::new(c.x - 5.5, c.y - 5.5, c.x + 5.5, c.y + 5.5),
+                        style::BREAKPOINT,
+                        5.5,
+                    );
                 }
                 if let Some(a) = mark.arrow {
                     let color = match a {
@@ -314,7 +416,11 @@ impl Kind for SourceKind {
                 doc.text().byte_to_line(pos) as u32 + 1
             });
             if let (Some(line), Some(h)) = (line, cx.service::<SourceHost>()) {
-                h.events.push(SourceEvent::GutterClick { node, line, zone: zone_at(p.local.x, COLUMN_W) });
+                h.events.push(SourceEvent::GutterClick {
+                    node,
+                    line,
+                    zone: zone_at(p.local.x, COLUMN_W),
+                });
             }
             cx.request_paint();
             return Handled::Yes;
@@ -375,10 +481,15 @@ impl Kind for SourceKind {
         }
         // the editor's copy requests go to the host's clipboard; the rest of its output is unused
         let copied = self.inner.get_mut().as_mut().and_then(|i| {
-            i.editor.take_output().events.into_iter().rev().find_map(|e| match e {
-                skelter_quire::EditorEvent::CopyText { text } => Some(text),
-                _ => None,
-            })
+            i.editor
+                .take_output()
+                .events
+                .into_iter()
+                .rev()
+                .find_map(|e| match e {
+                    skelter_quire::EditorEvent::CopyText { text } => Some(text),
+                    _ => None,
+                })
         });
         if let (Some(text), Some(h)) = (copied, cx.service::<SourceHost>()) {
             h.events.push(SourceEvent::Copy { text });
@@ -390,7 +501,25 @@ impl Kind for SourceKind {
 
 /// A right-pointing arrow centred at `c`.
 fn draw_arrow(list: &mut DisplayList, c: Point, color: skelter_base::color::Color) {
-    raw::line(list, Point::new(c.x - 6.0, c.y), Point::new(c.x + 5.0, c.y), 2.5, color);
-    raw::line(list, Point::new(c.x + 1.0, c.y - 4.5), Point::new(c.x + 6.0, c.y), 2.5, color);
-    raw::line(list, Point::new(c.x + 1.0, c.y + 4.5), Point::new(c.x + 6.0, c.y), 2.5, color);
+    raw::line(
+        list,
+        Point::new(c.x - 6.0, c.y),
+        Point::new(c.x + 5.0, c.y),
+        2.5,
+        color,
+    );
+    raw::line(
+        list,
+        Point::new(c.x + 1.0, c.y - 4.5),
+        Point::new(c.x + 6.0, c.y),
+        2.5,
+        color,
+    );
+    raw::line(
+        list,
+        Point::new(c.x + 1.0, c.y + 4.5),
+        Point::new(c.x + 6.0, c.y),
+        2.5,
+        color,
+    );
 }

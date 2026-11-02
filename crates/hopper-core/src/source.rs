@@ -15,7 +15,11 @@ pub struct SourceLoc {
 
 impl SourceLoc {
     pub fn new(file: impl Into<String>, line: u32) -> Self {
-        SourceLoc { file: file.into(), line, column: None }
+        SourceLoc {
+            file: file.into(),
+            line,
+            column: None,
+        }
     }
 
     /// Whether `self` names the same file as `query`, matching by path suffix so that a user can

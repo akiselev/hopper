@@ -12,13 +12,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hopper_core::api::{
-    BreakLocation, Budget, CallFilter, CallId, Debugger, Frame, IndexStatus, Instruction, OriginChain, OriginEnd,
-    OriginHop, OwnershipKind, OwnershipLabel, OwnershipState, Page, RecordingInfo, Stop, StopCause, TimelineEvent,
-    Until, UserBreakpoint, ValueHandle, ValueView,
+    BreakLocation, Budget, CallFilter, CallId, Debugger, Frame, IndexStatus, Instruction,
+    OriginChain, OriginEnd, OriginHop, OwnershipKind, OwnershipLabel, OwnershipState, Page,
+    RecordingInfo, Stop, StopCause, TimelineEvent, Until, UserBreakpoint, ValueHandle, ValueView,
 };
 use hopper_core::api::{Completeness, Confidence, MachineKind, PageReq};
 use hopper_core::target::Direction;
-use hopper_core::{FrameId, HopperError, Moment, MomentRange, Place, PositionUrl, ProcessId, Reg, RegisterSet, SourceLoc};
+use hopper_core::{
+    FrameId, HopperError, Moment, MomentRange, Place, PositionUrl, ProcessId, Reg, RegisterSet,
+    SourceLoc,
+};
 
 use crate::calls::CallTree;
 use crate::gutter::{Arrow, ArrowAt, HitCount, HitCounts};
@@ -95,7 +98,11 @@ pub struct QueryLine {
 
 impl QueryLine {
     fn text(depth: u32, text: impl Into<String>, tone: Tone) -> Self {
-        QueryLine { depth, cells: vec![RowCell::new(text, tone)], action: None }
+        QueryLine {
+            depth,
+            cells: vec![RowCell::new(text, tone)],
+            action: None,
+        }
     }
 }
 
@@ -200,7 +207,10 @@ pub struct Viewer {
 
 impl std::fmt::Debug for Viewer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Viewer").field("stop", &self.stop).field("generation", &self.generation).finish_non_exhaustive()
+        f.debug_struct("Viewer")
+            .field("stop", &self.stop)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
     }
 }
 
@@ -219,7 +229,10 @@ impl Viewer {
             navigating: 0,
             frames: Vec::new(),
             selected_frame: 0,
-            source: SourceView { message: "Opening the recording…".into(), ..SourceView::default() },
+            source: SourceView {
+                message: "Opening the recording…".into(),
+                ..SourceView::default()
+            },
             locals: LocalsTree::new(PAGE),
             locals_selected: None,
             calls: Rc::new(RefCell::new(CallTree::new(PAGE))),
@@ -227,7 +240,11 @@ impl Viewer {
             timeline: TimelineModel::default(),
             seek_in_flight: false,
             seek_next: None,
-            query: vec![QueryLine::text(0, "Click a value in Locals to see where it came from.", Tone::Muted)],
+            query: vec![QueryLine::text(
+                0,
+                "Click a value in Locals to see where it came from.",
+                Tone::Muted,
+            )],
             local_query: None,
             query_id: 0,
             breakpoints: Vec::new(),
@@ -261,28 +278,36 @@ impl Viewer {
 
     /// The first questions: the recording, the cursor, the timeline, the call roots, the index.
     pub fn start(&mut self) {
-        self.jobs.submit(Lane::Replay, |d| d.recording(), |v, r| match r {
-            Ok(info) => {
-                v.timeline.start = info.start;
-                v.timeline.end = info.end;
-                v.timeline.version += 1;
-                v.recording = Some(info);
-                v.changed.timeline = true;
-                v.changed.status = true;
-            }
-            Err(e) => v.say(format!("recording: {}", err_text(&e)), Tone::Error),
-        });
-        self.jobs.submit(Lane::Replay, |d| d.cursor(), |v, r| match r {
-            Ok(stop) => {
-                v.nav.start(stop.at);
-                v.on_stop(stop);
-            }
-            Err(e) => {
-                v.source.message = format!("No cursor: {}", err_text(&e));
-                v.changed.source = true;
-                v.say(format!("cursor: {}", err_text(&e)), Tone::Error);
-            }
-        });
+        self.jobs.submit(
+            Lane::Replay,
+            |d| d.recording(),
+            |v, r| match r {
+                Ok(info) => {
+                    v.timeline.start = info.start;
+                    v.timeline.end = info.end;
+                    v.timeline.version += 1;
+                    v.recording = Some(info);
+                    v.changed.timeline = true;
+                    v.changed.status = true;
+                }
+                Err(e) => v.say(format!("recording: {}", err_text(&e)), Tone::Error),
+            },
+        );
+        self.jobs.submit(
+            Lane::Replay,
+            |d| d.cursor(),
+            |v, r| match r {
+                Ok(stop) => {
+                    v.nav.start(stop.at);
+                    v.on_stop(stop);
+                }
+                Err(e) => {
+                    v.source.message = format!("No cursor: {}", err_text(&e));
+                    v.changed.source = true;
+                    v.say(format!("cursor: {}", err_text(&e)), Tone::Error);
+                }
+            },
+        );
         self.jobs.submit(
             Lane::Replay,
             |d| d.timeline(MomentRange::all(), PageReq::first(10_000)),
@@ -302,22 +327,27 @@ impl Viewer {
     }
 
     fn poll_index(&mut self, delay: Option<Duration>) {
-        self.jobs.submit_after(Lane::Status, delay, |d| d.index_status(), |v, s: IndexStatus| {
-            let was_done = v.index.as_ref().is_some_and(|i| i.done);
-            let done = s.done;
-            v.index = Some(s);
-            v.changed.status = true;
-            if done && !was_done {
-                // counts and calls asked while the index was partial are asked again
-                for h in v.source.hits.values_mut() {
-                    h.forget_incomplete();
+        self.jobs.submit_after(
+            Lane::Status,
+            delay,
+            |d| d.index_status(),
+            |v, s: IndexStatus| {
+                let was_done = v.index.as_ref().is_some_and(|i| i.done);
+                let done = s.done;
+                v.index = Some(s);
+                v.changed.status = true;
+                if done && !was_done {
+                    // counts and calls asked while the index was partial are asked again
+                    for h in v.source.hits.values_mut() {
+                        h.forget_incomplete();
+                    }
+                    v.changed.source = true;
                 }
-                v.changed.source = true;
-            }
-            if !done {
-                v.poll_index(Some(INDEX_POLL));
-            }
-        });
+                if !done {
+                    v.poll_index(Some(INDEX_POLL));
+                }
+            },
+        );
     }
 
     // ---------------------------------------------------------------- navigation
@@ -326,7 +356,11 @@ impl Viewer {
     pub fn command(&mut self, cmd: Command) {
         match cmd {
             Command::OpenUrlBox => {
-                let url = self.stop.as_ref().map(|s| s.at.url().to_string()).unwrap_or_default();
+                let url = self
+                    .stop
+                    .as_ref()
+                    .map(|s| s.at.url().to_string())
+                    .unwrap_or_default();
                 self.url_box = UrlBox::Open(url);
                 self.changed.url_box = true;
             }
@@ -363,10 +397,14 @@ impl Viewer {
             move |d| -> hopper_core::Result<Option<Stop>> {
                 match req {
                     NavRequest::Command(Command::Step { kind, dir }) => d.step(kind, dir).map(Some),
-                    NavRequest::Command(Command::Continue { dir }) => d.run(dir, Until::Breakpoints).map(Some),
+                    NavRequest::Command(Command::Continue { dir }) => {
+                        d.run(dir, Until::Breakpoints).map(Some)
+                    }
                     NavRequest::Command(Command::Back) => d.back(),
                     NavRequest::Command(Command::Forward) => d.forward(),
-                    NavRequest::Command(Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint) => Ok(None),
+                    NavRequest::Command(
+                        Command::OpenUrlBox | Command::CopyUrl | Command::ToggleBreakpoint,
+                    ) => Ok(None),
                     NavRequest::Seek(m) => d.seek(m).map(Some),
                 }
             },
@@ -415,8 +453,14 @@ impl Viewer {
 
     /// The timeline was pressed or dragged at `fraction`.
     pub fn timeline_seek(&mut self, fraction: f64) {
-        let Some(target) = self.timeline.seek_target(fraction) else { return };
-        let current = if self.seek_in_flight { self.seek_next } else { self.stop.as_ref().map(|s| s.at) };
+        let Some(target) = self.timeline.seek_target(fraction) else {
+            return;
+        };
+        let current = if self.seek_in_flight {
+            self.seek_next
+        } else {
+            self.stop.as_ref().map(|s| s.at)
+        };
         if current != Some(target) {
             self.seek(target);
         }
@@ -429,7 +473,10 @@ impl Viewer {
                 if let Some(r) = &self.recording
                     && r.id != m.recording
                 {
-                    self.say(format!("That URL is for recording {}, not {}", m.recording, r.id), Tone::Error);
+                    self.say(
+                        format!("That URL is for recording {}, not {}", m.recording, r.id),
+                        Tone::Error,
+                    );
                     return;
                 }
                 self.url_box = UrlBox::Closed;
@@ -476,24 +523,28 @@ impl Viewer {
         self.stop = Some(stop);
         self.show_location(loc.as_ref(), Arrow::Execution);
         let generation = self.generation;
-        self.jobs.submit(Lane::Replay, move |d| d.frames(at, tid), move |v, r| {
-            if v.generation != generation {
-                return;
-            }
-            match r {
-                Ok(frames) => {
-                    v.frames = frames;
-                    v.changed.stack = true;
-                    v.load_locals();
-                    v.load_machine();
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.frames(at, tid),
+            move |v, r| {
+                if v.generation != generation {
+                    return;
                 }
-                Err(e) => {
-                    v.say(format!("frames: {}", err_text(&e)), Tone::Error);
-                    v.locals.set_roots(Vec::new());
-                    v.changed.locals = true;
+                match r {
+                    Ok(frames) => {
+                        v.frames = frames;
+                        v.changed.stack = true;
+                        v.load_locals();
+                        v.load_machine();
+                    }
+                    Err(e) => {
+                        v.say(format!("frames: {}", err_text(&e)), Tone::Error);
+                        v.locals.set_roots(Vec::new());
+                        v.changed.locals = true;
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// Selects stack frame `i`: its location in the source, its locals.
@@ -504,7 +555,14 @@ impl Viewer {
         self.selected_frame = i;
         self.changed.stack = true;
         let loc = self.frames[i].location.clone();
-        self.show_location(loc.as_ref(), if i == 0 { Arrow::Execution } else { Arrow::Frame });
+        self.show_location(
+            loc.as_ref(),
+            if i == 0 {
+                Arrow::Execution
+            } else {
+                Arrow::Frame
+            },
+        );
         self.load_locals();
         self.load_machine();
     }
@@ -512,16 +570,31 @@ impl Viewer {
     fn arrows(&self) -> Vec<ArrowAt> {
         let file = self.source.file.as_deref();
         let mut out = Vec::new();
-        let here = |f: &Frame| f.location.as_ref().filter(|l| Some(l.file.as_str()) == file).map(|l| l.line);
+        let here = |f: &Frame| {
+            f.location
+                .as_ref()
+                .filter(|l| Some(l.file.as_str()) == file)
+                .map(|l| l.line)
+        };
         if let Some(line) = self.frames.first().and_then(here).or_else(|| {
-            self.stop.as_ref().and_then(|s| s.location.as_ref()).filter(|l| Some(l.file.as_str()) == file).map(|l| l.line)
+            self.stop
+                .as_ref()
+                .and_then(|s| s.location.as_ref())
+                .filter(|l| Some(l.file.as_str()) == file)
+                .map(|l| l.line)
         }) {
-            out.push(ArrowAt { line, arrow: Arrow::Execution });
+            out.push(ArrowAt {
+                line,
+                arrow: Arrow::Execution,
+            });
         }
         if self.selected_frame > 0
             && let Some(line) = self.frames.get(self.selected_frame).and_then(here)
         {
-            out.push(ArrowAt { line, arrow: Arrow::Frame });
+            out.push(ArrowAt {
+                line,
+                arrow: Arrow::Frame,
+            });
         }
         out
     }
@@ -552,38 +625,47 @@ impl Viewer {
         }
         self.source.loading = Some(file.to_string());
         let f = file.to_string();
-        self.jobs.submit(Lane::Replay, move |d| (f.clone(), d.source_text(&f)), |v, (f, r)| {
-            if v.source.loading.as_deref() == Some(f.as_str()) {
-                v.source.loading = None;
-            }
-            match r {
-                Ok(text) => {
-                    v.source.texts.insert(f.clone(), text.clone());
-                    // show it if it is still the file the cursor (or selected frame) is in
-                    let wanted = v
-                        .frames
-                        .get(v.selected_frame)
-                        .and_then(|fr| fr.location.as_ref())
-                        .or_else(|| v.stop.as_ref().and_then(|s| s.location.as_ref()))
-                        .map(|l| l.file.clone());
-                    if wanted.as_deref() == Some(f.as_str()) || wanted.is_none() {
-                        v.set_source(&f, &text);
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| (f.clone(), d.source_text(&f)),
+            |v, (f, r)| {
+                if v.source.loading.as_deref() == Some(f.as_str()) {
+                    v.source.loading = None;
+                }
+                match r {
+                    Ok(text) => {
+                        v.source.texts.insert(f.clone(), text.clone());
+                        // show it if it is still the file the cursor (or selected frame) is in
+                        let wanted = v
+                            .frames
+                            .get(v.selected_frame)
+                            .and_then(|fr| fr.location.as_ref())
+                            .or_else(|| v.stop.as_ref().and_then(|s| s.location.as_ref()))
+                            .map(|l| l.file.clone());
+                        if wanted.as_deref() == Some(f.as_str()) || wanted.is_none() {
+                            v.set_source(&f, &text);
+                        }
+                    }
+                    Err(e) => {
+                        v.source.file = None;
+                        v.source.doc = None;
+                        v.source.generation += 1;
+                        v.source.message = format!("{f}: {}", err_text(&e));
+                        v.changed.source = true;
                     }
                 }
-                Err(e) => {
-                    v.source.file = None;
-                    v.source.doc = None;
-                    v.source.generation += 1;
-                    v.source.message = format!("{f}: {}", err_text(&e));
-                    v.changed.source = true;
-                }
-            }
-        });
+            },
+        );
     }
 
     fn set_source(&mut self, file: &str, text: &str) {
-        let config = quire_core::EditorConfig { read_only: true, ..quire_core::EditorConfig::default() };
-        self.source.doc = Some(Rc::new(RefCell::new(quire_core::Document::new(text, config))));
+        let config = quire_core::EditorConfig {
+            read_only: true,
+            ..quire_core::EditorConfig::default()
+        };
+        self.source.doc = Some(Rc::new(RefCell::new(quire_core::Document::new(
+            text, config,
+        ))));
         self.source.file = Some(file.to_string());
         self.source.generation += 1;
         self.source.arrows = self.arrows();
@@ -592,8 +674,15 @@ impl Viewer {
 
     /// The source pane laid out `visible` lines of the current file: ask for their hit counts.
     pub fn lines_shown(&mut self, visible: &[u32]) {
-        let Some(file) = self.source.file.clone() else { return };
-        let ask = self.source.hits.entry(file.clone()).or_default().take_unasked(visible.iter().copied());
+        let Some(file) = self.source.file.clone() else {
+            return;
+        };
+        let ask = self
+            .source
+            .hits
+            .entry(file.clone())
+            .or_default()
+            .take_unasked(visible.iter().copied());
         if ask.is_empty() {
             return;
         }
@@ -604,7 +693,11 @@ impl Viewer {
                 move |d| {
                     ask.into_iter()
                         .map(|line| {
-                            let count = match d.line_hits(SourceLoc::new(file.clone(), line), MomentRange::all(), PageReq::first(1)) {
+                            let count = match d.line_hits(
+                                SourceLoc::new(file.clone(), line),
+                                MomentRange::all(),
+                                PageReq::first(1),
+                            ) {
                                 Ok(p) => HitCount::Known {
                                     count: p.total.unwrap_or(p.items.len() as u64),
                                     partial: matches!(p.completeness, Completeness::Partial { .. }),
@@ -628,33 +721,55 @@ impl Viewer {
 
     /// A press on a line's hit count: every execution of that line, in the query pane.
     pub fn line_executions(&mut self, line: u32) {
-        let Some(file) = self.source.file.clone() else { return };
+        let Some(file) = self.source.file.clone() else {
+            return;
+        };
         let loc = SourceLoc::new(file, line);
         let l2 = loc.clone();
         self.local_query = None;
-        self.jobs.submit(Lane::Replay, move |d| d.line_hits(l2, MomentRange::all(), PageReq::first(500)), move |v, r| {
-            v.query.clear();
-            match r {
-                Ok(page) => {
-                    let total = page.total.unwrap_or(page.items.len() as u64);
-                    let partial = if matches!(page.completeness, Completeness::Partial { .. }) { " (index still building)" } else { "" };
-                    v.query.push(QueryLine::text(0, format!("Executions of {loc}: {total}{partial}"), Tone::Heading));
-                    for (i, m) in page.items.iter().enumerate() {
-                        let (text, tone, action) = v.moment_cell(*m);
-                        v.query.push(QueryLine {
-                            depth: 1,
-                            cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(text, tone)],
-                            action,
-                        });
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.line_hits(l2, MomentRange::all(), PageReq::first(500)),
+            move |v, r| {
+                v.query.clear();
+                match r {
+                    Ok(page) => {
+                        let total = page.total.unwrap_or(page.items.len() as u64);
+                        let partial = if matches!(page.completeness, Completeness::Partial { .. }) {
+                            " (index still building)"
+                        } else {
+                            ""
+                        };
+                        v.query.push(QueryLine::text(
+                            0,
+                            format!("Executions of {loc}: {total}{partial}"),
+                            Tone::Heading,
+                        ));
+                        for (i, m) in page.items.iter().enumerate() {
+                            let (text, tone, action) = v.moment_cell(*m);
+                            v.query.push(QueryLine {
+                                depth: 1,
+                                cells: vec![
+                                    RowCell::new(format!("#{}", i + 1), Tone::Muted),
+                                    RowCell::mono(text, tone),
+                                ],
+                                action,
+                            });
+                        }
+                        if page.items.is_empty() {
+                            v.query
+                                .push(QueryLine::text(1, "never executed", Tone::Muted));
+                        }
                     }
-                    if page.items.is_empty() {
-                        v.query.push(QueryLine::text(1, "never executed", Tone::Muted));
-                    }
+                    Err(e) => v.query.push(QueryLine::text(
+                        0,
+                        format!("{loc}: {}", err_text(&e)),
+                        Tone::Error,
+                    )),
                 }
-                Err(e) => v.query.push(QueryLine::text(0, format!("{loc}: {}", err_text(&e)), Tone::Error)),
-            }
-            v.changed.query = true;
-        });
+                v.changed.query = true;
+            },
+        );
     }
 
     // ---------------------------------------------------------------- locals
@@ -662,25 +777,38 @@ impl Viewer {
     fn load_locals(&mut self) {
         let Some(stop) = &self.stop else { return };
         let at = stop.at;
-        let frame = self.frames.get(self.selected_frame).map(|f| f.id).unwrap_or(FrameId { tid: stop.tid, depth: 0 });
+        let frame = self
+            .frames
+            .get(self.selected_frame)
+            .map(|f| f.id)
+            .unwrap_or(FrameId {
+                tid: stop.tid,
+                depth: 0,
+            });
         let generation = self.generation;
         let depth = self.selected_frame;
         self.locals = LocalsTree::new(PAGE);
         self.locals_selected = None;
         self.changed.locals = true;
-        self.jobs.submit(Lane::Replay, move |d| d.locals(at, frame), move |v, r| {
-            if v.generation != generation || v.selected_frame != depth {
-                return;
-            }
-            match r {
-                Ok(vals) => v.locals.set_roots(vals.into_iter().map(|x| (x.handle.clone(), x)).collect()),
-                Err(e) => {
-                    v.locals.set_roots(Vec::new());
-                    v.say(format!("locals: {}", err_text(&e)), Tone::Error);
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.locals(at, frame),
+            move |v, r| {
+                if v.generation != generation || v.selected_frame != depth {
+                    return;
                 }
-            }
-            v.changed.locals = true;
-        });
+                match r {
+                    Ok(vals) => v
+                        .locals
+                        .set_roots(vals.into_iter().map(|x| (x.handle.clone(), x)).collect()),
+                    Err(e) => {
+                        v.locals.set_roots(Vec::new());
+                        v.say(format!("locals: {}", err_text(&e)), Tone::Error);
+                    }
+                }
+                v.changed.locals = true;
+            },
+        );
     }
 
     /// Toggles locals row `i` (lazily fetching the value's children).
@@ -697,19 +825,28 @@ impl Viewer {
         let generation = self.generation;
         let page = f.page;
         let p2 = parent.clone();
-        self.jobs.submit(Lane::Replay, move |d| d.children(&p2, page), move |v, r| {
-            if v.generation != generation {
-                return;
-            }
-            match r {
-                Ok(kids) => v.locals.children_loaded(Some(&parent), page.offset, kids.into_iter().map(|x| (x.handle.clone(), x)).collect(), total),
-                Err(e) => {
-                    v.locals.fetch_failed(Some(&parent));
-                    v.say(format!("children: {}", err_text(&e)), Tone::Error);
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.children(&p2, page),
+            move |v, r| {
+                if v.generation != generation {
+                    return;
                 }
-            }
-            v.changed.locals = true;
-        });
+                match r {
+                    Ok(kids) => v.locals.children_loaded(
+                        Some(&parent),
+                        page.offset,
+                        kids.into_iter().map(|x| (x.handle.clone(), x)).collect(),
+                        total,
+                    ),
+                    Err(e) => {
+                        v.locals.fetch_failed(Some(&parent));
+                        v.say(format!("children: {}", err_text(&e)), Tone::Error);
+                    }
+                }
+                v.changed.locals = true;
+            },
+        );
     }
 
     /// Selects locals row `i`: where its value came from and how it changed, in the query pane,
@@ -723,26 +860,42 @@ impl Viewer {
             }
             return;
         };
-        let Some(view) = self.locals.item(&key).cloned() else { return };
+        let Some(view) = self.locals.item(&key).cloned() else {
+            return;
+        };
         self.query_id += 1;
         let id = self.query_id;
         self.local_query = Some(LocalQuery {
             id,
-            origin: vec![QueryLine::text(0, format!("Where did {} come from?", view.name), Tone::Heading), QueryLine::text(1, "tracing…", Tone::Muted)],
-            history: vec![QueryLine::text(0, format!("History of {}", view.name), Tone::Heading), QueryLine::text(1, "loading…", Tone::Muted)],
+            origin: vec![
+                QueryLine::text(
+                    0,
+                    format!("Where did {} come from?", view.name),
+                    Tone::Heading,
+                ),
+                QueryLine::text(1, "tracing…", Tone::Muted),
+            ],
+            history: vec![
+                QueryLine::text(0, format!("History of {}", view.name), Tone::Heading),
+                QueryLine::text(1, "loading…", Tone::Muted),
+            ],
         });
         self.show_local_query();
         if let Some(Place::Memory { addr, .. }) = view.place {
             self.show_memory(addr, view.name.clone());
         }
         let (k2, v2) = (key.clone(), view.clone());
-        self.jobs.submit(Lane::Replay, move |d| d.origin(&key, Budget::default()), move |v, r| {
-            let lines = origin_lines(&view, r, v.recording.as_ref());
-            if let Some(q) = v.local_query.as_mut().filter(|q| q.id == id) {
-                q.origin = lines;
-                v.show_local_query();
-            }
-        });
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.origin(&key, Budget::default()),
+            move |v, r| {
+                let lines = origin_lines(&view, r, v.recording.as_ref());
+                if let Some(q) = v.local_query.as_mut().filter(|q| q.id == id) {
+                    q.origin = lines;
+                    v.show_local_query();
+                }
+            },
+        );
         self.jobs.submit(
             Lane::Replay,
             move |d| d.value_history(&k2, MomentRange::all(), PageReq::first(HISTORY_LIMIT)),
@@ -776,18 +929,24 @@ impl Viewer {
     // ---------------------------------------------------------------- breakpoints
 
     fn refresh_breakpoints(&mut self) {
-        self.jobs.submit(Lane::Replay, |d| d.breakpoints(), |v, r| match r {
-            Ok(bps) => {
-                v.breakpoints = bps;
-                v.changed.source = true;
-            }
-            Err(e) => v.say(format!("breakpoints: {}", err_text(&e)), Tone::Error),
-        });
+        self.jobs.submit(
+            Lane::Replay,
+            |d| d.breakpoints(),
+            |v, r| match r {
+                Ok(bps) => {
+                    v.breakpoints = bps;
+                    v.changed.source = true;
+                }
+                Err(e) => v.say(format!("breakpoints: {}", err_text(&e)), Tone::Error),
+            },
+        );
     }
 
     /// The 1-based lines of the shown file that have a user breakpoint.
     pub fn breakpoint_lines(&self) -> Vec<u32> {
-        let Some(file) = self.source.file.as_deref() else { return Vec::new() };
+        let Some(file) = self.source.file.as_deref() else {
+            return Vec::new();
+        };
         self.breakpoints
             .iter()
             .filter_map(|b| match &b.location {
@@ -799,28 +958,46 @@ impl Viewer {
 
     /// Adds a breakpoint on `line` of the shown file, or removes the one there.
     pub fn toggle_breakpoint(&mut self, line: u32) {
-        let Some(file) = self.source.file.clone() else { return };
+        let Some(file) = self.source.file.clone() else {
+            return;
+        };
         let existing = self.breakpoints.iter().find(|b| match &b.location {
             BreakLocation::Source(l) => l.line == line && (l.file == file || l.file_matches(&file)),
             _ => false,
         });
         match existing.map(|b| b.id) {
-            Some(id) => self.jobs.submit(Lane::Replay, move |d| d.remove_breakpoint(id), move |v, r| {
-                match r {
-                    Ok(()) => v.say(format!("Removed the breakpoint on line {line}"), Tone::Muted),
-                    Err(e) => v.say(format!("breakpoint: {}", err_text(&e)), Tone::Error),
-                }
-                v.refresh_breakpoints();
-            }),
-            None => {
-                let loc = SourceLoc::new(file, line);
-                self.jobs.submit(Lane::Replay, move |d| d.add_breakpoint(BreakLocation::Source(loc)), move |v, r| {
+            Some(id) => self.jobs.submit(
+                Lane::Replay,
+                move |d| d.remove_breakpoint(id),
+                move |v, r| {
                     match r {
-                        Ok(b) => v.say(format!("Breakpoint {} on line {line}", b.id.0), Tone::Muted),
-                        Err(e) => v.say(format!("breakpoint on line {line}: {}", err_text(&e)), Tone::Error),
+                        Ok(()) => v.say(
+                            format!("Removed the breakpoint on line {line}"),
+                            Tone::Muted,
+                        ),
+                        Err(e) => v.say(format!("breakpoint: {}", err_text(&e)), Tone::Error),
                     }
                     v.refresh_breakpoints();
-                });
+                },
+            ),
+            None => {
+                let loc = SourceLoc::new(file, line);
+                self.jobs.submit(
+                    Lane::Replay,
+                    move |d| d.add_breakpoint(BreakLocation::Source(loc)),
+                    move |v, r| {
+                        match r {
+                            Ok(b) => {
+                                v.say(format!("Breakpoint {} on line {line}", b.id.0), Tone::Muted)
+                            }
+                            Err(e) => v.say(
+                                format!("breakpoint on line {line}: {}", err_text(&e)),
+                                Tone::Error,
+                            ),
+                        }
+                        v.refresh_breakpoints();
+                    },
+                );
             }
         }
     }
@@ -828,59 +1005,78 @@ impl Viewer {
     // ---------------------------------------------------------------- machine state
 
     fn process(&self) -> Option<ProcessId> {
-        self.recording.as_ref().and_then(|r| r.processes.first()).map(|p| p.id)
+        self.recording
+            .as_ref()
+            .and_then(|r| r.processes.first())
+            .map(|p| p.id)
     }
 
     /// The selected frame's code from its PC, and the stopped thread's registers.
     fn load_machine(&mut self) {
         let Some(stop) = &self.stop else { return };
         let (at, tid) = (stop.at, stop.tid);
-        let pc = self.frames.get(self.selected_frame).map(|f| f.pc).unwrap_or(stop.pc);
+        let pc = self
+            .frames
+            .get(self.selected_frame)
+            .map(|f| f.pc)
+            .unwrap_or(stop.pc);
         self.machine.pc = Some(pc);
         self.changed.machine = true;
         let generation = self.generation;
         match self.process() {
-            Some(process) => self.jobs.submit(Lane::Replay, move |d| d.disassemble(at, process, pc, DISASM_COUNT), move |v, r| {
+            Some(process) => self.jobs.submit(
+                Lane::Replay,
+                move |d| d.disassemble(at, process, pc, DISASM_COUNT),
+                move |v, r| {
+                    if v.generation != generation {
+                        return;
+                    }
+                    match r {
+                        Ok(insns) => {
+                            v.machine.instructions = insns;
+                            v.machine.message = None;
+                        }
+                        Err(e) => {
+                            v.machine.instructions.clear();
+                            v.machine.message = Some(format!("disassembly: {}", err_text(&e)));
+                        }
+                    }
+                    v.changed.machine = true;
+                },
+            ),
+            None => self.machine.message = Some("no process to disassemble".into()),
+        }
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.registers(at, tid),
+            move |v, r| {
                 if v.generation != generation {
                     return;
                 }
                 match r {
-                    Ok(insns) => {
-                        v.machine.instructions = insns;
-                        v.machine.message = None;
+                    Ok(regs) => {
+                        // the memory pane shows the stack pointer until a local or an address is chosen
+                        if let Some(sp) = regs.sp()
+                            && (v.memory.addr.is_none() || v.memory.label == STACK_POINTER)
+                        {
+                            v.show_memory(sp, STACK_POINTER.into());
+                        }
+                        v.machine.registers = Some(regs);
                     }
                     Err(e) => {
-                        v.machine.instructions.clear();
-                        v.machine.message = Some(format!("disassembly: {}", err_text(&e)));
+                        v.machine.registers = None;
+                        v.machine.message = Some(format!("registers: {}", err_text(&e)));
                     }
                 }
                 v.changed.machine = true;
-            }),
-            None => self.machine.message = Some("no process to disassemble".into()),
-        }
-        self.jobs.submit(Lane::Replay, move |d| d.registers(at, tid), move |v, r| {
-            if v.generation != generation {
-                return;
-            }
-            match r {
-                Ok(regs) => {
-                    // the memory pane shows the stack pointer until a local or an address is chosen
-                    if let Some(sp) = regs.sp()
-                        && (v.memory.addr.is_none() || v.memory.label == STACK_POINTER)
-                    {
-                        v.show_memory(sp, STACK_POINTER.into());
-                    }
-                    v.machine.registers = Some(regs);
-                }
-                Err(e) => {
-                    v.machine.registers = None;
-                    v.machine.message = Some(format!("registers: {}", err_text(&e)));
-                }
-            }
-            v.changed.machine = true;
-        });
+            },
+        );
         // the memory pane follows the cursor (the stack pointer is read again with the registers)
-        if let Some(addr) = self.memory.addr.filter(|_| self.memory.label != STACK_POINTER) {
+        if let Some(addr) = self
+            .memory
+            .addr
+            .filter(|_| self.memory.label != STACK_POINTER)
+        {
             let label = self.memory.label.clone();
             self.show_memory(addr, label);
         }
@@ -888,27 +1084,33 @@ impl Viewer {
 
     /// Reads [`MEMORY_BYTES`] at `addr` at the cursor into the memory pane.
     pub fn show_memory(&mut self, addr: u64, label: String) {
-        let (Some(stop), Some(process)) = (&self.stop, self.process()) else { return };
+        let (Some(stop), Some(process)) = (&self.stop, self.process()) else {
+            return;
+        };
         let at = stop.at;
         self.memory.addr = Some(addr);
         self.memory.label = label;
         self.changed.memory = true;
-        self.jobs.submit(Lane::Replay, move |d| read_some(d, at, process, addr, MEMORY_BYTES), move |v, r| {
-            if v.memory.addr != Some(addr) {
-                return;
-            }
-            match r {
-                Ok(bytes) => {
-                    v.memory.bytes = bytes;
-                    v.memory.message = None;
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| read_some(d, at, process, addr, MEMORY_BYTES),
+            move |v, r| {
+                if v.memory.addr != Some(addr) {
+                    return;
                 }
-                Err(e) => {
-                    v.memory.bytes.clear();
-                    v.memory.message = Some(err_text(&e));
+                match r {
+                    Ok(bytes) => {
+                        v.memory.bytes = bytes;
+                        v.memory.message = None;
+                    }
+                    Err(e) => {
+                        v.memory.bytes.clear();
+                        v.memory.message = Some(err_text(&e));
+                    }
                 }
-            }
-            v.changed.memory = true;
-        });
+                v.changed.memory = true;
+            },
+        );
     }
 
     /// The memory pane's address box: a hex (`0x…`) or decimal address.
@@ -926,7 +1128,11 @@ impl Viewer {
 
     /// The query pane's row `i` was activated.
     pub fn query_activate(&mut self, i: usize) {
-        if let Some(QueryLine { action: Some(QueryAction::Seek(m)), .. }) = self.query.get(i).cloned() {
+        if let Some(QueryLine {
+            action: Some(QueryAction::Seek(m)),
+            ..
+        }) = self.query.get(i).cloned()
+        {
             self.seek(m);
         }
     }
@@ -940,45 +1146,79 @@ impl Viewer {
         self.local_query = None;
         let Some(stop) = &self.stop else { return };
         let at = stop.at;
-        let frame = self.frames.get(self.selected_frame).map(|f| f.id).unwrap_or(FrameId { tid: stop.tid, depth: 0 });
-        self.jobs.submit(Lane::Replay, {
-            let expr = expr.clone();
-            move |d| d.eval(at, frame, &expr)
-        }, move |v, r| {
-            match r {
-                Ok(val) => {
-                    let (summary, tone) = value_summary(&val);
-                    v.query.push(QueryLine {
+        let frame = self
+            .frames
+            .get(self.selected_frame)
+            .map(|f| f.id)
+            .unwrap_or(FrameId {
+                tid: stop.tid,
+                depth: 0,
+            });
+        self.jobs.submit(
+            Lane::Replay,
+            {
+                let expr = expr.clone();
+                move |d| d.eval(at, frame, &expr)
+            },
+            move |v, r| {
+                match r {
+                    Ok(val) => {
+                        let (summary, tone) = value_summary(&val);
+                        v.query.push(QueryLine {
+                            depth: 0,
+                            cells: vec![
+                                RowCell::mono(format!("> {expr}"), Tone::Accent),
+                                RowCell::mono(summary, tone),
+                                RowCell::new(val.type_name.clone(), Tone::Muted),
+                            ],
+                            action: None,
+                        });
+                    }
+                    Err(e) => v.query.push(QueryLine {
                         depth: 0,
-                        cells: vec![RowCell::mono(format!("> {expr}"), Tone::Accent), RowCell::mono(summary, tone), RowCell::new(val.type_name.clone(), Tone::Muted)],
+                        cells: vec![
+                            RowCell::mono(format!("> {expr}"), Tone::Accent),
+                            RowCell::new(err_text(&e), Tone::Error),
+                        ],
                         action: None,
-                    });
+                    }),
                 }
-                Err(e) => v.query.push(QueryLine { depth: 0, cells: vec![RowCell::mono(format!("> {expr}"), Tone::Accent), RowCell::new(err_text(&e), Tone::Error)], action: None }),
-            }
-            v.changed.query = true;
-        });
+                v.changed.query = true;
+            },
+        );
     }
 
     // ---------------------------------------------------------------- calls
 
     fn fetch_calls(&mut self, f: Fetch<CallId>) {
-        let filter = CallFilter { parent: f.parent, ..CallFilter::default() };
+        let filter = CallFilter {
+            parent: f.parent,
+            ..CallFilter::default()
+        };
         let page = f.page;
         let parent = f.parent;
-        self.jobs.submit(Lane::Replay, move |d| d.calls(filter, page), move |v, r| {
-            match r {
-                Ok(p) => {
-                    let items = p.items.into_iter().map(|c| (c.id, c)).collect();
-                    v.calls.borrow_mut().children_loaded(parent.as_ref(), page.offset, items, p.total);
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.calls(filter, page),
+            move |v, r| {
+                match r {
+                    Ok(p) => {
+                        let items = p.items.into_iter().map(|c| (c.id, c)).collect();
+                        v.calls.borrow_mut().children_loaded(
+                            parent.as_ref(),
+                            page.offset,
+                            items,
+                            p.total,
+                        );
+                    }
+                    Err(e) => {
+                        v.calls.borrow_mut().fetch_failed(parent.as_ref());
+                        v.say(format!("calls: {}", err_text(&e)), Tone::Error);
+                    }
                 }
-                Err(e) => {
-                    v.calls.borrow_mut().fetch_failed(parent.as_ref());
-                    v.say(format!("calls: {}", err_text(&e)), Tone::Error);
-                }
-            }
-            v.changed.calls = true;
-        });
+                v.changed.calls = true;
+            },
+        );
     }
 
     /// Activates call-tree row `i`: expands or collapses it, or loads the next page.
@@ -994,27 +1234,61 @@ impl Viewer {
     pub fn select_call(&mut self, i: usize) {
         self.calls_selected = Some(i);
         let tree = self.calls.borrow();
-        let Some(crate::tree::Row::Node { key, .. }) = tree.row(i).cloned() else { return };
-        let Some(c) = tree.item(&key).cloned() else { return };
+        let Some(crate::tree::Row::Node { key, .. }) = tree.row(i).cloned() else {
+            return;
+        };
+        let Some(c) = tree.item(&key).cloned() else {
+            return;
+        };
         drop(tree);
-        let mut q = vec![QueryLine::text(0, format!("Call of {}", c.function), Tone::Heading)];
+        let mut q = vec![QueryLine::text(
+            0,
+            format!("Call of {}", c.function),
+            Tone::Heading,
+        )];
         if let Some(l) = &c.location {
             q.push(QueryLine::text(1, format!("at {l}"), Tone::Muted));
         }
         let (entry, tone, action) = self.moment_cell(c.entry);
-        q.push(QueryLine { depth: 1, cells: vec![RowCell::new("entry", Tone::Normal), RowCell::mono(entry, tone)], action });
+        q.push(QueryLine {
+            depth: 1,
+            cells: vec![
+                RowCell::new("entry", Tone::Normal),
+                RowCell::mono(entry, tone),
+            ],
+            action,
+        });
         match c.exit {
             Some(x) => {
                 let (exit, tone, action) = self.moment_cell(x);
-                q.push(QueryLine { depth: 1, cells: vec![RowCell::new("exit", Tone::Normal), RowCell::mono(exit, tone)], action });
+                q.push(QueryLine {
+                    depth: 1,
+                    cells: vec![
+                        RowCell::new("exit", Tone::Normal),
+                        RowCell::mono(exit, tone),
+                    ],
+                    action,
+                });
             }
-            None => q.push(QueryLine::text(1, "never returned inside the recording", Tone::Muted)),
+            None => q.push(QueryLine::text(
+                1,
+                "never returned inside the recording",
+                Tone::Muted,
+            )),
         }
-        q.push(QueryLine::text(1, format!("{} direct calls, thread {}", c.child_count, c.tid), Tone::Muted));
+        q.push(QueryLine::text(
+            1,
+            format!("{} direct calls, thread {}", c.child_count, c.tid),
+            Tone::Muted,
+        ));
         if other_run(self.recording.as_ref(), &c.entry) {
             q.push(QueryLine::text(1, "From the reference run (a second run of the program): its moments are not positions in this session.", Tone::Muted));
         } else {
-            q.push(QueryLine::text(1, "Double-click a row here to jump; double-click a call to expand it.", Tone::Muted));
+            q.push(QueryLine::text(
+                1,
+                "Double-click a row here to jump; double-click a call to expand it.",
+                Tone::Muted,
+            ));
         }
         self.local_query = None;
         self.query = q;
@@ -1031,7 +1305,11 @@ impl Viewer {
         match &self.stop {
             Some(s) => {
                 let f = s.function.clone().unwrap_or_else(|| format!("{:#x}", s.pc));
-                let at = s.location.as_ref().map(|l| format!(" at {l}")).unwrap_or_default();
+                let at = s
+                    .location
+                    .as_ref()
+                    .map(|l| format!(" at {l}"))
+                    .unwrap_or_default();
                 (format!("{f}{at}"), Tone::Normal)
             }
             None => ("Opening…".into(), Tone::Muted),
@@ -1042,10 +1320,16 @@ impl Viewer {
     pub fn index_text(&self) -> String {
         match &self.index {
             None => String::new(),
-            Some(s) if s.error.is_some() => format!("index failed: {}", s.error.as_deref().unwrap_or("")),
+            Some(s) if s.error.is_some() => {
+                format!("index failed: {}", s.error.as_deref().unwrap_or(""))
+            }
             Some(s) if s.done => "index complete".into(),
             Some(s) => {
-                let phases: Vec<String> = s.phases.iter().map(|(n, p)| format!("{n} {:.0}%", p * 100.0)).collect();
+                let phases: Vec<String> = s
+                    .phases
+                    .iter()
+                    .map(|(n, p)| format!("{n} {:.0}%", p * 100.0))
+                    .collect();
                 format!("indexing: {}", phases.join(", "))
             }
         }
@@ -1065,12 +1349,21 @@ pub fn value_summary(v: &ValueView) -> (String, Tone) {
     match &v.ownership {
         OwnershipState::Live | OwnershipState::Unknown => (v.summary.clone(), Tone::Normal),
         OwnershipState::MovedOut { to, at, .. } => {
-            let to = to.as_deref().map(|t| format!(" to {t}")).unwrap_or_default();
-            let at = at.as_ref().map(|l| format!(" at {}:{}", short_file(&l.file), l.line)).unwrap_or_default();
+            let to = to
+                .as_deref()
+                .map(|t| format!(" to {t}"))
+                .unwrap_or_default();
+            let at = at
+                .as_ref()
+                .map(|l| format!(" at {}:{}", short_file(&l.file), l.line))
+                .unwrap_or_default();
             (format!("(moved out{to}{at}) {}", v.summary), Tone::Muted)
         }
         OwnershipState::Dropped { at, .. } => {
-            let at = at.as_ref().map(|l| format!(" at {}:{}", short_file(&l.file), l.line)).unwrap_or_default();
+            let at = at
+                .as_ref()
+                .map(|l| format!(" at {}:{}", short_file(&l.file), l.line))
+                .unwrap_or_default();
             (format!("(dropped{at}) {}", v.summary), Tone::Muted)
         }
     }
@@ -1118,7 +1411,9 @@ fn machine(k: MachineKind) -> &'static str {
 fn place_text(p: &hopper_core::Place) -> String {
     match p {
         hopper_core::Place::Memory { addr, len, .. } => format!("{addr:#x}+{len}"),
-        hopper_core::Place::Register { reg, frame } => format!("{} (frame {})", reg.name(), frame.depth),
+        hopper_core::Place::Register { reg, frame } => {
+            format!("{} (frame {})", reg.name(), frame.depth)
+        }
     }
 }
 
@@ -1129,7 +1424,13 @@ pub fn other_run(recording: Option<&RecordingInfo>, m: &Moment) -> bool {
 }
 
 /// Reads up to `len` bytes at `addr`, fewer when the end of the range is unmapped.
-fn read_some(d: &dyn Debugger, at: Moment, process: ProcessId, addr: u64, len: u64) -> hopper_core::Result<Vec<u8>> {
+fn read_some(
+    d: &dyn Debugger,
+    at: Moment,
+    process: ProcessId,
+    addr: u64,
+    len: u64,
+) -> hopper_core::Result<Vec<u8>> {
     let mut n = len;
     loop {
         match d.memory(at, process, addr, n) {
@@ -1150,7 +1451,10 @@ fn flow(o: &OwnershipLabel) -> String {
 }
 
 fn label_loc(o: &OwnershipLabel) -> String {
-    o.span.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default()
+    o.span
+        .as_ref()
+        .map(|l| format!("{}:{}", short_file(&l.file), l.line))
+        .unwrap_or_default()
 }
 
 /// The hops of a chain as the source sees them: the references first, then the value's own
@@ -1160,7 +1464,9 @@ pub fn source_groups(chain: &OriginChain) -> Vec<Vec<&OriginHop>> {
     let mut groups: Vec<Vec<&OriginHop>> = Vec::new();
     for h in chain.references.iter().chain(&chain.hops) {
         let same = |g: &Vec<&OriginHop>| match (&g[0].ownership, &h.ownership) {
-            (Some(a), Some(b)) => (a.kind, &a.src, &a.dst, &a.span) == (b.kind, &b.src, &b.dst, &b.span),
+            (Some(a), Some(b)) => {
+                (a.kind, &a.src, &a.dst, &a.span) == (b.kind, &b.src, &b.dst, &b.span)
+            }
             _ => false,
         };
         match groups.last_mut() {
@@ -1175,8 +1481,16 @@ pub fn source_groups(chain: &OriginChain) -> Vec<Vec<&OriginHop>> {
 /// label and confidence, or the machine copy when the sidecar labelled none), the events
 /// underneath it, then its machine hops (with an arithmetic hop's operands), and how the chain
 /// ended. Each row seeks to its moment.
-pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recording: Option<&RecordingInfo>) -> Vec<QueryLine> {
-    let mut q = vec![QueryLine::text(0, format!("Where did {} = {} come from?", of.name, of.summary), Tone::Heading)];
+pub fn origin_lines(
+    of: &ValueView,
+    r: hopper_core::Result<OriginChain>,
+    recording: Option<&RecordingInfo>,
+) -> Vec<QueryLine> {
+    let mut q = vec![QueryLine::text(
+        0,
+        format!("Where did {} = {} come from?", of.name, of.summary),
+        Tone::Heading,
+    )];
     let chain = match r {
         Ok(c) => c,
         Err(e) => {
@@ -1185,30 +1499,60 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recordi
         }
     };
     let seek = |m: Moment| (!other_run(recording, &m)).then_some(QueryAction::Seek(m));
-    if chain.references.iter().chain(&chain.hops).any(|h| other_run(recording, &h.at)) {
+    if chain
+        .references
+        .iter()
+        .chain(&chain.hops)
+        .any(|h| other_run(recording, &h.at))
+    {
         q.push(QueryLine::text(1, "Traced on another run of the program (a stepped window): its moments are not positions in this session.", Tone::Muted));
     }
     for (i, group) in source_groups(&chain).iter().enumerate() {
         let first = group[0];
-        let loc = first.location.as_ref().map(|l| format!("{}:{}", short_file(&l.file), l.line)).unwrap_or_default();
+        let loc = first
+            .location
+            .as_ref()
+            .map(|l| format!("{}:{}", short_file(&l.file), l.line))
+            .unwrap_or_default();
         let cells = match &first.ownership {
             Some(o) => {
                 let (conf, tone) = confidence(o.confidence);
                 vec![
-                    RowCell::new(format!("{}  {}", i + 1, ownership_kind(o.kind)), Tone::Heading),
+                    RowCell::new(
+                        format!("{}  {}", i + 1, ownership_kind(o.kind)),
+                        Tone::Heading,
+                    ),
                     RowCell::mono(flow(o), Tone::Normal),
                     RowCell::new(label_loc(o), Tone::Muted),
                     RowCell::new(conf, tone),
                 ]
             }
             None => vec![
-                RowCell::new(format!("{}  {}", i + 1, machine(first.machine)), Tone::Normal),
-                RowCell::mono(format!("{} ← {}", place_text(&first.written), first.read.as_ref().map(place_text).unwrap_or_else(|| "?".into())), Tone::Normal),
+                RowCell::new(
+                    format!("{}  {}", i + 1, machine(first.machine)),
+                    Tone::Normal,
+                ),
+                RowCell::mono(
+                    format!(
+                        "{} ← {}",
+                        place_text(&first.written),
+                        first
+                            .read
+                            .as_ref()
+                            .map(place_text)
+                            .unwrap_or_else(|| "?".into())
+                    ),
+                    Tone::Normal,
+                ),
                 RowCell::new(loc, Tone::Muted),
                 RowCell::new("machine", Tone::Muted),
             ],
         };
-        q.push(QueryLine { depth: 1, cells, action: seek(first.at) });
+        q.push(QueryLine {
+            depth: 1,
+            cells,
+            action: seek(first.at),
+        });
         for inner in &first.inner {
             q.push(QueryLine {
                 depth: 2,
@@ -1222,20 +1566,54 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recordi
             });
         }
         for hop in group {
-            let func = hop.function.clone().unwrap_or_else(|| format!("{:#x}", hop.pc));
-            let alloc = hop.allocation.map(|a| format!(", allocation #{}", a.0)).unwrap_or_default();
-            let mut from = hop.read.as_ref().map(|r| format!(" from {}", place_text(r))).unwrap_or_default();
+            let func = hop
+                .function
+                .clone()
+                .unwrap_or_else(|| format!("{:#x}", hop.pc));
+            let alloc = hop
+                .allocation
+                .map(|a| format!(", allocation #{}", a.0))
+                .unwrap_or_default();
+            let mut from = hop
+                .read
+                .as_ref()
+                .map(|r| format!(" from {}", place_text(r)))
+                .unwrap_or_default();
             if !hop.operands.is_empty() {
-                from.push_str(&format!(" computed from {}", hop.operands.iter().map(place_text).collect::<Vec<_>>().join(", ")));
+                from.push_str(&format!(
+                    " computed from {}",
+                    hop.operands
+                        .iter()
+                        .map(place_text)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
-            let detail = format!("{} in {func}: wrote {}{from}{alloc} at {}", machine(hop.machine), place_text(&hop.written), hop.at);
-            q.push(QueryLine { depth: 2, cells: vec![RowCell::mono(detail, Tone::Muted)], action: seek(hop.at) });
+            let detail = format!(
+                "{} in {func}: wrote {}{from}{alloc} at {}",
+                machine(hop.machine),
+                place_text(&hop.written),
+                hop.at
+            );
+            q.push(QueryLine {
+                depth: 2,
+                cells: vec![RowCell::mono(detail, Tone::Muted)],
+                action: seek(hop.at),
+            });
         }
     }
     let end = match &chain.end {
         OriginEnd::Literal => "ends at a literal (read-only data)".to_string(),
-        OriginEnd::Input { syscall } => format!("ends at input{}", syscall.as_deref().map(|s| format!(" ({s})")).unwrap_or_default()),
-        OriginEnd::Computed => "ends at a computation (its operands are in the last hop)".to_string(),
+        OriginEnd::Input { syscall } => format!(
+            "ends at input{}",
+            syscall
+                .as_deref()
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default()
+        ),
+        OriginEnd::Computed => {
+            "ends at a computation (its operands are in the last hop)".to_string()
+        }
         OriginEnd::HistoryStart => "ends at the start of the recording".to_string(),
         OriginEnd::Budget => "stopped: the search budget ran out".to_string(),
         OriginEnd::Unknown { reason } => format!("stopped: {reason}"),
@@ -1245,8 +1623,16 @@ pub fn origin_lines(of: &ValueView, r: hopper_core::Result<OriginChain>, recordi
 }
 
 /// The query pane's rows for a value's history: one row per change, each seeking to it.
-pub fn history_lines(of: &ValueView, r: hopper_core::Result<Page<(Moment, ValueView)>>, recording: Option<&RecordingInfo>) -> Vec<QueryLine> {
-    let mut q = vec![QueryLine::text(0, format!("History of {}", of.name), Tone::Heading)];
+pub fn history_lines(
+    of: &ValueView,
+    r: hopper_core::Result<Page<(Moment, ValueView)>>,
+    recording: Option<&RecordingInfo>,
+) -> Vec<QueryLine> {
+    let mut q = vec![QueryLine::text(
+        0,
+        format!("History of {}", of.name),
+        Tone::Heading,
+    )];
     let page = match r {
         Ok(p) => p,
         Err(e) => {
@@ -1259,7 +1645,12 @@ pub fn history_lines(of: &ValueView, r: hopper_core::Result<Page<(Moment, ValueV
         let action = (!other_run(recording, m)).then_some(QueryAction::Seek(*m));
         q.push(QueryLine {
             depth: 1,
-            cells: vec![RowCell::new(format!("#{}", i + 1), Tone::Muted), RowCell::mono(summary, tone), RowCell::new(String::new(), Tone::Muted), RowCell::mono(m.to_string(), Tone::Accent)],
+            cells: vec![
+                RowCell::new(format!("#{}", i + 1), Tone::Muted),
+                RowCell::mono(summary, tone),
+                RowCell::new(String::new(), Tone::Muted),
+                RowCell::mono(m.to_string(), Tone::Accent),
+            ],
             action,
         });
     }
@@ -1267,7 +1658,11 @@ pub fn history_lines(of: &ValueView, r: hopper_core::Result<Page<(Moment, ValueV
         q.push(QueryLine::text(1, "no changes in range", Tone::Muted));
     }
     if let Completeness::Partial { .. } = page.completeness {
-        q.push(QueryLine::text(1, "(partial: the search budget ran out)", Tone::Muted));
+        q.push(QueryLine::text(
+            1,
+            "(partial: the search budget ran out)",
+            Tone::Muted,
+        ));
     }
     q
 }
@@ -1321,8 +1716,23 @@ pub fn memory_rows(addr: u64, bytes: &[u8]) -> Vec<(String, String, String)> {
         .map(|(i, chunk)| {
             let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
             let (lo, hi) = hex.split_at(hex.len().min(8));
-            let text: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-            (format!("{:#014x}", addr + 16 * i as u64), format!("{}  {}", lo.join(" "), hi.join(" ")).trim_end().to_string(), text)
+            let text: String = chunk
+                .iter()
+                .map(|&b| {
+                    if (0x20..0x7f).contains(&b) {
+                        b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            (
+                format!("{:#014x}", addr + 16 * i as u64),
+                format!("{}  {}", lo.join(" "), hi.join(" "))
+                    .trim_end()
+                    .to_string(),
+                text,
+            )
         })
         .collect()
 }
@@ -1337,7 +1747,10 @@ mod tests {
         let rows = memory_rows(0x1000, &bytes);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, "0x000000001000");
-        assert_eq!(rows[0].1, "61 6c 70 68 61 00 01 41  42 43 44 45 46 47 48 49");
+        assert_eq!(
+            rows[0].1,
+            "61 6c 70 68 61 00 01 41  42 43 44 45 46 47 48 49"
+        );
         assert_eq!(rows[0].2, "alpha..ABCDEFGHI");
         assert_eq!(rows[1].0, "0x000000001010");
         assert_eq!(rows[1].2, "JKLMNOP");
@@ -1349,7 +1762,10 @@ mod tests {
         regs.set(Reg::RAX, 42);
         regs.set(Reg::RIP, 0x5555_5555_4000);
         let rows = register_rows(&regs);
-        assert_eq!(rows[0], ("rip", "0x0000555555554000".into(), "93824992231424".into()));
+        assert_eq!(
+            rows[0],
+            ("rip", "0x0000555555554000".into(), "93824992231424".into())
+        );
         assert_eq!(rows[1], ("rax", "0x000000000000002a".into(), "42".into()));
     }
 }

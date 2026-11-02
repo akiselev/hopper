@@ -74,14 +74,24 @@ pub struct ProcessInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimelineKind {
-    Syscall { name: String },
-    Signal { signo: u8 },
-    Exec { executable: String },
+    Syscall {
+        name: String,
+    },
+    Signal {
+        signo: u8,
+    },
+    Exec {
+        executable: String,
+    },
     ThreadStart,
     ThreadExit,
-    ProcessExit { code: Option<i32> },
+    ProcessExit {
+        code: Option<i32>,
+    },
     /// A named semantic event, such as a cadabra3 `site!` decision, found by the index.
-    Anchor { name: String },
+    Anchor {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,10 +150,18 @@ pub struct UserBreakpoint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopCause {
     Step,
-    Breakpoint { id: BreakpointId },
-    Watchpoint { place: Place },
-    Signal { signo: u8 },
-    Exited { code: u8 },
+    Breakpoint {
+        id: BreakpointId,
+    },
+    Watchpoint {
+        place: Place,
+    },
+    Signal {
+        signo: u8,
+    },
+    Exited {
+        code: u8,
+    },
     HistoryStart,
     HistoryEnd,
     /// The cursor moved by seek, back/forward or opening a position URL.
@@ -282,9 +300,16 @@ pub enum OwnershipState {
     /// The variable holds a live value.
     Live,
     /// The value was moved out; the variable's bytes are stale.
-    MovedOut { to: Option<String>, at: Option<SourceLoc>, moment: Option<Moment> },
+    MovedOut {
+        to: Option<String>,
+        at: Option<SourceLoc>,
+        moment: Option<Moment>,
+    },
     /// The value was dropped.
-    Dropped { at: Option<SourceLoc>, moment: Option<Moment> },
+    Dropped {
+        at: Option<SourceLoc>,
+        moment: Option<Moment>,
+    },
     /// No ownership information (no sidecar, not Rust, or not a local).
     Unknown,
 }
@@ -295,7 +320,9 @@ pub enum OwnershipState {
 pub enum Completeness {
     Complete,
     /// The index has not covered these ranges yet; results there are missing.
-    Partial { pending: Vec<MomentRange> },
+    Partial {
+        pending: Vec<MomentRange>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,7 +463,10 @@ pub struct Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget { max_hops: 32, max_steps: 10_000 }
+        Budget {
+            max_hops: 32,
+            max_steps: 10_000,
+        }
     }
 }
 
@@ -502,8 +532,13 @@ pub trait Debugger: Send + Sync {
     fn frames(&self, at: Moment, tid: Tid) -> Result<Vec<Frame>>;
     fn registers(&self, at: Moment, tid: Tid) -> Result<RegisterSet>;
     fn memory(&self, at: Moment, process: ProcessId, addr: u64, len: u64) -> Result<Vec<u8>>;
-    fn disassemble(&self, at: Moment, process: ProcessId, addr: u64, count: u32)
-    -> Result<Vec<Instruction>>;
+    fn disassemble(
+        &self,
+        at: Moment,
+        process: ProcessId,
+        addr: u64,
+        count: u32,
+    ) -> Result<Vec<Instruction>>;
     fn locals(&self, at: Moment, frame: FrameId) -> Result<Vec<ValueView>>;
     fn eval(&self, at: Moment, frame: FrameId, expr: &str) -> Result<ValueView>;
     fn view(&self, value: &ValueHandle) -> Result<ValueView>;
@@ -513,10 +548,18 @@ pub trait Debugger: Send + Sync {
     // omniscient queries
     fn calls(&self, filter: CallFilter, page: PageReq) -> Result<Page<CallNode>>;
     fn line_hits(&self, loc: SourceLoc, range: MomentRange, page: PageReq) -> Result<Page<Moment>>;
-    fn value_history(&self, value: &ValueHandle, range: MomentRange, page: PageReq)
-    -> Result<Page<(Moment, ValueView)>>;
+    fn value_history(
+        &self,
+        value: &ValueHandle,
+        range: MomentRange,
+        page: PageReq,
+    ) -> Result<Page<(Moment, ValueView)>>;
     fn last_write(&self, place: Place, before: Moment) -> Result<Option<WriteEvent>>;
     fn origin(&self, value: &ValueHandle, budget: Budget) -> Result<OriginChain>;
-    fn allocation(&self, process: ProcessId, addr: u64, at: Moment)
-    -> Result<Option<AllocationInfo>>;
+    fn allocation(
+        &self,
+        process: ProcessId,
+        addr: u64,
+        at: Moment,
+    ) -> Result<Option<AllocationInfo>>;
 }

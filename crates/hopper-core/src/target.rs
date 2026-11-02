@@ -48,10 +48,18 @@ pub struct Breakpoint {
 
 impl Breakpoint {
     pub fn code(addr: u64) -> Self {
-        Breakpoint { kind: BreakKind::Software, addr, len: 1 }
+        Breakpoint {
+            kind: BreakKind::Software,
+            addr,
+            len: 1,
+        }
     }
     pub fn write_watch(addr: u64, len: u64) -> Self {
-        Breakpoint { kind: BreakKind::WriteWatch, addr, len }
+        Breakpoint {
+            kind: BreakKind::WriteWatch,
+            addr,
+            len,
+        }
     }
 }
 
@@ -249,6 +257,9 @@ impl Memory for ImageMemory {
                 return Ok(());
             }
         }
-        Err(crate::HopperError::UnreadableMemory { addr, len: buf.len() as u64 })
+        Err(crate::HopperError::UnreadableMemory {
+            addr,
+            len: buf.len() as u64,
+        })
     }
 }

@@ -35,7 +35,9 @@ impl FromStr for RecordingId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s: String = s.chars().filter(|c| *c != '-').collect();
         if s.len() != 32 {
-            return Err(HopperError::Invalid(format!("recording id must be 32 hex digits: {s:?}")));
+            return Err(HopperError::Invalid(format!(
+                "recording id must be 32 hex digits: {s:?}"
+            )));
         }
         let mut out = [0u8; 16];
         for (i, byte) in out.iter_mut().enumerate() {
@@ -66,7 +68,10 @@ pub struct ProcessId {
 
 impl ProcessId {
     pub fn new(pid: i32) -> Self {
-        ProcessId { pid, exec_generation: 0 }
+        ProcessId {
+            pid,
+            exec_generation: 0,
+        }
     }
 }
 

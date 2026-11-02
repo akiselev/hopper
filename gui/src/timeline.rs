@@ -16,8 +16,8 @@ use skelter_base::geom::{Rect, Size};
 use skelter_base::ids::{CanvasId, NodeId};
 use skelter_canvas::{Canvas, CanvasFonts, ChunkBuilder, DVec2, Plane, WorldRect};
 use skelter_core::{
-    Event, EventCx, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx, PropDefault, PropId, PropSpec, RecordCx,
-    ValueType,
+    Event, EventCx, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx, PropDefault, PropId,
+    PropSpec, RecordCx, ValueType,
 };
 use skelter_widgets::paint::{Align, raw};
 use skelter_widgets::table::text_painter::{TextStyle, record_core};
@@ -53,7 +53,13 @@ pub struct TimelineHost {
 
 impl TimelineHost {
     pub fn new() -> Self {
-        TimelineHost { model: TimelineModel::default(), canvas: Canvas::new(CANVAS, CanvasFonts::new()), events: Vec::new(), changed: false, drawn: None }
+        TimelineHost {
+            model: TimelineModel::default(),
+            canvas: Canvas::new(CANVAS, CanvasFonts::new()),
+            events: Vec::new(),
+            changed: false,
+            drawn: None,
+        }
     }
 }
 
@@ -95,10 +101,21 @@ pub fn draw(canvas: &Canvas, model: &TimelineModel, size: Size) {
         let mut b = ChunkBuilder::new(DVec2::new(0.0, 0.0));
         let a = world(MARGIN, track_y - 3.0);
         let z = world(w - MARGIN, track_y + 3.0);
-        b.rect(WorldRect::new(a.x, a.y, z.x, z.y), 3.0, 0.0, style::rgb(0x3C3C3C));
+        b.rect(
+            WorldRect::new(a.x, a.y, z.x, z.y),
+            3.0,
+            0.0,
+            style::rgb(0x3C3C3C),
+        );
         for (f, k) in model.marks() {
             let x = x_of(f, w);
-            b.segment(world(x, track_y - 10.0), world(x, track_y + 10.0), 2.0, LineCap::Butt, mark_color(k));
+            b.segment(
+                world(x, track_y - 10.0),
+                world(x, track_y + 10.0),
+                2.0,
+                LineCap::Butt,
+                mark_color(k),
+            );
         }
         if !b.is_empty() {
             e.insert(Plane::Static, b.build());
@@ -106,15 +123,22 @@ pub fn draw(canvas: &Canvas, model: &TimelineModel, size: Size) {
         if let Some(f) = model.cursor.as_ref().and_then(|c| model.fraction(c)) {
             let x = x_of(f, w);
             let mut o = ChunkBuilder::new(DVec2::new(0.0, 0.0));
-            o.segment(world(x, 4.0), world(x, h - 4.0), 2.0, LineCap::Butt, style::EXEC_ARROW);
+            o.segment(
+                world(x, 4.0),
+                world(x, h - 4.0),
+                2.0,
+                LineCap::Butt,
+                style::EXEC_ARROW,
+            );
             o.circle(world(x, track_y), 5.0, 0.0, style::EXEC_ARROW);
             e.insert(Plane::Overlay, o.build());
         }
     });
 }
 
-static PROPS: [PropSpec; 1] =
-    [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint).default(PropDefault::I64(0)).doc("Bumped by the host after the model changed.")];
+static PROPS: [PropSpec; 1] = [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint)
+    .default(PropDefault::I64(0))
+    .doc("Bumped by the host after the model changed.")];
 
 static SPEC: KindSpec = KindSpec {
     props: &PROPS,
@@ -140,12 +164,17 @@ impl Kind for TimelineKind {
         known: skelter_core::taffy::Size<Option<f32>>,
         _avail: skelter_core::taffy::Size<skelter_core::taffy::AvailableSpace>,
     ) -> skelter_core::taffy::Size<f32> {
-        skelter_core::taffy::Size { width: known.width.unwrap_or(0.0), height: known.height.unwrap_or(0.0) }
+        skelter_core::taffy::Size {
+            width: known.width.unwrap_or(0.0),
+            height: known.height.unwrap_or(0.0),
+        }
     }
 
     fn prepare(&mut self, cx: &mut PrepareCx) {
         let size = cx.size();
-        let Some(host) = cx.service::<TimelineHost>() else { return };
+        let Some(host) = cx.service::<TimelineHost>() else {
+            return;
+        };
         let key = (host.model.version, size);
         if host.drawn != Some(key) && size.w > 0.0 && size.h > 0.0 {
             draw(&host.canvas, &host.model, size);
@@ -160,25 +189,63 @@ impl Kind for TimelineKind {
         let (labels, has) = match cx.service::<TimelineHost>() {
             Some(h) => {
                 let m = &h.model;
-                let first = m.start.map(|s| format!("event {}", s.frame_time)).unwrap_or_default();
-                let last = m.end.map(|s| format!("event {}", s.frame_time)).unwrap_or_default();
-                let cur = m.cursor.map(|c| format!("cursor {}", c.frame_time)).unwrap_or_default();
+                let first = m
+                    .start
+                    .map(|s| format!("event {}", s.frame_time))
+                    .unwrap_or_default();
+                let last = m
+                    .end
+                    .map(|s| format!("event {}", s.frame_time))
+                    .unwrap_or_default();
+                let cur = m
+                    .cursor
+                    .map(|c| format!("cursor {}", c.frame_time))
+                    .unwrap_or_default();
                 let n = format!("{} events", m.events.len());
-                ([first, cur, last, n], m.start.is_some() || !m.events.is_empty())
+                (
+                    [first, cur, last, n],
+                    m.start.is_some() || !m.events.is_empty(),
+                )
             }
             None => (Default::default(), false),
         };
         record_core(cx, |_, list| raw::fill(list, r, style::BG, 0.0));
-        cx.push(Prim::Canvas(CanvasPrim { canvas: CANVAS, rect: r }), r);
+        cx.push(
+            Prim::Canvas(CanvasPrim {
+                canvas: CANVAS,
+                rect: r,
+            }),
+            r,
+        );
         record_core(cx, |p, list| {
-            let st = TextStyle { family: style::UI_FONT.into(), size: 11.0, weight: 400, italic: false, color: style::MUTED };
+            let st = TextStyle {
+                family: style::UI_FONT.into(),
+                size: 11.0,
+                weight: 400,
+                italic: false,
+                color: style::MUTED,
+            };
             if !has {
-                p.draw(list, "No timeline yet", &st, Rect::new(MARGIN, 2.0, size.w - MARGIN, 18.0), Align::Start, true);
+                p.draw(
+                    list,
+                    "No timeline yet",
+                    &st,
+                    Rect::new(MARGIN, 2.0, size.w - MARGIN, 18.0),
+                    Align::Start,
+                    true,
+                );
                 return;
             }
             let top = Rect::new(MARGIN, 2.0, size.w - MARGIN, 16.0);
             p.draw(list, &labels[0], &st, top, Align::Start, true);
-            p.draw(list, &labels[1], &st.with_color(style::EXEC_ARROW), top, Align::Center, true);
+            p.draw(
+                list,
+                &labels[1],
+                &st.with_color(style::EXEC_ARROW),
+                top,
+                Align::Center,
+                true,
+            );
             p.draw(list, &labels[2], &st, top, Align::End, true);
             let bottom = Rect::new(MARGIN, size.h - 16.0, size.w - MARGIN, size.h - 2.0);
             p.draw(list, &labels[3], &st, bottom, Align::Start, true);
@@ -188,7 +255,10 @@ impl Kind for TimelineKind {
     fn event(&mut self, cx: &mut EventCx, ev: &Event) -> Handled {
         let node = cx.node();
         let w = cx.document().world_rect(node).map_or(1.0, |r| r.width());
-        let seek = |x: f32| TimelineInput::SeekNear { node, fraction: fraction_at(x, w) };
+        let seek = |x: f32| TimelineInput::SeekNear {
+            node,
+            fraction: fraction_at(x, w),
+        };
         let out = match ev {
             Event::PointerDown(p) => {
                 self.pressed = true;

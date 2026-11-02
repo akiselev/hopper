@@ -53,7 +53,9 @@ pub struct Jobs<C: ?Sized + Send + Sync + 'static, S> {
 
 impl<C: ?Sized + Send + Sync + 'static, S> std::fmt::Debug for Jobs<C, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Jobs").field("outstanding", &self.outstanding()).finish_non_exhaustive()
+        f.debug_struct("Jobs")
+            .field("outstanding", &self.outstanding())
+            .finish_non_exhaustive()
     }
 }
 
@@ -93,7 +95,16 @@ impl<C: ?Sized + Send + Sync + 'static, S> Jobs<C, S> {
             lanes.insert(lane, tx);
             threads.push(t);
         }
-        Jobs { lanes, done, completions: HashMap::new(), next: 0, outstanding: Arc::new(AtomicUsize::new(0)), landed, waker, threads }
+        Jobs {
+            lanes,
+            done,
+            completions: HashMap::new(),
+            next: 0,
+            outstanding: Arc::new(AtomicUsize::new(0)),
+            landed,
+            waker,
+            threads,
+        }
     }
 
     /// Called (from a job thread) whenever a result lands: the platform's waker.
@@ -132,7 +143,11 @@ impl<C: ?Sized + Send + Sync + 'static, S> Jobs<C, S> {
             }),
         );
         self.outstanding.fetch_add(1, Ordering::SeqCst);
-        let job = Job { id, delay, work: Box::new(move |c| Box::new(work(c)) as Box<dyn std::any::Any + Send>) };
+        let job = Job {
+            id,
+            delay,
+            work: Box::new(move |c| Box::new(work(c)) as Box<dyn std::any::Any + Send>),
+        };
         if self.lanes[&lane].send(job).is_err() {
             self.completions.remove(&id);
             self.outstanding.fetch_sub(1, Ordering::SeqCst);
@@ -182,7 +197,10 @@ impl<C: ?Sized + Send + Sync + 'static, S> Jobs<C, S> {
 
     /// Blocks until a result lands or `timeout` passes (tests and the headless shot only; the UI
     /// never waits). Returns whether one landed.
-    pub fn wait_result(&mut self, timeout: Duration) -> Option<Vec<impl FnOnce(&mut S) + use<C, S>>> {
+    pub fn wait_result(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<Vec<impl FnOnce(&mut S) + use<C, S>>> {
         let (id, result) = self.done.recv_timeout(timeout).ok()?;
         self.outstanding.fetch_sub(1, Ordering::SeqCst);
         self.landed.fetch_sub(1, Ordering::SeqCst);
@@ -229,17 +247,28 @@ mod tests {
     fn the_status_lane_does_not_wait_behind_the_replay_lane() {
         let (tx, rx) = channel::<()>();
         let rx = Mutex::new(rx);
-        let mut jobs: Jobs<Mutex<std::sync::mpsc::Receiver<()>>, Vec<&'static str>> = Jobs::new(Arc::new(rx));
+        let mut jobs: Jobs<Mutex<std::sync::mpsc::Receiver<()>>, Vec<&'static str>> =
+            Jobs::new(Arc::new(rx));
         // the replay job blocks until the test releases it
-        jobs.submit(Lane::Replay, |r| r.lock().unwrap().recv().unwrap(), |s, ()| s.push("replay"));
+        jobs.submit(
+            Lane::Replay,
+            |r| r.lock().unwrap().recv().unwrap(),
+            |s, ()| s.push("replay"),
+        );
         jobs.submit(Lane::Status, |_| (), |s, ()| s.push("status"));
         let mut seen = Vec::new();
-        for c in jobs.wait_result(Duration::from_secs(5)).expect("status answers first") {
+        for c in jobs
+            .wait_result(Duration::from_secs(5))
+            .expect("status answers first")
+        {
             c(&mut seen);
         }
         assert_eq!(seen, ["status"]);
         tx.send(()).unwrap();
-        for c in jobs.wait_result(Duration::from_secs(5)).expect("then replay") {
+        for c in jobs
+            .wait_result(Duration::from_secs(5))
+            .expect("then replay")
+        {
             c(&mut seen);
         }
         assert_eq!(seen, ["status", "replay"]);

@@ -93,7 +93,10 @@ pub struct RegisterSet {
 
 impl RegisterSet {
     pub fn get_bytes(&self, reg: Reg) -> Option<&[u8]> {
-        self.values.iter().find(|(r, _)| *r == reg).map(|(_, v)| v.as_slice())
+        self.values
+            .iter()
+            .find(|(r, _)| *r == reg)
+            .map(|(_, v)| v.as_slice())
     }
 
     /// The register as an integer (the low 8 bytes, zero-extended).
@@ -134,7 +137,14 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for r in [Reg::RAX, Reg::RSP, Reg::RIP, Reg::XMM0, Reg::RFLAGS, Reg::FS_BASE] {
+        for r in [
+            Reg::RAX,
+            Reg::RSP,
+            Reg::RIP,
+            Reg::XMM0,
+            Reg::RFLAGS,
+            Reg::FS_BASE,
+        ] {
             assert_eq!(Reg::from_name(r.name()), Some(r));
         }
         assert_eq!(Reg::from_name("st0"), None);

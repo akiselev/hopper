@@ -15,8 +15,8 @@ use skelter_base::geom::{Point, Rect};
 use skelter_base::ids::NodeId;
 use skelter_base::key::Key;
 use skelter_core::{
-    Event, EventCx, FocusReason, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx, PropDefault, PropId, PropSpec,
-    RecordCx, ValueType,
+    Event, EventCx, FocusReason, Handled, Kind, KindId, KindSpec, MeasureCx, PrepareCx,
+    PropDefault, PropId, PropSpec, RecordCx, ValueType,
 };
 use skelter_widgets::paint::{Align, raw};
 use skelter_widgets::table::text_painter::{TextStyle, record_core};
@@ -76,10 +76,18 @@ pub struct RowCell {
 
 impl RowCell {
     pub fn new(text: impl Into<String>, tone: Tone) -> Self {
-        RowCell { text: text.into(), tone, mono: false }
+        RowCell {
+            text: text.into(),
+            tone,
+            mono: false,
+        }
     }
     pub fn mono(text: impl Into<String>, tone: Tone) -> Self {
-        RowCell { text: text.into(), tone, mono: true }
+        RowCell {
+            text: text.into(),
+            tone,
+            mono: true,
+        }
     }
 }
 
@@ -123,8 +131,9 @@ pub struct RowsHost {
     pub events: Vec<RowsEvent>,
 }
 
-static PROPS: [PropSpec; 1] =
-    [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint).default(PropDefault::I64(0)).doc("Bumped by the host after the list changed.")];
+static PROPS: [PropSpec; 1] = [PropSpec::new("epoch", ValueType::I64, ChangeClass::Paint)
+    .default(PropDefault::I64(0))
+    .doc("Bumped by the host after the list changed.")];
 
 static SPEC: KindSpec = KindSpec {
     props: &PROPS,
@@ -144,8 +153,15 @@ pub struct RowsKind {
 
 /// The x of each column's left edge and its width, for a box `w` wide.
 pub fn column_spans(columns: &[Width], w: f32) -> Vec<(f32, f32)> {
-    let fixed: f32 = columns.iter().map(|c| if let Width::Fixed(x) = c { *x } else { 0.0 }).sum();
-    let fills = columns.iter().filter(|c| matches!(c, Width::Fill)).count().max(1) as f32;
+    let fixed: f32 = columns
+        .iter()
+        .map(|c| if let Width::Fixed(x) = c { *x } else { 0.0 })
+        .sum();
+    let fills = columns
+        .iter()
+        .filter(|c| matches!(c, Width::Fill))
+        .count()
+        .max(1) as f32;
     let fill = ((w - fixed) / fills).max(40.0);
     let mut x = 0.0;
     columns
@@ -199,16 +215,24 @@ impl Kind for RowsKind {
         known: skelter_core::taffy::Size<Option<f32>>,
         _avail: skelter_core::taffy::Size<skelter_core::taffy::AvailableSpace>,
     ) -> skelter_core::taffy::Size<f32> {
-        skelter_core::taffy::Size { width: known.width.unwrap_or(0.0), height: known.height.unwrap_or(0.0) }
+        skelter_core::taffy::Size {
+            width: known.width.unwrap_or(0.0),
+            height: known.height.unwrap_or(0.0),
+        }
     }
 
     fn prepare(&mut self, cx: &mut PrepareCx) {
         self.height = cx.size().h;
         let node = cx.node.id();
-        let Some(host) = cx.service::<RowsHost>() else { return };
-        let Some(list) = host.lists.get_mut(&node) else { return };
+        let Some(host) = cx.service::<RowsHost>() else {
+            return;
+        };
+        let Some(list) = host.lists.get_mut(&node) else {
+            return;
+        };
         if let Some(r) = list.reveal.take() {
-            self.scroll.set(scroll_to_show(r, self.scroll.get(), self.height));
+            self.scroll
+                .set(scroll_to_show(r, self.scroll.get(), self.height));
         }
         let len = list.rows.len();
         self.clamp(len);
@@ -218,30 +242,63 @@ impl Kind for RowsKind {
         let size = cx.node.size();
         let node = cx.node.id();
         let scroll = self.scroll.get();
-        let (rows, columns, selected, empty) = match cx.service::<RowsHost>().and_then(|h| h.lists.get(&node)) {
-            Some(l) => {
-                let range = visible_rows(scroll, size.h, l.rows.len());
-                (range.clone().map(|i| (i, l.rows[i].clone())).collect::<Vec<_>>(), l.columns.clone(), l.selected, l.empty.clone())
-            }
-            None => (Vec::new(), Vec::new(), None, String::new()),
-        };
+        let (rows, columns, selected, empty) =
+            match cx.service::<RowsHost>().and_then(|h| h.lists.get(&node)) {
+                Some(l) => {
+                    let range = visible_rows(scroll, size.h, l.rows.len());
+                    (
+                        range
+                            .clone()
+                            .map(|i| (i, l.rows[i].clone()))
+                            .collect::<Vec<_>>(),
+                        l.columns.clone(),
+                        l.selected,
+                        l.empty.clone(),
+                    )
+                }
+                None => (Vec::new(), Vec::new(), None, String::new()),
+            };
         let focused = self.focused;
         record_core(cx, |p, list| {
             raw::fill(list, Rect::new(0.0, 0.0, size.w, size.h), style::BG, 0.0);
             if rows.is_empty() && !empty.is_empty() {
-                let st = TextStyle { family: style::UI_FONT.into(), size: 12.0, weight: 400, italic: true, color: style::MUTED };
-                p.draw(list, &empty, &st, Rect::new(PAD, 4.0, size.w - PAD, 4.0 + ROW_H), Align::Start, true);
+                let st = TextStyle {
+                    family: style::UI_FONT.into(),
+                    size: 12.0,
+                    weight: 400,
+                    italic: true,
+                    color: style::MUTED,
+                };
+                p.draw(
+                    list,
+                    &empty,
+                    &st,
+                    Rect::new(PAD, 4.0, size.w - PAD, 4.0 + ROW_H),
+                    Align::Start,
+                    true,
+                );
                 return;
             }
             let spans = column_spans(&columns, size.w);
             // room for triangles only in lists that have them
-            let tree = rows.iter().any(|(_, r)| r.disclosure != Disclosure::None || r.depth > 0);
+            let tree = rows
+                .iter()
+                .any(|(_, r)| r.disclosure != Disclosure::None || r.depth > 0);
             let tri_w = if tree { 14.0 } else { 0.0 };
             for (i, row) in &rows {
                 let y = *i as f32 * ROW_H - scroll;
                 let band = Rect::new(0.0, y, size.w, y + ROW_H);
                 if selected == Some(*i) {
-                    raw::fill(list, band, if focused { style::SELECTION_FOCUSED } else { style::SELECTION }, 0.0);
+                    raw::fill(
+                        list,
+                        band,
+                        if focused {
+                            style::SELECTION_FOCUSED
+                        } else {
+                            style::SELECTION
+                        },
+                        0.0,
+                    );
                 } else if i % 2 == 1 {
                     raw::fill(list, band, style::ROW_STRIPE, 0.0);
                 }
@@ -249,12 +306,36 @@ impl Kind for RowsKind {
                 let mid = Point::new(indent + 5.0, y + ROW_H / 2.0);
                 match row.disclosure {
                     Disclosure::Collapsed => {
-                        raw::line(list, Point::new(mid.x - 2.0, mid.y - 4.0), Point::new(mid.x + 2.0, mid.y), 1.5, style::DISCLOSURE);
-                        raw::line(list, Point::new(mid.x + 2.0, mid.y), Point::new(mid.x - 2.0, mid.y + 4.0), 1.5, style::DISCLOSURE);
+                        raw::line(
+                            list,
+                            Point::new(mid.x - 2.0, mid.y - 4.0),
+                            Point::new(mid.x + 2.0, mid.y),
+                            1.5,
+                            style::DISCLOSURE,
+                        );
+                        raw::line(
+                            list,
+                            Point::new(mid.x + 2.0, mid.y),
+                            Point::new(mid.x - 2.0, mid.y + 4.0),
+                            1.5,
+                            style::DISCLOSURE,
+                        );
                     }
                     Disclosure::Expanded => {
-                        raw::line(list, Point::new(mid.x - 4.0, mid.y - 2.0), Point::new(mid.x, mid.y + 2.0), 1.5, style::DISCLOSURE);
-                        raw::line(list, Point::new(mid.x, mid.y + 2.0), Point::new(mid.x + 4.0, mid.y - 2.0), 1.5, style::DISCLOSURE);
+                        raw::line(
+                            list,
+                            Point::new(mid.x - 4.0, mid.y - 2.0),
+                            Point::new(mid.x, mid.y + 2.0),
+                            1.5,
+                            style::DISCLOSURE,
+                        );
+                        raw::line(
+                            list,
+                            Point::new(mid.x, mid.y + 2.0),
+                            Point::new(mid.x + 4.0, mid.y - 2.0),
+                            1.5,
+                            style::DISCLOSURE,
+                        );
                     }
                     Disclosure::None => {}
                 }
@@ -269,10 +350,27 @@ impl Kind for RowsKind {
                     if right <= left {
                         continue;
                     }
-                    let family = if cell.mono { style::MONO_FONT } else { style::UI_FONT };
+                    let family = if cell.mono {
+                        style::MONO_FONT
+                    } else {
+                        style::UI_FONT
+                    };
                     let weight = if cell.tone == Tone::Heading { 600 } else { 400 };
-                    let st = TextStyle { family: family.into(), size: 12.0, weight, italic: false, color: cell.tone.color() };
-                    p.draw(list, &cell.text, &st, Rect::new(left, y, right, y + ROW_H), Align::Start, true);
+                    let st = TextStyle {
+                        family: family.into(),
+                        size: 12.0,
+                        weight,
+                        italic: false,
+                        color: cell.tone.color(),
+                    };
+                    p.draw(
+                        list,
+                        &cell.text,
+                        &st,
+                        Rect::new(left, y, right, y + ROW_H),
+                        Align::Start,
+                        true,
+                    );
                 }
             }
         });
@@ -280,8 +378,14 @@ impl Kind for RowsKind {
 
     fn event(&mut self, cx: &mut EventCx, ev: &Event) -> Handled {
         let node = cx.node();
-        let len = cx.service::<RowsHost>().and_then(|h| h.lists.get(&node)).map_or(0, |l| l.rows.len());
-        let selected = cx.service::<RowsHost>().and_then(|h| h.lists.get(&node)).and_then(|l| l.selected);
+        let len = cx
+            .service::<RowsHost>()
+            .and_then(|h| h.lists.get(&node))
+            .map_or(0, |l| l.rows.len());
+        let selected = cx
+            .service::<RowsHost>()
+            .and_then(|h| h.lists.get(&node))
+            .and_then(|l| l.selected);
         let row_at = |y: f32, scroll: f32| {
             let r = ((y + scroll) / ROW_H).floor();
             (r >= 0.0 && (r as usize) < len).then_some(r as usize)
@@ -294,7 +398,12 @@ impl Kind for RowsKind {
                     let (depth, has) = cx
                         .service::<RowsHost>()
                         .and_then(|h| h.lists.get(&node))
-                        .map(|l| (l.rows[row].depth, l.rows[row].disclosure != Disclosure::None))
+                        .map(|l| {
+                            (
+                                l.rows[row].depth,
+                                l.rows[row].disclosure != Disclosure::None,
+                            )
+                        })
                         .unwrap_or((0, false));
                     let tri = PAD + depth as f32 * INDENT;
                     out = Some(if has && p.local.x >= tri - 2.0 && p.local.x < tri + 14.0 {
@@ -321,7 +430,9 @@ impl Kind for RowsKind {
                 let cur = selected.unwrap_or(0);
                 let page = ((self.height / ROW_H) as usize).max(1);
                 let to = match k.key {
-                    Some(Key::ArrowDown) => Some((cur + usize::from(selected.is_some())).min(len.saturating_sub(1))),
+                    Some(Key::ArrowDown) => {
+                        Some((cur + usize::from(selected.is_some())).min(len.saturating_sub(1)))
+                    }
                     Some(Key::ArrowUp) => Some(cur.saturating_sub(1)),
                     Some(Key::PageDown) => Some((cur + page).min(len.saturating_sub(1))),
                     Some(Key::PageUp) => Some(cur.saturating_sub(page)),
@@ -331,9 +442,12 @@ impl Kind for RowsKind {
                 };
                 if let Some(row) = to.filter(|_| len > 0) {
                     out = Some(RowsEvent::Select { node, row });
-                    self.scroll.set(scroll_to_show(row, self.scroll.get(), self.height));
+                    self.scroll
+                        .set(scroll_to_show(row, self.scroll.get(), self.height));
                     true
-                } else if let (Some(row), Some(Key::ArrowLeft | Key::ArrowRight)) = (selected, k.key) {
+                } else if let (Some(row), Some(Key::ArrowLeft | Key::ArrowRight)) =
+                    (selected, k.key)
+                {
                     out = Some(RowsEvent::Toggle { node, row });
                     true
                 } else if let (Some(row), Some(Key::Enter)) = (selected, k.key) {
@@ -369,7 +483,10 @@ mod tests {
 
     #[test]
     fn columns_share_what_fixed_ones_leave() {
-        assert_eq!(column_spans(&[Width::Fill, Width::Fixed(100.0), Width::Fill], 500.0), vec![(0.0, 200.0), (200.0, 100.0), (300.0, 200.0)]);
+        assert_eq!(
+            column_spans(&[Width::Fill, Width::Fixed(100.0), Width::Fill], 500.0),
+            vec![(0.0, 200.0), (200.0, 100.0), (300.0, 200.0)]
+        );
     }
 
     #[test]

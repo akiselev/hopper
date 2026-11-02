@@ -38,13 +38,11 @@ impl Moment {
         if self.recording != other.recording {
             return None;
         }
-        Some(
-            (self.frame_time, self.ticks, self.sub).cmp(&(
-                other.frame_time,
-                other.ticks,
-                other.sub,
-            )),
-        )
+        Some((self.frame_time, self.ticks, self.sub).cmp(&(
+            other.frame_time,
+            other.ticks,
+            other.sub,
+        )))
     }
 
     pub fn is_before(&self, other: &Moment) -> bool {
@@ -69,7 +67,11 @@ impl PartialOrd for Moment {
 
 impl fmt::Display for Moment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}.{}", self.frame_time, self.tid.0, self.ticks, self.sub)
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.frame_time, self.tid.0, self.ticks, self.sub
+        )
     }
 }
 
@@ -152,16 +154,25 @@ pub struct MomentRange {
 
 impl MomentRange {
     pub fn all() -> Self {
-        MomentRange { start: None, end: None }
+        MomentRange {
+            start: None,
+            end: None,
+        }
     }
 
     pub fn between(start: Moment, end: Moment) -> Self {
-        MomentRange { start: Some(start), end: Some(end) }
+        MomentRange {
+            start: Some(start),
+            end: Some(end),
+        }
     }
 
     pub fn contains(&self, m: &Moment) -> bool {
         let after_start = match &self.start {
-            Some(s) => matches!(s.cmp_in_recording(m), Some(Ordering::Less | Ordering::Equal)),
+            Some(s) => matches!(
+                s.cmp_in_recording(m),
+                Some(Ordering::Less | Ordering::Equal)
+            ),
             None => true,
         };
         let before_end = match &self.end {
@@ -198,7 +209,13 @@ impl FromStr for PositionUrl {
         let tid = Tid(parts[1].parse().map_err(|_| bad())?);
         let ticks = parts[2].parse().map_err(|_| bad())?;
         let sub = parts[3].parse().map_err(|_| bad())?;
-        Ok(PositionUrl(Moment { recording, frame_time, tid, ticks, sub }))
+        Ok(PositionUrl(Moment {
+            recording,
+            frame_time,
+            tid,
+            ticks,
+            sub,
+        }))
     }
 }
 
@@ -224,7 +241,13 @@ mod tests {
     }
 
     fn m(r: u8, ft: u64, ticks: u64, sub: u32) -> Moment {
-        Moment { recording: rec(r), frame_time: ft, tid: Tid(7), ticks, sub }
+        Moment {
+            recording: rec(r),
+            frame_time: ft,
+            tid: Tid(7),
+            ticks,
+            sub,
+        }
     }
 
     #[test]
@@ -247,20 +270,31 @@ mod tests {
     #[test]
     fn url_rejects_garbage() {
         assert!("hopper://zz/1.2.3.4".parse::<PositionUrl>().is_err());
-        assert!(format!("hopper://{}/1.2.3", "ab".repeat(16)).parse::<PositionUrl>().is_err());
+        assert!(
+            format!("hopper://{}/1.2.3", "ab".repeat(16))
+                .parse::<PositionUrl>()
+                .is_err()
+        );
         assert!("http://x/1.2.3.4".parse::<PositionUrl>().is_err());
     }
 
     #[test]
     fn region_visits_know_their_region() {
-        let v = RegionVisit { region: m(1, 4, 9, 0), pc: 0x1000, visit: 2 };
+        let v = RegionVisit {
+            region: m(1, 4, 9, 0),
+            pc: 0x1000,
+            visit: 2,
+        };
         assert!(v.same_region(&m(1, 4, 9, 7)));
         assert!(!v.same_region(&m(1, 4, 10, 0)));
         assert!(!v.same_region(&m(2, 4, 9, 0)));
         assert_eq!(v.region_key(), (4, 9));
         let s = StopMoment::Visit(v);
         assert_eq!((s.exact(), s.frame_time(), s.tid()), (None, 4, Tid(7)));
-        assert_eq!(StopMoment::Exact(m(1, 4, 9, 3)).exact(), Some(m(1, 4, 9, 3)));
+        assert_eq!(
+            StopMoment::Exact(m(1, 4, 9, 3)).exact(),
+            Some(m(1, 4, 9, 3))
+        );
     }
 
     #[test]
