@@ -141,7 +141,9 @@ pub struct StructType {
 
 impl StructType {
     pub fn field(&self, name: &str) -> Option<&Field> {
-        self.fields.iter().find(|f| f.name == name || f.display_name() == name)
+        self.fields
+            .iter()
+            .find(|f| f.name == name || f.display_name() == name)
     }
 
     pub fn param(&self, name: &str) -> Option<&TypeId> {
@@ -220,12 +222,21 @@ pub enum TypeKind {
     Union(StructType),
     Enum(EnumType),
     CEnum(CEnumType),
-    Pointer { pointee: Option<TypeId>, flavour: PointerFlavour },
+    Pointer {
+        pointee: Option<TypeId>,
+        flavour: PointerFlavour,
+    },
     /// `len` is `None` for flexible arrays.
-    Array { elem: TypeId, len: Option<u64> },
+    Array {
+        elem: TypeId,
+        len: Option<u64>,
+    },
     Subroutine,
     /// A typedef or a qualifier over `target` (`None`: over `void`).
-    Modified { modifier: Modifier, target: Option<TypeId> },
+    Modified {
+        modifier: Modifier,
+        target: Option<TypeId>,
+    },
     /// `void`, or a DIE hopper does not understand.
     Void,
 }
@@ -248,7 +259,12 @@ impl Type {
             Builtin::Bool => ("bool", 1, TypeKind::Base(BaseKind::Bool)),
             Builtin::Unknown => ("?", 0, TypeKind::Void),
         };
-        Type { id: TypeId::Builtin(b), name: name.into(), size: Some(size), kind }
+        Type {
+            id: TypeId::Builtin(b),
+            name: name.into(),
+            size: Some(size),
+            kind,
+        }
     }
 }
 
@@ -274,7 +290,9 @@ impl TypeCache {
         }
         let t = Arc::new(self.parse(binary, id)?);
         let mut guard = self.by_binary.lock().unwrap_or_else(|p| p.into_inner());
-        let (_, types) = guard.entry(key).or_insert_with(|| (binary.clone(), HashMap::new()));
+        let (_, types) = guard
+            .entry(key)
+            .or_insert_with(|| (binary.clone(), HashMap::new()));
         types.insert(id.clone(), t.clone());
         Ok(t)
     }
@@ -306,7 +324,10 @@ impl TypeCache {
         let mut t = ty;
         for _ in 0..32 {
             match &t.kind {
-                TypeKind::Modified { target: Some(target), .. } => t = self.get(binary, target)?,
+                TypeKind::Modified {
+                    target: Some(target),
+                    ..
+                } => t = self.get(binary, target)?,
                 _ => return Ok(t),
             }
         }
@@ -333,12 +354,21 @@ impl TypeCache {
     }
 }
 
-fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: DieRef) -> Result<Type> {
+fn parse_die(
+    cache: &TypeCache,
+    binary: &Arc<Binary>,
+    dwarf: &DwarfIndex,
+    die: DieRef,
+) -> Result<Type> {
     let (unit, entry) = dwarf.entry(die)?;
     let type_attr = |e: &gimli::DebuggingInformationEntry<Reader>| {
-        e.attr_value(gimli::DW_AT_type).and_then(|v| dwarf.attr_ref(unit, v)).map(TypeId::Die)
+        e.attr_value(gimli::DW_AT_type)
+            .and_then(|v| dwarf.attr_ref(unit, v))
+            .map(TypeId::Die)
     };
-    let size = entry.attr_value(gimli::DW_AT_byte_size).and_then(|v| v.udata_value());
+    let size = entry
+        .attr_value(gimli::DW_AT_byte_size)
+        .and_then(|v| v.udata_value());
     let own_name = dwarf.attr_str(unit, &entry, gimli::DW_AT_name);
     let qualified = || dwarf.qualified_name(die).or_else(|| own_name.clone());
     let id = TypeId::Die(die);
@@ -362,12 +392,22 @@ fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: D
             };
             let name = own_name.clone().unwrap_or_else(|| "?".into());
             // Rust's `char` is 4 bytes with DW_ATE_UTF; Rust `u8` is DW_ATE_unsigned.
-            Type { id, name, size, kind: TypeKind::Base(kind) }
+            Type {
+                id,
+                name,
+                size,
+                kind: TypeKind::Base(kind),
+            }
         }
         gimli::DW_TAG_structure_type | gimli::DW_TAG_class_type | gimli::DW_TAG_union_type => {
             let name = qualified().unwrap_or_else(|| "<anonymous>".into());
             let kind = parse_aggregate(dwarf, unit, die, entry.tag() == gimli::DW_TAG_union_type)?;
-            Type { id, name, size, kind }
+            Type {
+                id,
+                name,
+                size,
+                kind,
+            }
         }
         gimli::DW_TAG_enumeration_type => {
             let name = qualified().unwrap_or_else(|| "<anonymous enum>".into());
@@ -380,7 +420,15 @@ fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: D
                 None => false,
             };
             let enumerators = parse_enumerators(dwarf, unit, die)?;
-            Type { id, name, size, kind: TypeKind::CEnum(CEnumType { enumerators, signed }) }
+            Type {
+                id,
+                name,
+                size,
+                kind: TypeKind::CEnum(CEnumType {
+                    enumerators,
+                    signed,
+                }),
+            }
         }
         gimli::DW_TAG_pointer_type
         | gimli::DW_TAG_reference_type
@@ -405,7 +453,12 @@ fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: D
                     }
                 }
             };
-            Type { id, name, size: Some(size.unwrap_or(8)), kind: TypeKind::Pointer { pointee, flavour } }
+            Type {
+                id,
+                name,
+                size: Some(size.unwrap_or(8)),
+                kind: TypeKind::Pointer { pointee, flavour },
+            }
         }
         gimli::DW_TAG_array_type => {
             let elem = type_attr(&entry).unwrap_or(TypeId::Builtin(Builtin::Unknown));
@@ -420,7 +473,12 @@ fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: D
                 (None, Some(n)) => cache.size_of(binary, &elem).ok().map(|s| s * n),
                 _ => None,
             };
-            Type { id, name, size, kind: TypeKind::Array { elem, len } }
+            Type {
+                id,
+                name,
+                size,
+                kind: TypeKind::Array { elem, len },
+            }
         }
         gimli::DW_TAG_subroutine_type => Type {
             id,
@@ -457,9 +515,19 @@ fn parse_die(cache: &TypeCache, binary: &Arc<Binary>, dwarf: &DwarfIndex, die: D
                 (None, Some(t)) => cache.size_of(binary, t).ok(),
                 _ => None,
             };
-            Type { id, name, size, kind: TypeKind::Modified { modifier, target } }
+            Type {
+                id,
+                name,
+                size,
+                kind: TypeKind::Modified { modifier, target },
+            }
         }
-        _ => Type { id, name: own_name.clone().unwrap_or_else(|| "void".into()), size, kind: TypeKind::Void },
+        _ => Type {
+            id,
+            name: own_name.clone().unwrap_or_else(|| "void".into()),
+            size,
+            kind: TypeKind::Void,
+        },
     };
     Ok(ty)
 }
@@ -485,14 +553,20 @@ fn member(
     unit: &UnitInfo,
     entry: &gimli::DebuggingInformationEntry<Reader>,
 ) -> Field {
-    let name = dwarf.attr_str(unit, entry, gimli::DW_AT_name).unwrap_or_default();
+    let name = dwarf
+        .attr_str(unit, entry, gimli::DW_AT_name)
+        .unwrap_or_default();
     let ty = entry
         .attr_value(gimli::DW_AT_type)
         .and_then(|v| dwarf.attr_ref(unit, v))
         .map_or(TypeId::Builtin(Builtin::Unknown), TypeId::Die);
     let mut offset = member_offset(entry);
-    let bit_size = entry.attr_value(gimli::DW_AT_bit_size).and_then(|v| v.udata_value());
-    let data_bit = entry.attr_value(gimli::DW_AT_data_bit_offset).and_then(|v| v.udata_value());
+    let bit_size = entry
+        .attr_value(gimli::DW_AT_bit_size)
+        .and_then(|v| v.udata_value());
+    let data_bit = entry
+        .attr_value(gimli::DW_AT_data_bit_offset)
+        .and_then(|v| v.udata_value());
     let bits = match (bit_size, data_bit) {
         (Some(size), Some(b)) => {
             offset = b / 8;
@@ -501,8 +575,17 @@ fn member(
         (Some(size), None) => Some((0, size)),
         _ => None,
     };
-    let artificial = matches!(entry.attr_value(gimli::DW_AT_artificial), Some(AttributeValue::Flag(true)));
-    Field { name, ty, offset, bits, artificial }
+    let artificial = matches!(
+        entry.attr_value(gimli::DW_AT_artificial),
+        Some(AttributeValue::Flag(true))
+    );
+    Field {
+        name,
+        ty,
+        offset,
+        bits,
+        artificial,
+    }
 }
 
 fn discr_value(v: AttributeValue<Reader>) -> Option<u64> {
@@ -521,8 +604,16 @@ fn discr_value(v: AttributeValue<Reader>) -> Option<u64> {
     }
 }
 
-fn parse_aggregate(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef, is_union: bool) -> Result<TypeKind> {
-    let mut tree = unit.unit.entries_tree(Some(unit.unit_offset(die))).map_err(eval_err)?;
+fn parse_aggregate(
+    dwarf: &DwarfIndex,
+    unit: &UnitInfo,
+    die: DieRef,
+    is_union: bool,
+) -> Result<TypeKind> {
+    let mut tree = unit
+        .unit
+        .entries_tree(Some(unit.unit_offset(die)))
+        .map_err(eval_err)?;
     let root = tree.root().map_err(eval_err)?;
     let mut fields = Vec::new();
     let mut params = Vec::new();
@@ -533,7 +624,10 @@ fn parse_aggregate(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef, is_union: b
         match e.tag() {
             gimli::DW_TAG_member if e.attr(gimli::DW_AT_external).is_none() => {
                 // Static members (DW_AT_external or a declaration) have no offset in the value.
-                if matches!(e.attr_value(gimli::DW_AT_declaration), Some(AttributeValue::Flag(true))) {
+                if matches!(
+                    e.attr_value(gimli::DW_AT_declaration),
+                    Some(AttributeValue::Flag(true))
+                ) {
                     continue;
                 }
                 fields.push(member(dwarf, unit, e));
@@ -541,7 +635,8 @@ fn parse_aggregate(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef, is_union: b
             gimli::DW_TAG_template_type_parameter => {
                 if let (Some(n), Some(t)) = (
                     dwarf.attr_str(unit, e, gimli::DW_AT_name),
-                    e.attr_value(gimli::DW_AT_type).and_then(|v| dwarf.attr_ref(unit, v)),
+                    e.attr_value(gimli::DW_AT_type)
+                        .and_then(|v| dwarf.attr_ref(unit, v)),
                 ) {
                     params.push((n, TypeId::Die(t)));
                 }
@@ -553,10 +648,18 @@ fn parse_aggregate(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef, is_union: b
         }
     }
     if let Some((discriminant, variants)) = variant_part {
-        return Ok(TypeKind::Enum(EnumType { discriminant, variants, params }));
+        return Ok(TypeKind::Enum(EnumType {
+            discriminant,
+            variants,
+            params,
+        }));
     }
     let s = StructType { fields, params };
-    Ok(if is_union { TypeKind::Union(s) } else { TypeKind::Struct(s) })
+    Ok(if is_union {
+        TypeKind::Union(s)
+    } else {
+        TypeKind::Struct(s)
+    })
 }
 
 type VariantPart = (Option<Field>, Vec<Variant>);
@@ -585,7 +688,8 @@ fn parse_variant_part(
             gimli::DW_TAG_variant => {
                 let disc = if let Some(v) = e.attr_value(gimli::DW_AT_discr_value) {
                     discr_value(v).map_or(Discriminant::Default, Discriminant::Value)
-                } else if let Some(AttributeValue::Block(b)) = e.attr_value(gimli::DW_AT_discr_list) {
+                } else if let Some(AttributeValue::Block(b)) = e.attr_value(gimli::DW_AT_discr_list)
+                {
                     Discriminant::Ranges(parse_discr_list(b))
                 } else {
                     Discriminant::Default
@@ -630,8 +734,15 @@ fn parse_discr_list(block: Reader) -> Vec<(u64, u64)> {
     out
 }
 
-fn parse_enumerators(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result<Vec<(String, i128)>> {
-    let mut tree = unit.unit.entries_tree(Some(unit.unit_offset(die))).map_err(eval_err)?;
+fn parse_enumerators(
+    dwarf: &DwarfIndex,
+    unit: &UnitInfo,
+    die: DieRef,
+) -> Result<Vec<(String, i128)>> {
+    let mut tree = unit
+        .unit
+        .entries_tree(Some(unit.unit_offset(die)))
+        .map_err(eval_err)?;
     let root = tree.root().map_err(eval_err)?;
     let mut out = Vec::new();
     let mut children = root.children();
@@ -640,7 +751,9 @@ fn parse_enumerators(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result
         if e.tag() != gimli::DW_TAG_enumerator {
             continue;
         }
-        let name = dwarf.attr_str(unit, e, gimli::DW_AT_name).unwrap_or_default();
+        let name = dwarf
+            .attr_str(unit, e, gimli::DW_AT_name)
+            .unwrap_or_default();
         let value = match e.attr_value(gimli::DW_AT_const_value) {
             Some(AttributeValue::Sdata(v)) => v as i128,
             Some(AttributeValue::Udata(v)) => v as i128,
@@ -653,7 +766,10 @@ fn parse_enumerators(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result
 }
 
 fn array_len(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result<Option<u64>> {
-    let mut tree = unit.unit.entries_tree(Some(unit.unit_offset(die))).map_err(eval_err)?;
+    let mut tree = unit
+        .unit
+        .entries_tree(Some(unit.unit_offset(die)))
+        .map_err(eval_err)?;
     let root = tree.root().map_err(eval_err)?;
     let mut total: Option<u64> = None;
     let mut any = false;
@@ -664,10 +780,16 @@ fn array_len(dwarf: &DwarfIndex, unit: &UnitInfo, die: DieRef) -> Result<Option<
             continue;
         }
         any = true;
-        let count = if let Some(c) = e.attr_value(gimli::DW_AT_count).and_then(|v| v.udata_value()) {
+        let count = if let Some(c) = e
+            .attr_value(gimli::DW_AT_count)
+            .and_then(|v| v.udata_value())
+        {
             Some(c)
         } else {
-            let lower = e.attr_value(gimli::DW_AT_lower_bound).and_then(|v| v.udata_value()).unwrap_or(0);
+            let lower = e
+                .attr_value(gimli::DW_AT_lower_bound)
+                .and_then(|v| v.udata_value())
+                .unwrap_or(0);
             e.attr_value(gimli::DW_AT_upper_bound)
                 .and_then(|v| match v {
                     AttributeValue::Sdata(s) => Some(s as u64),
@@ -700,21 +822,32 @@ mod tests {
         for id in [
             TypeId::Die(DieRef(0x1234)),
             TypeId::PointerTo(Box::new(TypeId::Die(DieRef(0xabcdef)))),
-            TypeId::PointerTo(Box::new(TypeId::PointerTo(Box::new(TypeId::Die(DieRef(9)))))),
+            TypeId::PointerTo(Box::new(TypeId::PointerTo(Box::new(TypeId::Die(DieRef(
+                9,
+            )))))),
             TypeId::Builtin(Builtin::I64),
             TypeId::PointerTo(Box::new(TypeId::Builtin(Builtin::U64))),
         ] {
             let key = id.key(m);
             assert_eq!(TypeId::from_key(key), Some((m, id.clone())), "{key:?}");
         }
-        assert_ne!(TypeId::Die(DieRef(1)).key(ModuleId(0)), TypeId::Die(DieRef(1)).key(ModuleId(1)));
+        assert_ne!(
+            TypeId::Die(DieRef(1)).key(ModuleId(0)),
+            TypeId::Die(DieRef(1)).key(ModuleId(1))
+        );
     }
 
     #[test]
     fn tuple_field_names() {
         assert_eq!(tuple_index("__12"), Some(12));
         assert_eq!(tuple_index("x"), None);
-        let f = Field { name: "__0".into(), ty: TypeId::Builtin(Builtin::I64), offset: 0, bits: None, artificial: false };
+        let f = Field {
+            name: "__0".into(),
+            ty: TypeId::Builtin(Builtin::I64),
+            offset: 0,
+            bits: None,
+            artificial: false,
+        };
         assert_eq!(f.display_name(), "0");
     }
 

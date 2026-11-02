@@ -27,7 +27,12 @@ pub fn disassemble(
 }
 
 /// Decode up to `count` instructions from `bytes`, which start at `addr`.
-pub fn disassemble_bytes(symbols: &SymbolSet, bytes: &[u8], addr: u64, count: u32) -> Vec<Instruction> {
+pub fn disassemble_bytes(
+    symbols: &SymbolSet,
+    bytes: &[u8],
+    addr: u64,
+    count: u32,
+) -> Vec<Instruction> {
     let mut decoder = Decoder::with_ip(64, bytes, addr, DecoderOptions::NONE);
     let mut formatter = IntelFormatter::new();
     let opts = formatter.options_mut();
@@ -133,7 +138,10 @@ mod tests {
         let mut mem = ImageMemory::default().with(0x1000, code);
         let insns = disassemble(&SymbolSet::new(), &mut mem, 0x1000, 10).unwrap();
         let texts: Vec<&str> = insns.iter().map(|i| i.text.as_str()).collect();
-        assert_eq!(texts, vec!["push rbp", "mov rbp, rsp", "call 0x1009", "ret"]);
+        assert_eq!(
+            texts,
+            vec!["push rbp", "mov rbp, rsp", "call 0x1009", "ret"]
+        );
         assert_eq!(insns[2].bytes.len(), 5);
         assert!(disassemble(&SymbolSet::new(), &mut mem, 0x9000, 1).is_err());
     }

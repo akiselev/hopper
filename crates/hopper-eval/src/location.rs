@@ -50,8 +50,14 @@ pub fn evaluate_attr(
     if let AttributeValue::Exprloc(expr) = attr {
         return evaluate_expr(dwarf, unit, expr, frame, memory);
     }
-    let Some(mut list) = dwarf.dwarf().attr_locations(&unit.unit, attr).map_err(eval_err)? else {
-        return Err(HopperError::Eval("location attribute is neither an expression nor a list".into()));
+    let Some(mut list) = dwarf
+        .dwarf()
+        .attr_locations(&unit.unit, attr)
+        .map_err(eval_err)?
+    else {
+        return Err(HopperError::Eval(
+            "location attribute is neither an expression nor a list".into(),
+        ));
     };
     while let Some(entry) = list.next().map_err(eval_err)? {
         if entry.range.begin <= frame.file_pc && frame.file_pc < entry.range.end {
@@ -98,7 +104,9 @@ pub fn frame_base(
     memory: &mut dyn Memory,
 ) -> Result<Option<u64>> {
     let (unit, entry) = dwarf.entry(subprogram)?;
-    let Some(attr) = entry.attr_value(gimli::DW_AT_frame_base) else { return Ok(None) };
+    let Some(attr) = entry.attr_value(gimli::DW_AT_frame_base) else {
+        return Ok(None);
+    };
     Ok(match evaluate_attr(dwarf, unit, attr, frame, memory)? {
         ValueLocation::Memory { addr } => Some(addr),
         ValueLocation::Register { reg } => frame.regs.get(reg),
@@ -136,13 +144,15 @@ pub fn evaluate_expr(
                     // A register the unwinder could not recover in this frame.
                     return Ok(ValueLocation::OptimisedOut);
                 };
-                eval.resume_with_register(GValue::Generic(v)).map_err(eval_err)?
+                eval.resume_with_register(GValue::Generic(v))
+                    .map_err(eval_err)?
             }
             EvaluationResult::RequiresMemory { address, size, .. } => {
                 let mut buf = [0u8; 8];
                 let n = (size as usize).min(8);
                 memory.read(address, &mut buf[..n])?;
-                eval.resume_with_memory(GValue::Generic(u64::from_le_bytes(buf))).map_err(eval_err)?
+                eval.resume_with_memory(GValue::Generic(u64::from_le_bytes(buf)))
+                    .map_err(eval_err)?
             }
             EvaluationResult::RequiresFrameBase => {
                 let fb = frame
@@ -156,12 +166,16 @@ pub fn evaluate_expr(
                     .ok_or_else(|| HopperError::Eval("the frame has no CFA".into()))?;
                 eval.resume_with_call_frame_cfa(cfa).map_err(eval_err)?
             }
-            EvaluationResult::RequiresRelocatedAddress(a) => {
-                eval.resume_with_relocated_address(a.wrapping_add(frame.bias)).map_err(eval_err)?
-            }
+            EvaluationResult::RequiresRelocatedAddress(a) => eval
+                .resume_with_relocated_address(a.wrapping_add(frame.bias))
+                .map_err(eval_err)?,
             EvaluationResult::RequiresIndexedAddress { index, relocate } => {
                 let a = dwarf.dwarf().address(&unit.unit, index).map_err(eval_err)?;
-                let a = if relocate { a.wrapping_add(frame.bias) } else { a };
+                let a = if relocate {
+                    a.wrapping_add(frame.bias)
+                } else {
+                    a
+                };
                 eval.resume_with_indexed_address(a).map_err(eval_err)?
             }
             EvaluationResult::RequiresBaseType(off) => {
@@ -170,8 +184,12 @@ pub fn evaluate_expr(
                     Some(AttributeValue::Encoding(e)) => e,
                     _ => gimli::DW_ATE_unsigned,
                 };
-                let size = entry.attr_value(gimli::DW_AT_byte_size).and_then(|v| v.udata_value()).unwrap_or(8);
-                let vt = gimli::ValueType::from_encoding(enc, size).unwrap_or(gimli::ValueType::Generic);
+                let size = entry
+                    .attr_value(gimli::DW_AT_byte_size)
+                    .and_then(|v| v.udata_value())
+                    .unwrap_or(8);
+                let vt =
+                    gimli::ValueType::from_encoding(enc, size).unwrap_or(gimli::ValueType::Generic);
                 eval.resume_with_base_type(vt).map_err(eval_err)?
             }
             EvaluationResult::RequiresEntryValue(_) | EvaluationResult::RequiresParameterRef(_) => {
@@ -179,7 +197,9 @@ pub fn evaluate_expr(
                 return Ok(ValueLocation::OptimisedOut);
             }
             EvaluationResult::RequiresTls(_) => {
-                return Err(HopperError::Unsupported("thread-local storage locations".into()));
+                return Err(HopperError::Unsupported(
+                    "thread-local storage locations".into(),
+                ));
             }
             EvaluationResult::RequiresAtLocation(_) => {
                 return Err(HopperError::Unsupported("DW_OP_call* in locations".into()));
@@ -199,7 +219,9 @@ pub fn evaluate_expr(
         return Ok(match &pieces[0].location {
             Location::Empty => ValueLocation::OptimisedOut,
             Location::Address { address } => ValueLocation::Memory { addr: *address },
-            Location::Register { register } => ValueLocation::Register { reg: Reg(register.0) },
+            Location::Register { register } => ValueLocation::Register {
+                reg: Reg(register.0),
+            },
             Location::Value { value } => ValueLocation::Bytes(Arc::from(value_bytes(*value))),
             Location::Bytes { value } => {
                 use gimli::Reader as _;

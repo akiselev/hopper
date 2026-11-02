@@ -44,7 +44,10 @@ impl Sequence {
     /// The end address of row `i` (the next row with a higher address, or the sequence end).
     pub fn row_end(&self, i: usize) -> u64 {
         let a = self.rows[i].address;
-        self.rows[i + 1..].iter().find(|r| r.address > a).map_or(self.end, |r| r.address)
+        self.rows[i + 1..]
+            .iter()
+            .find(|r| r.address > a)
+            .map_or(self.end, |r| r.address)
     }
 }
 
@@ -82,11 +85,17 @@ impl LineTable {
         while let Some((_, row)) = rows.next_row().map_err(sym_err)? {
             if row.end_sequence() {
                 if !current.is_empty() {
-                    sequences.push(Sequence { rows: std::mem::take(&mut current), end: row.address() });
+                    sequences.push(Sequence {
+                        rows: std::mem::take(&mut current),
+                        end: row.address(),
+                    });
                 }
                 continue;
             }
-            let file = raw_to_file.get(&row.file_index()).copied().unwrap_or(u32::MAX);
+            let file = raw_to_file
+                .get(&row.file_index())
+                .copied()
+                .unwrap_or(u32::MAX);
             current.push(LineRow {
                 address: row.address(),
                 file,
@@ -112,7 +121,10 @@ impl LineTable {
 
     pub(crate) fn sequence_at(&self, addr: u64) -> Option<&Sequence> {
         let i = self.sequences.partition_point(|s| s.range().start <= addr);
-        self.sequences[..i].iter().rev().find(|s| s.range().contains(&addr))
+        self.sequences[..i]
+            .iter()
+            .rev()
+            .find(|s| s.range().contains(&addr))
     }
 
     /// The source location of the row covering `addr`.
@@ -135,7 +147,9 @@ impl LineTable {
 
     /// Every row, with its sequence.
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&Sequence, usize, &LineRow)> {
-        self.sequences.iter().flat_map(|s| s.rows.iter().enumerate().map(move |(i, r)| (s, i, r)))
+        self.sequences
+            .iter()
+            .flat_map(|s| s.rows.iter().enumerate().map(move |(i, r)| (s, i, r)))
     }
 
     /// The rows inside `range`, in address order.
@@ -172,7 +186,10 @@ fn render_file(
 ) -> Option<String> {
     let mut path = info.comp_dir.clone().unwrap_or_default();
     let attr_str = |v: AttributeValue<Reader>| {
-        dwarf.attr_string(&info.unit, v).ok().map(|r| crate::dwarf::reader_string(&r))
+        dwarf
+            .attr_string(&info.unit, v)
+            .ok()
+            .map(|r| crate::dwarf::reader_string(&r))
     };
     if file.directory_index() != 0
         && let Some(dir) = file.directory(header).and_then(attr_str)
@@ -199,12 +216,22 @@ mod tests {
     use super::*;
 
     fn row(address: u64, line: u32) -> LineRow {
-        LineRow { address, file: 0, line, column: 0, is_stmt: true, prologue_end: false }
+        LineRow {
+            address,
+            file: 0,
+            line,
+            column: 0,
+            is_stmt: true,
+            prologue_end: false,
+        }
     }
 
     #[test]
     fn sequence_lookup_and_row_end() {
-        let s = Sequence { rows: vec![row(0x10, 1), row(0x10, 2), row(0x18, 3)], end: 0x20 };
+        let s = Sequence {
+            rows: vec![row(0x10, 1), row(0x10, 2), row(0x18, 3)],
+            end: 0x20,
+        };
         assert_eq!(s.row_index(0x10), Some(1));
         assert_eq!(s.row_index(0x17), Some(1));
         assert_eq!(s.row_index(0x1f), Some(2));

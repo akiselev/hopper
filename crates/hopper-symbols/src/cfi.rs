@@ -25,7 +25,9 @@ pub(crate) struct CallFrameInfo {
 
 impl fmt::Debug for CallFrameInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CallFrameInfo").field("fdes", &self.fdes.len()).finish()
+        f.debug_struct("CallFrameInfo")
+            .field("fdes", &self.fdes.len())
+            .finish()
     }
 }
 
@@ -62,7 +64,12 @@ impl CallFrameInfo {
             collect(df, &bases, FdeSource::DebugFrame, &mut fdes);
         }
         fdes.sort_by_key(|f| f.0);
-        CallFrameInfo { eh_frame, debug_frame, bases, fdes }
+        CallFrameInfo {
+            eh_frame,
+            debug_frame,
+            bases,
+            fdes,
+        }
     }
 
     /// The FDE covering `addr` (file address). `.eh_frame` wins over `.debug_frame` when both

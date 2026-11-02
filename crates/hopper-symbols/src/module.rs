@@ -210,7 +210,10 @@ impl SymbolSet {
     }
 
     pub fn modules(&self) -> impl Iterator<Item = (ModuleId, &Module)> {
-        self.modules.iter().enumerate().map(|(i, m)| (ModuleId(i), m))
+        self.modules
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (ModuleId(i), m))
     }
 
     pub fn module(&self, id: ModuleId) -> Option<&Module> {
@@ -224,7 +227,8 @@ impl SymbolSet {
 
     /// The module holding a binary with this build id.
     pub fn module_by_build_id(&self, id: &crate::BuildId) -> Option<(ModuleId, &Module)> {
-        self.modules().find(|(_, m)| m.binary().build_id() == Some(id))
+        self.modules()
+            .find(|(_, m)| m.binary().build_id() == Some(id))
     }
 
     /// The symbol-table entry containing `pc`.
@@ -232,7 +236,12 @@ impl SymbolSet {
         let (id, m) = self.module_at(pc)?;
         let sym = m.binary().symbol_at(m.to_file(pc))?;
         let address = m.to_runtime(sym.address);
-        Some(SymbolHit { module: id, name: sym.name.clone(), address, offset: pc - address })
+        Some(SymbolHit {
+            module: id,
+            name: sym.name.clone(),
+            address,
+            offset: pc - address,
+        })
     }
 
     /// The source location of `pc` (the innermost line-table row).
@@ -251,13 +260,17 @@ impl SymbolSet {
             return Some(loc);
         }
         let dwarf = m.binary().dwarf().ok()?;
-        dwarf.units_at(file_pc).find_map(|u| dwarf.line_table(u).ok()?.location(file_pc))
+        dwarf
+            .units_at(file_pc)
+            .find_map(|u| dwarf.line_table(u).ok()?.location(file_pc))
     }
 
     /// The source-level frames at `pc`, innermost inlined call first. Without debug information
     /// it is one frame named by the symbol table.
     pub fn frames_at(&self, pc: u64) -> Vec<InlineFrame> {
-        let Some((id, m)) = self.module_at(pc) else { return Vec::new() };
+        let Some((id, m)) = self.module_at(pc) else {
+            return Vec::new();
+        };
         let file_pc = m.to_file(pc);
         let dwarf = m.binary().dwarf().ok();
         let raw = m.binary().with_addr2line(|ctx| {
@@ -273,7 +286,11 @@ impl SymbolSet {
                         (Some(base), Some(off)) => Some(DieRef(base + off.0 as u64)),
                         _ => None,
                     };
-                    let name = f.function.as_ref().and_then(|n| n.raw_name().ok()).map(|n| n.into_owned());
+                    let name = f
+                        .function
+                        .as_ref()
+                        .and_then(|n| n.raw_name().ok())
+                        .map(|n| n.into_owned());
                     let location = f.location.and_then(|l| {
                         Some(SourceLoc {
                             file: l.file?.to_string(),
@@ -294,7 +311,13 @@ impl SymbolSet {
             if function.is_none() && location.is_none() {
                 return Vec::new();
             }
-            return vec![InlineFrame { module: id, function, location, die: None, inlined: false }];
+            return vec![InlineFrame {
+                module: id,
+                function,
+                location,
+                die: None,
+                inlined: false,
+            }];
         }
         let n = raw.len();
         raw.into_iter()
@@ -303,7 +326,13 @@ impl SymbolSet {
                 let function = die
                     .and_then(|d| dwarf.and_then(|dw| dw.function_name(d)))
                     .or_else(|| raw_name.map(|r| names::demangle(&r)));
-                InlineFrame { module: id, function, location, die, inlined: i + 1 < n }
+                InlineFrame {
+                    module: id,
+                    function,
+                    location,
+                    die,
+                    inlined: i + 1 < n,
+                }
             })
             .collect()
     }
@@ -324,7 +353,10 @@ impl SymbolSet {
             name: sym.name.clone(),
             linkage_name: Some(sym.raw_name.clone()),
             entry: m.to_runtime(sym.address),
-            ranges: std::iter::once(m.to_runtime(sym.address)..m.to_runtime(sym.address + sym.size.max(1))).collect(),
+            ranges: std::iter::once(
+                m.to_runtime(sym.address)..m.to_runtime(sym.address + sym.size.max(1)),
+            )
+            .collect(),
             decl: None,
             origin: FunctionOrigin::Symbol,
         })
@@ -343,8 +375,11 @@ impl SymbolSet {
         unit: usize,
         f: &crate::dwarf::FunctionDie,
     ) -> FunctionInfo {
-        let ranges: Vec<Range<u64>> =
-            f.ranges.iter().map(|r| m.to_runtime(r.start)..m.to_runtime(r.end)).collect();
+        let ranges: Vec<Range<u64>> = f
+            .ranges
+            .iter()
+            .map(|r| m.to_runtime(r.start)..m.to_runtime(r.end))
+            .collect();
         let entry = ranges.iter().map(|r| r.start).min().unwrap_or(0);
         FunctionInfo {
             module: id,
@@ -393,10 +428,16 @@ impl SymbolSet {
     pub fn find_functions(&self, name: &str) -> Vec<FunctionInfo> {
         let mut out = Vec::new();
         for (id, m) in self.modules() {
-            let Ok(dwarf) = m.binary().dwarf() else { continue };
+            let Ok(dwarf) = m.binary().dwarf() else {
+                continue;
+            };
             let refs = if name == "main" {
                 let mains = dwarf.main_subprograms();
-                if mains.is_empty() { dwarf.find_functions(name) } else { mains }
+                if mains.is_empty() {
+                    dwarf.find_functions(name)
+                } else {
+                    mains
+                }
             } else {
                 dwarf.find_functions(name)
             };
@@ -442,7 +483,11 @@ impl SymbolSet {
             .filter(|f| f.name == name || names::strip_generics(&f.name) == name)
             .cloned()
             .collect();
-        let mut result = if exact.is_empty() || name == "main" { out } else { exact };
+        let mut result = if exact.is_empty() || name == "main" {
+            out
+        } else {
+            exact
+        };
         result.sort_by_key(|f| (f.module, f.entry));
         result.dedup_by(|a, b| a.entry == b.entry && a.module == b.module);
         result
@@ -468,18 +513,26 @@ impl SymbolSet {
                 if !m.binary().contains_code(inl.entry_pc?) {
                     return None;
                 }
-                let ranges: Vec<Range<u64>> =
-                    inl.ranges.iter().map(|r| m.to_runtime(r.start)..m.to_runtime(r.end)).collect();
+                let ranges: Vec<Range<u64>> = inl
+                    .ranges
+                    .iter()
+                    .map(|r| m.to_runtime(r.start)..m.to_runtime(r.end))
+                    .collect();
                 let entry = m.to_runtime(inl.entry_pc?);
                 let origin = inl.origin;
                 Some(FunctionInfo {
                     module: id,
-                    name: origin.and_then(|o| dwarf.function_name(o)).unwrap_or_else(|| "?".into()),
+                    name: origin
+                        .and_then(|o| dwarf.function_name(o))
+                        .unwrap_or_else(|| "?".into()),
                     linkage_name: origin.and_then(|o| dwarf.linkage_name(o)),
                     entry,
                     ranges,
                     decl: None,
-                    origin: FunctionOrigin::Inlined { die: inl.offset, origin },
+                    origin: FunctionOrigin::Inlined {
+                        die: inl.offset,
+                        origin,
+                    },
                 })
             }
         }
@@ -492,8 +545,12 @@ impl SymbolSet {
         if !matches!(function.origin, FunctionOrigin::Subprogram { .. }) {
             return function.entry;
         }
-        let Some(m) = self.module(function.module) else { return function.entry };
-        let Ok(dwarf) = m.binary().dwarf() else { return function.entry };
+        let Some(m) = self.module(function.module) else {
+            return function.entry;
+        };
+        let Ok(dwarf) = m.binary().dwarf() else {
+            return function.entry;
+        };
         let entry = m.to_file(function.entry);
         let Some(range) = function
             .ranges
@@ -503,8 +560,12 @@ impl SymbolSet {
         else {
             return function.entry;
         };
-        let Some(unit) = dwarf.units_at(entry).next() else { return function.entry };
-        let Ok(table) = dwarf.line_table(unit) else { return function.entry };
+        let Some(unit) = dwarf.units_at(entry).next() else {
+            return function.entry;
+        };
+        let Ok(table) = dwarf.line_table(unit) else {
+            return function.entry;
+        };
         let rows = table.rows_in(range);
         m.to_runtime(prologue_end(&rows, entry))
     }
@@ -519,9 +580,13 @@ impl SymbolSet {
         let mut candidates_by_line: BTreeMap<u32, Vec<(ModuleId, usize, LineRow, String)>> =
             BTreeMap::new();
         for (id, m) in self.modules() {
-            let Ok(dwarf) = m.binary().dwarf() else { continue };
+            let Ok(dwarf) = m.binary().dwarf() else {
+                continue;
+            };
             for unit in 0..dwarf.units().len() {
-                let Ok(table) = dwarf.line_table(unit) else { continue };
+                let Ok(table) = dwarf.line_table(unit) else {
+                    continue;
+                };
                 let files = table.matching_files(file);
                 if files.is_empty() {
                     continue;
@@ -535,7 +600,10 @@ impl SymbolSet {
                         exact.push((id, unit, *row, path));
                     } else {
                         best_next = Some(best_next.map_or(row.line, |b| b.min(row.line)));
-                        candidates_by_line.entry(row.line).or_default().push((id, unit, *row, path));
+                        candidates_by_line
+                            .entry(row.line)
+                            .or_default()
+                            .push((id, unit, *row, path));
                     }
                 }
             }
@@ -553,9 +621,13 @@ impl SymbolSet {
             BTreeMap::new();
         for (id, _unit, row, path) in rows {
             let Some(m) = self.module(id) else { continue };
-            let Ok(dwarf) = m.binary().dwarf() else { continue };
+            let Ok(dwarf) = m.binary().dwarf() else {
+                continue;
+            };
             let block = innermost_block(dwarf, row.address);
-            let slot = per_block.entry((id, block)).or_insert((row.address, row, path.clone()));
+            let slot = per_block
+                .entry((id, block))
+                .or_insert((row.address, row, path.clone()));
             if row.address < slot.0 {
                 *slot = (row.address, row, path);
             }
@@ -569,7 +641,11 @@ impl SymbolSet {
             {
                 runtime = self.breakpoint_address(&f);
             }
-            let function = self.frames_at(runtime).into_iter().next().and_then(|f| f.function);
+            let function = self
+                .frames_at(runtime)
+                .into_iter()
+                .next()
+                .and_then(|f| f.function);
             out.push(LineAddress {
                 module: id,
                 address: runtime,
@@ -593,8 +669,12 @@ impl SymbolSet {
         let file_pc = m.to_file(pc);
         let dwarf = m.binary().dwarf().ok()?;
         for unit in dwarf.units_at(file_pc) {
-            let Ok(table) = dwarf.line_table(unit) else { continue };
-            let Some(seq) = table.sequence_at(file_pc) else { continue };
+            let Ok(table) = dwarf.line_table(unit) else {
+                continue;
+            };
+            let Some(seq) = table.sequence_at(file_pc) else {
+                continue;
+            };
             let i = seq.row_index(file_pc)?;
             let row = seq.rows[i];
             if row.line == 0 {
@@ -622,7 +702,9 @@ impl SymbolSet {
     pub fn find_statics(&self, name: &str) -> Vec<(ModuleId, DieRef)> {
         let mut out = Vec::new();
         for (id, m) in self.modules() {
-            let Ok(dwarf) = m.binary().dwarf() else { continue };
+            let Ok(dwarf) = m.binary().dwarf() else {
+                continue;
+            };
             out.extend(dwarf.find_statics(name).into_iter().map(|d| (id, d)));
         }
         out
@@ -641,7 +723,9 @@ impl SymbolSet {
 fn innermost_block(dwarf: &DwarfIndex, addr: u64) -> Option<DieRef> {
     let mut best: Option<(u64, DieRef)> = None;
     for unit in dwarf.units_at(addr) {
-        let Ok(ix) = dwarf.unit_index(unit) else { continue };
+        let Ok(ix) = dwarf.unit_index(unit) else {
+            continue;
+        };
         for inl in &ix.inlined {
             if inl.ranges.iter().any(|r| r.contains(&addr)) {
                 let size: u64 = inl.ranges.iter().map(|r| r.end - r.start).sum();
@@ -678,18 +762,33 @@ mod tests {
     use super::*;
 
     fn row(address: u64, line: u32, prologue_end: bool) -> LineRow {
-        LineRow { address, file: 0, line, column: 0, is_stmt: true, prologue_end }
+        LineRow {
+            address,
+            file: 0,
+            line,
+            column: 0,
+            is_stmt: true,
+            prologue_end,
+        }
     }
 
     #[test]
     fn prologue_end_wins() {
-        let rows = [row(0x100, 5, false), row(0x108, 6, true), row(0x110, 7, false)];
+        let rows = [
+            row(0x100, 5, false),
+            row(0x108, 6, true),
+            row(0x110, 7, false),
+        ];
         assert_eq!(prologue_end(&rows, 0x100), 0x108);
     }
 
     #[test]
     fn second_line_rule_without_marker() {
-        let rows = [row(0x100, 5, false), row(0x104, 5, false), row(0x10c, 6, false)];
+        let rows = [
+            row(0x100, 5, false),
+            row(0x104, 5, false),
+            row(0x10c, 6, false),
+        ];
         assert_eq!(prologue_end(&rows, 0x100), 0x10c);
         assert_eq!(prologue_end(&[row(0x100, 5, false)], 0x100), 0x100);
     }

@@ -29,7 +29,10 @@ impl Auxv {
     }
 
     pub fn get(&self, key: u64) -> Option<u64> {
-        self.entries.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+        self.entries
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
     }
 
     /// The program's runtime entry point.
@@ -55,7 +58,12 @@ mod tests {
     #[test]
     fn parses_until_null() {
         let mut b = Vec::new();
-        for (k, v) in [(AT_PHDR, 0x40u64), (AT_ENTRY, 0x5555_0000_1000), (0, 0), (AT_BASE, 9)] {
+        for (k, v) in [
+            (AT_PHDR, 0x40u64),
+            (AT_ENTRY, 0x5555_0000_1000),
+            (0, 0),
+            (AT_BASE, 9),
+        ] {
             b.extend_from_slice(&k.to_le_bytes());
             b.extend_from_slice(&v.to_le_bytes());
         }

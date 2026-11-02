@@ -29,7 +29,10 @@ pub struct Session<'a> {
 
 impl std::fmt::Debug for Session<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session").field("module", &self.module).field("rustc", &self.rustc).finish()
+        f.debug_struct("Session")
+            .field("module", &self.module)
+            .field("rustc", &self.rustc)
+            .finish()
     }
 }
 
@@ -47,7 +50,16 @@ impl<'a> Session<'a> {
             .ok_or_else(|| HopperError::Invalid(format!("no module {module:?}")))?
             .binary()
             .clone();
-        Ok(Session { symbols, module, binary, types, regs, rustc, memory, pages: HashMap::new() })
+        Ok(Session {
+            symbols,
+            module,
+            binary,
+            types,
+            regs,
+            rustc,
+            memory,
+            pages: HashMap::new(),
+        })
     }
 
     pub fn dwarf(&self) -> Result<&DwarfIndex> {
@@ -77,7 +89,9 @@ impl<'a> Session<'a> {
             return Ok(Vec::new());
         }
         if len > MAX_WHOLE_READ {
-            return Err(HopperError::Eval(format!("refusing to read {len} bytes at once")));
+            return Err(HopperError::Eval(format!(
+                "refusing to read {len} bytes at once"
+            )));
         }
         let first = addr / PAGE;
         let last = (addr + len - 1) / PAGE;
@@ -87,8 +101,16 @@ impl<'a> Session<'a> {
             for page in first..=last {
                 match self.page(page) {
                     Some(bytes) => {
-                        let start = if page == first { (addr % PAGE) as usize } else { 0 };
-                        let end = if page == last { ((addr + len - 1) % PAGE) as usize + 1 } else { PAGE as usize };
+                        let start = if page == first {
+                            (addr % PAGE) as usize
+                        } else {
+                            0
+                        };
+                        let end = if page == last {
+                            ((addr + len - 1) % PAGE) as usize + 1
+                        } else {
+                            PAGE as usize
+                        };
                         out.extend_from_slice(&bytes[start..end]);
                     }
                     None => {
@@ -111,7 +133,11 @@ impl<'a> Session<'a> {
             return p.clone();
         }
         let mut buf = vec![0u8; PAGE as usize];
-        let got = self.memory.read(page * PAGE, &mut buf).ok().map(|()| Arc::from(buf));
+        let got = self
+            .memory
+            .read(page * PAGE, &mut buf)
+            .ok()
+            .map(|()| Arc::from(buf));
         self.pages.insert(page, got.clone());
         got
     }
@@ -127,12 +153,18 @@ impl<'a> Session<'a> {
 
     /// A value of `ty` at `addr`.
     pub fn at(&self, ty: &TypeId, addr: u64) -> Result<Value> {
-        Ok(Value { ty: self.ty(ty)?, loc: ValueLocation::Memory { addr } })
+        Ok(Value {
+            ty: self.ty(ty)?,
+            loc: ValueLocation::Memory { addr },
+        })
     }
 
     /// A value made from known bytes (a literal, a computed result).
     pub fn from_bytes(&self, ty: &TypeId, bytes: Vec<u8>) -> Result<Value> {
-        Ok(Value { ty: self.ty(ty)?, loc: ValueLocation::Bytes(Arc::from(bytes)) })
+        Ok(Value {
+            ty: self.ty(ty)?,
+            loc: ValueLocation::Bytes(Arc::from(bytes)),
+        })
     }
 
     pub fn integer(&self, v: i64) -> Value {
@@ -176,10 +208,9 @@ impl Value {
         match &self.loc {
             ValueLocation::Memory { addr } => Ok(Arc::from(s.read(*addr, len)?)),
             ValueLocation::Register { reg } => {
-                let b = s
-                    .regs
-                    .get_bytes(*reg)
-                    .ok_or_else(|| HopperError::Eval(format!("register {} unavailable", reg.name())))?;
+                let b = s.regs.get_bytes(*reg).ok_or_else(|| {
+                    HopperError::Eval(format!("register {} unavailable", reg.name()))
+                })?;
                 let mut v = b.to_vec();
                 v.resize(len as usize, 0);
                 Ok(Arc::from(v))
@@ -198,7 +229,9 @@ impl Value {
     pub fn slice(&self, s: &mut Session<'_>, offset: u64, ty: &TypeId) -> Result<Value> {
         let ty = s.ty(ty)?;
         let loc = match &self.loc {
-            ValueLocation::Memory { addr } => ValueLocation::Memory { addr: addr + offset },
+            ValueLocation::Memory { addr } => ValueLocation::Memory {
+                addr: addr + offset,
+            },
             ValueLocation::OptimisedOut => ValueLocation::OptimisedOut,
             ValueLocation::Register { .. } | ValueLocation::Bytes(_) => {
                 let size = match ty.size {
@@ -219,19 +252,30 @@ impl Value {
     /// A struct or union member.
     pub fn field(&self, s: &mut Session<'_>, f: &Field) -> Result<Value> {
         let v = self.slice(s, f.offset, &f.ty)?;
-        let Some((bit, width)) = f.bits else { return Ok(v) };
+        let Some((bit, width)) = f.bits else {
+            return Ok(v);
+        };
         // Extract the bit field into a value of its own.
         let size = v.size(s)?.max(width.div_ceil(8));
         let span = (bit + width).div_ceil(8);
-        let raw = self.slice(s, f.offset, &f.ty).and_then(|x| x.bytes_prefix(s, span.max(size)))?;
+        let raw = self
+            .slice(s, f.offset, &f.ty)
+            .and_then(|x| x.bytes_prefix(s, span.max(size)))?;
         let mut word = 0u128;
         for (i, b) in raw.iter().take(16).enumerate() {
             word |= (*b as u128) << (8 * i);
         }
-        let mask = if width >= 128 { u128::MAX } else { (1u128 << width) - 1 };
+        let mask = if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
         let x = (word >> bit) & mask;
         let bytes = x.to_le_bytes()[..size as usize].to_vec();
-        Ok(Value { ty: v.ty, loc: ValueLocation::Bytes(Arc::from(bytes)) })
+        Ok(Value {
+            ty: v.ty,
+            loc: ValueLocation::Bytes(Arc::from(bytes)),
+        })
     }
 
     /// The value a pointer value points at, with type `pointee`.

@@ -12,8 +12,12 @@ use hopper_symbols::fixtures::{GdbPrinting, build_program, core_of, gdb_print};
 #[test]
 fn optimised_frame_matches_gdb() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/programs/optimised");
-    let Some(binary) = build_program(&dir, "optimised", None) else { return };
-    let Some(core_path) = core_of(&binary, "optimised::stop_here", "optimised") else { return };
+    let Some(binary) = build_program(&dir, "optimised", None) else {
+        return;
+    };
+    let Some(core_path) = core_of(&binary, "optimised::stop_here", "optimised") else {
+        return;
+    };
     let core = CoreFile::open(&core_path).unwrap();
     let symbols = core.symbol_set();
     let thread = core.threads()[0].clone();
@@ -28,7 +32,13 @@ fn optimised_frame_matches_gdb() {
         symbols: &symbols,
         memory: &mut mem,
         frame: FrameRef::from_stack(&stack[frame]),
-        at: Moment { recording: RecordingId([0; 16]), frame_time: 0, tid: Tid(1), ticks: 0, sub: 0 },
+        at: Moment {
+            recording: RecordingId([0; 16]),
+            frame_time: 0,
+            tid: Tid(1),
+            ticks: 0,
+            sub: 0,
+        },
         process: ProcessId::new(thread.tid.0),
     };
     let locals = ev.locals(&mut cx).unwrap();
@@ -36,7 +46,13 @@ fn optimised_frame_matches_gdb() {
     for want in ["seed", "rounds", "name", "acc"] {
         assert!(names.contains(&want), "{want} in {names:?}");
     }
-    let gdb = gdb_print(&binary, &core_path, frame as u32, &names, GdbPrinting::PrettyPrinters);
+    let gdb = gdb_print(
+        &binary,
+        &core_path,
+        frame as u32,
+        &names,
+        GdbPrinting::PrettyPrinters,
+    );
     let mut in_registers = 0;
     for (v, theirs) in locals.iter().zip(&gdb) {
         // gdb's providers raise on a partly optimised-out `&str` instead of printing it.
@@ -51,10 +67,16 @@ fn optimised_frame_matches_gdb() {
             in_registers += 1;
         }
     }
-    assert!(in_registers >= 2, "seed and acc are in callee-saved registers: {locals:#?}");
+    assert!(
+        in_registers >= 2,
+        "seed and acc are in callee-saved registers: {locals:#?}"
+    );
     // The register place names the frame, so the engine reads the unwound register.
     let seed = locals.iter().find(|v| v.name == "seed").unwrap();
     let mix_id = stack[frame].frame.id;
-    assert!(matches!(seed.place, Some(Place::Register { frame, .. }) if frame == mix_id), "{seed:?}");
+    assert!(
+        matches!(seed.place, Some(Place::Register { frame, .. }) if frame == mix_id),
+        "{seed:?}"
+    );
     assert_eq!(ev.eval(&mut cx, "seed").unwrap().summary, seed.summary);
 }

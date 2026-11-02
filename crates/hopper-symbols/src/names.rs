@@ -66,13 +66,19 @@ mod tests {
     #[test]
     fn demangles_v0_and_legacy() {
         assert_eq!(demangle("_RNvCsk2gAxyzTTfV_6values4main"), "values::main");
-        assert_eq!(demangle("_ZN6values9stop_here17h0123456789abcdefE"), "values::stop_here");
+        assert_eq!(
+            demangle("_ZN6values9stop_here17h0123456789abcdefE"),
+            "values::stop_here"
+        );
         assert_eq!(demangle("main"), "main");
     }
 
     #[test]
     fn strips_generics() {
-        assert_eq!(strip_generics("std::rt::lang_start<()>"), "std::rt::lang_start");
+        assert_eq!(
+            strip_generics("std::rt::lang_start<()>"),
+            "std::rt::lang_start"
+        );
         assert_eq!(
             strip_generics("core::ops::function::FnOnce::call_once<fn(), ()>"),
             "core::ops::function::FnOnce::call_once"
@@ -87,7 +93,10 @@ mod tests {
     #[test]
     fn suffix_on_segments() {
         assert!(path_suffix_match("worked_example::load", "load"));
-        assert!(path_suffix_match("worked_example::load", "worked_example::load"));
+        assert!(path_suffix_match(
+            "worked_example::load",
+            "worked_example::load"
+        ));
         assert!(!path_suffix_match("worked_example::reload", "load"));
         assert!(!path_suffix_match("load", "worked_example::load"));
     }

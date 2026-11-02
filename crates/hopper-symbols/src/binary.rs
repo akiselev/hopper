@@ -148,10 +148,16 @@ impl Binary {
         let file = object::File::parse(&*data)
             .map_err(|e| HopperError::Symbols(format!("{}: {e}", path.display())))?;
         if file.format() != object::BinaryFormat::Elf {
-            return Err(HopperError::Symbols(format!("{}: not an ELF file", path.display())));
+            return Err(HopperError::Symbols(format!(
+                "{}: not an ELF file",
+                path.display()
+            )));
         }
-        let endian =
-            if file.is_little_endian() { RunTimeEndian::Little } else { RunTimeEndian::Big };
+        let endian = if file.is_little_endian() {
+            RunTimeEndian::Little
+        } else {
+            RunTimeEndian::Big
+        };
         let kind = match file.kind() {
             object::ObjectKind::Executable => BinaryKind::FixedExecutable,
             object::ObjectKind::Dynamic => BinaryKind::Relocatable,
@@ -183,7 +189,13 @@ impl Binary {
                     _ => continue,
                 },
             };
-            sections.insert(name.to_string(), SectionData { address: section.address(), data: reader });
+            sections.insert(
+                name.to_string(),
+                SectionData {
+                    address: section.address(),
+                    data: reader,
+                },
+            );
         }
 
         let segments = file
@@ -276,7 +288,11 @@ impl Binary {
     /// The lowest `PT_LOAD` address, rounded down to a page. The loader maps the first segment of
     /// the file there plus the bias.
     pub fn load_base(&self) -> u64 {
-        self.segments.iter().map(|s| s.vaddr & !0xfff).min().unwrap_or(0)
+        self.segments
+            .iter()
+            .map(|s| s.vaddr & !0xfff)
+            .min()
+            .unwrap_or(0)
     }
 
     /// Whether `addr` (a file address) falls inside a loaded segment.
@@ -286,7 +302,9 @@ impl Binary {
 
     /// Whether `addr` (a file address) falls inside an executable segment.
     pub fn contains_code(&self, addr: u64) -> bool {
-        self.segments.iter().any(|s| s.executable && s.range().contains(&addr))
+        self.segments
+            .iter()
+            .any(|s| s.executable && s.range().contains(&addr))
     }
 
     pub fn endian(&self) -> RunTimeEndian {
@@ -313,7 +331,10 @@ impl Binary {
                 for (i, b) in buf.iter_mut().enumerate() {
                     let o = off + i as u64;
                     *b = if o < seg.filesz {
-                        self.data.get((seg.file_offset + o) as usize).copied().unwrap_or(0)
+                        self.data
+                            .get((seg.file_offset + o) as usize)
+                            .copied()
+                            .unwrap_or(0)
                     } else {
                         0
                     };
@@ -352,7 +373,9 @@ impl Binary {
     }
 
     fn same_segment(&self, a: u64, b: u64) -> bool {
-        self.segments.iter().any(|s| s.range().contains(&a) && s.range().contains(&b))
+        self.segments
+            .iter()
+            .any(|s| s.range().contains(&a) && s.range().contains(&b))
     }
 
     /// The DWARF index, built on first use. Fails when the debug information is malformed;
@@ -378,7 +401,9 @@ impl Binary {
             if index.units().is_empty() {
                 return None;
             }
-            addr2line::Context::from_arc_dwarf(index.dwarf_arc()).ok().map(Mutex::new)
+            addr2line::Context::from_arc_dwarf(index.dwarf_arc())
+                .ok()
+                .map(Mutex::new)
         });
         let ctx = slot.as_ref()?;
         let guard = ctx.lock().unwrap_or_else(|p| p.into_inner());

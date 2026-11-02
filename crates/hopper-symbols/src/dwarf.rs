@@ -33,13 +33,20 @@ pub struct RustcVersion {
 
 impl RustcVersion {
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        RustcVersion { major, minor, patch }
+        RustcVersion {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Find `rustc version X.Y.Z` in a producer string.
     pub fn from_producer(producer: &str) -> Option<RustcVersion> {
         let rest = &producer[producer.find("rustc version ")? + "rustc version ".len()..];
-        let ver: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let ver: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         let mut it = ver.split('.').map(|p| p.parse::<u32>().ok());
         Some(RustcVersion {
             major: it.next()??,
@@ -182,7 +189,9 @@ pub struct DwarfIndex {
 
 impl fmt::Debug for DwarfIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DwarfIndex").field("units", &self.units.len()).finish()
+        f.debug_struct("DwarfIndex")
+            .field("units", &self.units.len())
+            .finish()
     }
 }
 
@@ -190,7 +199,10 @@ impl DwarfIndex {
     pub(crate) fn load(binary: &Binary) -> Result<DwarfIndex> {
         let empty = Reader::new(Arc::from(Vec::new()), binary.endian());
         let sections = gimli::DwarfSections::load(|id| -> std::result::Result<Reader, ()> {
-            Ok(binary.section(id.name()).map(|s| s.data.clone()).unwrap_or_else(|| empty.clone()))
+            Ok(binary
+                .section(id.name())
+                .map(|s| s.data.clone())
+                .unwrap_or_else(|| empty.clone()))
         })
         .map_err(|()| HopperError::Symbols("loading DWARF sections".into()))?;
         let mut dwarf = sections.borrow(|r| r.clone());
@@ -200,7 +212,9 @@ impl DwarfIndex {
         let mut units = Vec::new();
         let mut headers = dwarf.units();
         while let Some(header) = headers.next().map_err(sym_err)? {
-            let Some(offset) = header.debug_info_offset() else { continue };
+            let Some(offset) = header.debug_info_offset() else {
+                continue;
+            };
             let end = offset.0 as u64 + header.length_including_self() as u64;
             let unit = match dwarf.unit(header) {
                 Ok(u) => u,
@@ -210,10 +224,12 @@ impl DwarfIndex {
             let comp_dir = unit.comp_dir.as_ref().map(reader_string);
             let (language, producer) = {
                 let root = unit.entry(UnitOffset(unit.header.header_size())).ok();
-                let lang = root.as_ref().and_then(|e| match e.attr_value(gimli::DW_AT_language) {
-                    Some(AttributeValue::Language(l)) => Some(l),
-                    _ => None,
-                });
+                let lang = root
+                    .as_ref()
+                    .and_then(|e| match e.attr_value(gimli::DW_AT_language) {
+                        Some(AttributeValue::Language(l)) => Some(l),
+                        _ => None,
+                    });
                 let producer = root
                     .as_ref()
                     .and_then(|e| e.attr_value(gimli::DW_AT_producer))
@@ -248,7 +264,12 @@ impl DwarfIndex {
             }
         }
         ranges.sort();
-        Ok(DwarfIndex { dwarf, units, ranges, names: OnceLock::new() })
+        Ok(DwarfIndex {
+            dwarf,
+            units,
+            ranges,
+            names: OnceLock::new(),
+        })
     }
 
     pub fn dwarf(&self) -> &gimli::Dwarf<Reader> {
@@ -278,7 +299,10 @@ impl DwarfIndex {
     }
 
     /// Read the DIE at `die`.
-    pub fn entry(&self, die: DieRef) -> Result<(&UnitInfo, gimli::DebuggingInformationEntry<Reader>)> {
+    pub fn entry(
+        &self,
+        die: DieRef,
+    ) -> Result<(&UnitInfo, gimli::DebuggingInformationEntry<Reader>)> {
         let unit = self.unit_of(die)?;
         let entry = unit.unit.entry(unit.unit_offset(die)).map_err(sym_err)?;
         Ok((unit, entry))
@@ -288,24 +312,33 @@ impl DwarfIndex {
     pub(crate) fn units_at(&self, addr: u64) -> impl Iterator<Item = usize> + '_ {
         let end = self.ranges.partition_point(|r| r.0 <= addr);
         let mut seen = Vec::new();
-        self.ranges[..end].iter().rev().filter_map(move |&(b, e, u)| {
-            if b <= addr && addr < e && !seen.contains(&u) {
-                seen.push(u);
-                Some(u)
-            } else {
-                None
-            }
-        })
+        self.ranges[..end]
+            .iter()
+            .rev()
+            .filter_map(move |&(b, e, u)| {
+                if b <= addr && addr < e && !seen.contains(&u) {
+                    seen.push(u);
+                    Some(u)
+                } else {
+                    None
+                }
+            })
     }
 
     pub(crate) fn unit_index(&self, unit: usize) -> Result<&UnitIndex> {
         let u = &self.units[unit];
-        u.index.get_or_init(|| build_unit_index(&self.dwarf, u)).as_ref().map_err(Clone::clone)
+        u.index
+            .get_or_init(|| build_unit_index(&self.dwarf, u))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     pub(crate) fn line_table(&self, unit: usize) -> Result<&LineTable> {
         let u = &self.units[unit];
-        u.lines.get_or_init(|| LineTable::load(&self.dwarf, u)).as_ref().map_err(Clone::clone)
+        u.lines
+            .get_or_init(|| LineTable::load(&self.dwarf, u))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Resolve a reference-class attribute to a `DieRef`.
@@ -325,7 +358,10 @@ impl DwarfIndex {
         at: gimli::DwAt,
     ) -> Option<String> {
         let v = entry.attr_value(at)?;
-        self.dwarf.attr_string(&unit.unit, v).ok().map(|r| reader_string(&r))
+        self.dwarf
+            .attr_string(&unit.unit, v)
+            .ok()
+            .map(|r| reader_string(&r))
     }
 
     /// The fully qualified name of a DIE: its enclosing namespaces and types joined with `::`
@@ -403,7 +439,9 @@ impl DwarfIndex {
     pub(crate) fn functions_at(&self, addr: u64) -> Vec<FunctionLoc> {
         let mut out = Vec::new();
         for unit in self.units_at(addr) {
-            let Ok(index) = self.unit_index(unit) else { continue };
+            let Ok(index) = self.unit_index(unit) else {
+                continue;
+            };
             for (i, f) in index.functions.iter().enumerate() {
                 if f.ranges.iter().any(|r| r.contains(&addr)) {
                     out.push(FunctionLoc { unit, index: i });
@@ -465,7 +503,9 @@ impl DwarfIndex {
         for refs in names.exact.values() {
             for r in refs {
                 if let FunctionRef::Concrete { unit, index } = *r
-                    && self.unit_index(unit).is_ok_and(|ix| ix.functions[index].main_subprogram)
+                    && self
+                        .unit_index(unit)
+                        .is_ok_and(|ix| ix.functions[index].main_subprogram)
                     && !out.contains(r)
                 {
                     out.push(*r);
@@ -492,7 +532,9 @@ impl DwarfIndex {
             }
         };
         for unit in 0..self.units.len() {
-            let Ok(index) = self.unit_index(unit) else { continue };
+            let Ok(index) = self.unit_index(unit) else {
+                continue;
+            };
             for (i, f) in index.functions.iter().enumerate() {
                 if f.ranges.is_empty() {
                     continue;
@@ -522,7 +564,9 @@ impl DwarfIndex {
         let mut exact = Vec::new();
         let mut suffix = Vec::new();
         for unit in 0..self.units.len() {
-            let Ok(index) = self.unit_index(unit) else { continue };
+            let Ok(index) = self.unit_index(unit) else {
+                continue;
+            };
             for s in &index.statics {
                 if !s.has_location {
                     continue;
@@ -553,7 +597,9 @@ fn last_segment(name: &str) -> &str {
 
 /// A gimli string as UTF-8, replacing invalid bytes.
 pub fn reader_string(r: &Reader) -> String {
-    r.to_string_lossy().map(|c| c.into_owned()).unwrap_or_default()
+    r.to_string_lossy()
+        .map(|c| c.into_owned())
+        .unwrap_or_default()
 }
 
 pub(crate) fn sym_err(e: gimli::Error) -> HopperError {
@@ -618,7 +664,8 @@ fn build_unit_index(
         _ => None,
     };
     let string = |v: Option<AttributeValue<Reader>>| {
-        v.and_then(|v| dwarf.attr_string(unit, v).ok()).map(|r| reader_string(&r))
+        v.and_then(|v| dwarf.attr_string(unit, v).ok())
+            .map(|r| reader_string(&r))
     };
     while let Some(entry) = cursor.next_dfs().map_err(sym_err)? {
         let depth = entry.depth();
@@ -639,8 +686,7 @@ fn build_unit_index(
         {
             ix.scope_names.insert(die, name);
         }
-        let in_function =
-            stack.iter().any(|(_, _, t)| *t == gimli::DW_TAG_subprogram);
+        let in_function = stack.iter().any(|(_, _, t)| *t == gimli::DW_TAG_subprogram);
         match tag {
             gimli::DW_TAG_subprogram => {
                 let origin = entry
@@ -652,10 +698,12 @@ fn build_unit_index(
                     name: string(entry.attr_value(gimli::DW_AT_name)),
                     ranges: die_ranges(dwarf, unit, entry),
                     origin,
-                    decl_file: entry.attr_value(gimli::DW_AT_decl_file).and_then(|v| match v {
-                        AttributeValue::FileIndex(i) => Some(i),
-                        other => other.udata_value(),
-                    }),
+                    decl_file: entry
+                        .attr_value(gimli::DW_AT_decl_file)
+                        .and_then(|v| match v {
+                            AttributeValue::FileIndex(i) => Some(i),
+                            other => other.udata_value(),
+                        }),
                     decl_line: entry
                         .attr_value(gimli::DW_AT_decl_line)
                         .and_then(|v| v.udata_value())
@@ -676,14 +724,17 @@ fn build_unit_index(
                     .or_else(|| ranges.iter().map(|r| r.start).min());
                 ix.inlined.push(InlinedDie {
                     offset: die,
-                    origin: entry.attr_value(gimli::DW_AT_abstract_origin).and_then(reference),
+                    origin: entry
+                        .attr_value(gimli::DW_AT_abstract_origin)
+                        .and_then(reference),
                     ranges,
                     entry_pc,
                 });
             }
             gimli::DW_TAG_variable if !in_function => {
-                let specification =
-                    entry.attr_value(gimli::DW_AT_specification).and_then(reference);
+                let specification = entry
+                    .attr_value(gimli::DW_AT_specification)
+                    .and_then(reference);
                 let name = string(entry.attr_value(gimli::DW_AT_name));
                 let has_location = entry.attr(gimli::DW_AT_location).is_some();
                 // A definition that points at its declaration has no name of its own.
@@ -713,9 +764,14 @@ mod tests {
     #[test]
     fn parses_rustc_producer() {
         let p = "clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07))";
-        assert_eq!(RustcVersion::from_producer(p), Some(RustcVersion::new(1, 97, 0)));
         assert_eq!(
-            RustcVersion::from_producer("clang LLVM (rustc version 1.96.0-nightly (abc 2026-05-01))"),
+            RustcVersion::from_producer(p),
+            Some(RustcVersion::new(1, 97, 0))
+        );
+        assert_eq!(
+            RustcVersion::from_producer(
+                "clang LLVM (rustc version 1.96.0-nightly (abc 2026-05-01))"
+            ),
             Some(RustcVersion::new(1, 96, 0))
         );
         assert_eq!(RustcVersion::from_producer("GNU C17 13.2.0"), None);

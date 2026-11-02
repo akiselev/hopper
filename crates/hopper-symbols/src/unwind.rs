@@ -2,7 +2,9 @@
 //! to the `rbp` chain where a module has no CFI for the PC. Physical frames are then expanded into
 //! source frames, one per inlined call.
 
-use gimli::{CfaRule, Encoding, Evaluation, EvaluationResult, Location, RegisterRule, UnwindContext};
+use gimli::{
+    CfaRule, Encoding, Evaluation, EvaluationResult, Location, RegisterRule, UnwindContext,
+};
 use hopper_core::api::Frame;
 use hopper_core::target::Memory;
 use hopper_core::{FrameId, HopperError, Reg, RegisterSet, Result, Tid};
@@ -71,8 +73,14 @@ pub const MAX_FRAMES: usize = 512;
 
 impl SymbolSet {
     /// The machine frames of a thread whose registers are `regs`, innermost first.
-    pub fn unwind(&self, memory: &mut dyn Memory, regs: &RegisterSet) -> Result<Vec<PhysicalFrame>> {
-        let pc = regs.pc().ok_or_else(|| HopperError::Invalid("register set has no rip".into()))?;
+    pub fn unwind(
+        &self,
+        memory: &mut dyn Memory,
+        regs: &RegisterSet,
+    ) -> Result<Vec<PhysicalFrame>> {
+        let pc = regs
+            .pc()
+            .ok_or_else(|| HopperError::Invalid("register set has no rip".into()))?;
         let mut frames = vec![PhysicalFrame {
             pc,
             cfa: None,
@@ -85,7 +93,9 @@ impl SymbolSet {
             last.cfa = step.cfa;
             let Some(next) = step.caller else { break };
             // A caller's stack pointer is above its callee's; anything else is a corrupt stack.
-            let (Some(sp), Some(next_sp)) = (last.regs.sp(), next.regs.sp()) else { break };
+            let (Some(sp), Some(next_sp)) = (last.regs.sp(), next.regs.sp()) else {
+                break;
+            };
             if next_sp <= sp || next.pc == 0 {
                 break;
             }
@@ -111,7 +121,10 @@ impl SymbolSet {
             if inline.is_empty() {
                 out.push(StackFrame {
                     frame: Frame {
-                        id: FrameId { tid, depth: out.len() as u32 },
+                        id: FrameId {
+                            tid,
+                            depth: out.len() as u32,
+                        },
                         pc: p.pc,
                         cfa: p.cfa,
                         function: None,
@@ -130,7 +143,10 @@ impl SymbolSet {
             for f in inline {
                 out.push(StackFrame {
                     frame: Frame {
-                        id: FrameId { tid, depth: out.len() as u32 },
+                        id: FrameId {
+                            tid,
+                            depth: out.len() as u32,
+                        },
                         pc: p.pc,
                         cfa: p.cfa,
                         function: f.function,
@@ -159,10 +175,14 @@ impl SymbolSet {
                 let mut ctx = UnwindContext::new();
                 let row = match source {
                     FdeSource::EhFrame => cfi.eh_frame.as_ref().and_then(|s| {
-                        fde.unwind_info_for_address(s, &cfi.bases, &mut ctx, file_pc).ok().cloned()
+                        fde.unwind_info_for_address(s, &cfi.bases, &mut ctx, file_pc)
+                            .ok()
+                            .cloned()
                     }),
                     FdeSource::DebugFrame => cfi.debug_frame.as_ref().and_then(|s| {
-                        fde.unwind_info_for_address(s, &cfi.bases, &mut ctx, file_pc).ok().cloned()
+                        fde.unwind_info_for_address(s, &cfi.bases, &mut ctx, file_pc)
+                            .ok()
+                            .cloned()
                     }),
                 };
                 if let Some(row) = row {
@@ -248,7 +268,10 @@ fn apply_row(
         RuleValue::Same => regs.get(Reg(ra_reg.0))?,
         // `.cfi_undefined rip` marks the outermost frame (`_start`, thread entry).
         RuleValue::Undefined | RuleValue::Unreadable => {
-            return Some(Step { cfa: Some(cfa), caller: None });
+            return Some(Step {
+                cfa: Some(cfa),
+                caller: None,
+            });
         }
     };
     next.values.retain(|(x, _)| *x != Reg::RIP);
@@ -323,7 +346,11 @@ fn eval_unwind_expr(
     initial: Option<u64>,
     bias: u64,
 ) -> Option<ExprResult> {
-    let encoding = Encoding { format: gimli::Format::Dwarf32, version: 4, address_size: 8 };
+    let encoding = Encoding {
+        format: gimli::Format::Dwarf32,
+        version: 4,
+        address_size: 8,
+    };
     let mut eval: Evaluation<Reader> = expr.evaluation(encoding);
     if let Some(v) = initial {
         eval.set_initial_value(v);
@@ -340,11 +367,12 @@ fn eval_unwind_expr(
                 let mut buf = [0u8; 8];
                 let n = (size as usize).min(8);
                 memory.read(address, &mut buf[..n]).ok()?;
-                eval.resume_with_memory(gimli::Value::Generic(u64::from_le_bytes(buf))).ok()?
+                eval.resume_with_memory(gimli::Value::Generic(u64::from_le_bytes(buf)))
+                    .ok()?
             }
-            EvaluationResult::RequiresRelocatedAddress(a) => {
-                eval.resume_with_relocated_address(a.wrapping_add(bias)).ok()?
-            }
+            EvaluationResult::RequiresRelocatedAddress(a) => eval
+                .resume_with_relocated_address(a.wrapping_add(bias))
+                .ok()?,
             _ => return None,
         };
     }
@@ -359,17 +387,28 @@ fn eval_unwind_expr(
 /// `rbp`-chain unwinding: the caller's CFA is `rbp + 16`, its return address is at `rbp + 8`, and
 /// its `rbp` at `rbp`.
 fn frame_pointer_step(memory: &mut dyn Memory, frame: &PhysicalFrame) -> Step {
-    let none = Step { cfa: None, caller: None };
-    let Some(rbp) = frame.regs.get(Reg::RBP) else { return none };
+    let none = Step {
+        cfa: None,
+        caller: None,
+    };
+    let Some(rbp) = frame.regs.get(Reg::RBP) else {
+        return none;
+    };
     if rbp == 0 || rbp % 8 != 0 {
         return none;
     }
     let cfa = rbp + 16;
     let (Ok(ra), Ok(saved_rbp)) = (memory.read_u64(rbp + 8), memory.read_u64(rbp)) else {
-        return Step { cfa: Some(cfa), caller: None };
+        return Step {
+            cfa: Some(cfa),
+            caller: None,
+        };
     };
     if ra == 0 {
-        return Step { cfa: Some(cfa), caller: None };
+        return Step {
+            cfa: Some(cfa),
+            caller: None,
+        };
     }
     let mut next = RegisterSet::default();
     for r in CALLEE_SAVED {
@@ -382,7 +421,12 @@ fn frame_pointer_step(memory: &mut dyn Memory, frame: &PhysicalFrame) -> Step {
     next.set(Reg::RIP, ra);
     Step {
         cfa: Some(cfa),
-        caller: Some(PhysicalFrame { pc: ra, cfa: None, regs: next, method: UnwindMethod::FramePointer }),
+        caller: Some(PhysicalFrame {
+            pc: ra,
+            cfa: None,
+            regs: next,
+            method: UnwindMethod::FramePointer,
+        }),
     }
 }
 

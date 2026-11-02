@@ -11,14 +11,20 @@ use std::sync::{Mutex, OnceLock};
 
 /// The repository root.
 pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root")
 }
 
 /// Whether gdb can be run.
 pub fn gdb_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        Command::new("gdb").arg("--version").output().is_ok_and(|o| o.status.success())
+        Command::new("gdb")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
     })
 }
 
@@ -33,16 +39,25 @@ fn skip<T>(why: &str) -> Option<T> {
 pub fn fixture_binary(name: &str) -> Option<PathBuf> {
     static BUILD: Mutex<Option<bool>> = Mutex::new(None);
     let root = repo_root();
-    let path = root.join("target/fixtures").join(name).join("debug").join(name);
+    let path = root
+        .join("target/fixtures")
+        .join(name)
+        .join("debug")
+        .join(name);
     let mut built = BUILD.lock().unwrap_or_else(|p| p.into_inner());
     if built.is_none() {
-        let status = Command::new("bash").arg(root.join("scripts/build-fixtures.sh")).status();
+        let status = Command::new("bash")
+            .arg(root.join("scripts/build-fixtures.sh"))
+            .status();
         *built = Some(status.is_ok_and(|s| s.success()));
     }
     if path.exists() {
         Some(path)
     } else {
-        skip(&format!("fixture {name} could not be built ({})", path.display()))
+        skip(&format!(
+            "fixture {name} could not be built ({})",
+            path.display()
+        ))
     }
 }
 
@@ -59,7 +74,9 @@ pub fn build_program(manifest_dir: &Path, name: &str, toolchain: Option<&str>) -
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let tag = toolchain.unwrap_or("pinned");
-    let target = repo_root().join("target/test-programs").join(format!("{name}-{tag}"));
+    let target = repo_root()
+        .join("target/test-programs")
+        .join(format!("{name}-{tag}"));
     let mut cmd = Command::new("cargo");
     if let Some(t) = toolchain {
         cmd.arg(format!("+{t}"));
@@ -86,7 +103,10 @@ pub fn build_program(manifest_dir: &Path, name: &str, toolchain: Option<&str>) -
         skip(&format!(
             "could not build {} with {tag}: {}",
             manifest_dir.display(),
-            String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
         ))
     }
 }
@@ -107,8 +127,10 @@ pub fn core_of(binary: &Path, location: &str, tag: &str) -> Option<PathBuf> {
         return skip("gdb is not installed");
     }
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let loc_tag: String =
-        location.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let loc_tag: String = location
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     let core = cores_dir().join(format!("{tag}-{loc_tag}.core"));
     let fresh = match (std::fs::metadata(&core), std::fs::metadata(binary)) {
         (Ok(c), Ok(b)) => c.modified().ok() >= b.modified().ok(),
@@ -143,7 +165,10 @@ pub fn core_of(binary: &Path, location: &str, tag: &str) -> Option<PathBuf> {
 fn rust_gdb_scripts() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
-        let out = Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
+        let out = Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .ok()?;
         let root = String::from_utf8(out.stdout).ok()?;
         let dir = Path::new(root.trim()).join("lib/rustlib/etc");
         dir.join("gdb_lookup.py").exists().then_some(dir)
@@ -157,7 +182,10 @@ fn pretty_printer_args(cmd: &mut Command) {
     if let Some(dir) = rust_gdb_scripts() {
         let d = dir.display();
         cmd.args(["-iex", &format!("directory {d}")]);
-        cmd.args(["-iex", &format!("python import sys; sys.path.insert(0, '{d}')")]);
+        cmd.args([
+            "-iex",
+            &format!("python import sys; sys.path.insert(0, '{d}')"),
+        ]);
     }
 }
 
@@ -187,14 +215,28 @@ pub fn gdb_print(
             cmd.args(["-iex", "set auto-load python-scripts off"]);
         }
     }
-    cmd.args(["-ex", "set pagination off", "-ex", "set print elements 1000", "-ex", "set width 0"]);
+    cmd.args([
+        "-ex",
+        "set pagination off",
+        "-ex",
+        "set print elements 1000",
+        "-ex",
+        "set width 0",
+    ]);
     cmd.args(["-ex", &format!("frame {frame}")]);
     for (i, e) in exprs.iter().enumerate() {
-        cmd.args(["-ex", &format!("echo @@{i}@@\\n"), "-ex", &format!("print {e}")]);
+        cmd.args([
+            "-ex",
+            &format!("echo @@{i}@@\\n"),
+            "-ex",
+            &format!("print {e}"),
+        ]);
     }
     cmd.args(["-ex", &format!("echo @@{}@@\\n", exprs.len())]);
     cmd.arg(binary).arg(core);
-    let Ok(out) = cmd.output() else { return vec![None; exprs.len()] };
+    let Ok(out) = cmd.output() else {
+        return vec![None; exprs.len()];
+    };
     let text = String::from_utf8_lossy(&out.stdout);
     (0..exprs.len())
         .map(|i| {
@@ -220,5 +262,7 @@ pub fn gdb_output(binary: &Path, core: Option<&Path>, commands: &[&str]) -> Stri
     if let Some(c) = core {
         cmd.arg(c);
     }
-    cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }

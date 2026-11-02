@@ -96,15 +96,26 @@ fn lex(src: &str) -> Result<Vec<Token>> {
                     if !suffix.is_empty()
                         && !matches!(
                             suffix,
-                            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
-                                | "i128" | "isize"
+                            "u8" | "u16"
+                                | "u32"
+                                | "u64"
+                                | "u128"
+                                | "usize"
+                                | "i8"
+                                | "i16"
+                                | "i32"
+                                | "i64"
+                                | "i128"
+                                | "isize"
                         )
                     {
                         return Err(bad(format!("bad number {text:?}")));
                     }
                     digits.parse()
                 };
-                out.push(Token::Int(value.map_err(|_| bad(format!("bad number {text:?}")))?));
+                out.push(Token::Int(
+                    value.map_err(|_| bad(format!("bad number {text:?}")))?,
+                ));
             }
             c if c.is_alphabetic() || c == '_' => {
                 let start = i;
@@ -122,7 +133,11 @@ fn lex(src: &str) -> Result<Vec<Token>> {
 /// Parse an expression.
 pub fn parse(src: &str) -> Result<Expr> {
     let tokens = lex(src)?;
-    let mut p = Parser { tokens, pos: 0, src };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        src,
+    };
     let e = p.unary()?;
     if p.pos != p.tokens.len() {
         return Err(p.error("trailing input"));
@@ -138,7 +153,10 @@ struct Parser<'a> {
 
 impl Parser<'_> {
     fn error(&self, m: &str) -> HopperError {
-        HopperError::Invalid(format!("expression {:?}: {m} at token {}", self.src, self.pos))
+        HopperError::Invalid(format!(
+            "expression {:?}: {m} at token {}",
+            self.src, self.pos
+        ))
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -240,17 +258,35 @@ mod tests {
     fn parses_postfix_chains() {
         assert_eq!(
             parse("v[0].name").unwrap(),
-            Expr::Field(Box::new(Expr::Index(name("v"), Box::new(Expr::Int(0)))), "name".into())
+            Expr::Field(
+                Box::new(Expr::Index(name("v"), Box::new(Expr::Int(0)))),
+                "name".into()
+            )
         );
-        assert_eq!(parse("tuple.1").unwrap(), Expr::Field(name("tuple"), "1".into()));
-        assert_eq!(parse("pair.0.1").unwrap(), Expr::Field(Box::new(Expr::Field(name("pair"), "0".into())), "1".into()));
+        assert_eq!(
+            parse("tuple.1").unwrap(),
+            Expr::Field(name("tuple"), "1".into())
+        );
+        assert_eq!(
+            parse("pair.0.1").unwrap(),
+            Expr::Field(Box::new(Expr::Field(name("pair"), "0".into())), "1".into())
+        );
     }
 
     #[test]
     fn prefix_operators_bind_looser_than_postfix() {
-        assert_eq!(parse("*boxed.x").unwrap(), Expr::Deref(Box::new(Expr::Field(name("boxed"), "x".into()))));
-        assert_eq!(parse("(*boxed).x").unwrap(), Expr::Field(Box::new(Expr::Deref(name("boxed"))), "x".into()));
-        assert_eq!(parse("&a[1]").unwrap(), Expr::AddressOf(Box::new(Expr::Index(name("a"), Box::new(Expr::Int(1))))));
+        assert_eq!(
+            parse("*boxed.x").unwrap(),
+            Expr::Deref(Box::new(Expr::Field(name("boxed"), "x".into())))
+        );
+        assert_eq!(
+            parse("(*boxed).x").unwrap(),
+            Expr::Field(Box::new(Expr::Deref(name("boxed"))), "x".into())
+        );
+        assert_eq!(
+            parse("&a[1]").unwrap(),
+            Expr::AddressOf(Box::new(Expr::Index(name("a"), Box::new(Expr::Int(1)))))
+        );
         assert_eq!(parse("-42").unwrap(), Expr::Negate(Box::new(Expr::Int(42))));
     }
 
@@ -258,8 +294,14 @@ mod tests {
     fn literals_and_paths() {
         assert_eq!(parse("0x1f").unwrap(), Expr::Int(31));
         assert_eq!(parse("1_000usize").unwrap(), Expr::Int(1000));
-        assert_eq!(parse("values::GLOBAL").unwrap(), Expr::Name("values::GLOBAL".into()));
-        assert_eq!(parse("arr[i]").unwrap(), Expr::Index(name("arr"), name("i")));
+        assert_eq!(
+            parse("values::GLOBAL").unwrap(),
+            Expr::Name("values::GLOBAL".into())
+        );
+        assert_eq!(
+            parse("arr[i]").unwrap(),
+            Expr::Index(name("arr"), name("i"))
+        );
     }
 
     #[test]

@@ -49,12 +49,17 @@ pub struct FrameScope {
 impl FrameScope {
     /// The innermost visible variable named `name`.
     pub fn lookup(&self, name: &str) -> Option<&Variable> {
-        self.variables.iter().filter(|v| v.name == name).max_by_key(|v| v.depth)
+        self.variables
+            .iter()
+            .filter(|v| v.name == name)
+            .max_by_key(|v| v.depth)
     }
 
     /// Whether `v` is hidden by a deeper variable of the same name.
     pub fn is_shadowed(&self, v: &Variable) -> bool {
-        self.variables.iter().any(|o| o.name == v.name && o.depth > v.depth)
+        self.variables
+            .iter()
+            .any(|o| o.name == v.name && o.depth > v.depth)
     }
 }
 
@@ -66,12 +71,16 @@ impl SymbolSet {
             .module_at(pc)
             .ok_or_else(|| HopperError::NotFound(format!("no module contains {pc:#x}")))?;
         let dwarf = m.binary().dwarf()?;
-        let (_, subprogram) = self
-            .subprogram_at(pc)
-            .ok_or_else(|| HopperError::NotFound(format!("no function with debug info at {pc:#x}")))?;
+        let (_, subprogram) = self.subprogram_at(pc).ok_or_else(|| {
+            HopperError::NotFound(format!("no function with debug info at {pc:#x}"))
+        })?;
         let frame_die = match frame_die {
             Some(d) => d,
-            None => self.frames_at(pc).into_iter().find_map(|f| f.die).unwrap_or(subprogram),
+            None => self
+                .frames_at(pc)
+                .into_iter()
+                .find_map(|f| f.die)
+                .unwrap_or(subprogram),
         };
         let file_pc = m.to_file(pc);
         let unit = dwarf.unit_of(frame_die)?;
@@ -95,7 +104,10 @@ fn collect_scope(
     pc: u64,
     out: &mut Vec<Variable>,
 ) -> Result<()> {
-    let mut tree = unit.unit.entries_tree(Some(unit.unit_offset(root))).map_err(sym_err)?;
+    let mut tree = unit
+        .unit
+        .entries_tree(Some(unit.unit_offset(root)))
+        .map_err(sym_err)?;
     let node = tree.root().map_err(sym_err)?;
     walk(dwarf, unit, node, pc, 0, out)
 }
@@ -137,7 +149,9 @@ fn variable(
     depth: u32,
 ) -> Option<Variable> {
     let die = unit.die_ref(entry.offset());
-    let origin = entry.attr_value(gimli::DW_AT_abstract_origin).and_then(|v| dwarf.attr_ref(unit, v));
+    let origin = entry
+        .attr_value(gimli::DW_AT_abstract_origin)
+        .and_then(|v| dwarf.attr_ref(unit, v));
     let origin_entry = origin.and_then(|o| dwarf.entry(o).ok());
     let lookup_str = |at| {
         dwarf.attr_str(unit, entry, at).or_else(|| {
@@ -151,11 +165,16 @@ fn variable(
         .and_then(|v| dwarf.attr_ref(unit, v))
         .or_else(|| {
             let (ou, oe) = origin_entry.as_ref()?;
-            oe.attr_value(gimli::DW_AT_type).and_then(|v| dwarf.attr_ref(ou, v))
+            oe.attr_value(gimli::DW_AT_type)
+                .and_then(|v| dwarf.attr_ref(ou, v))
         });
     let decl_line = entry
         .attr_value(gimli::DW_AT_decl_line)
-        .or_else(|| origin_entry.as_ref().and_then(|(_, oe)| oe.attr_value(gimli::DW_AT_decl_line)))
+        .or_else(|| {
+            origin_entry
+                .as_ref()
+                .and_then(|(_, oe)| oe.attr_value(gimli::DW_AT_decl_line))
+        })
         .and_then(|v: AttributeValue<Reader>| v.udata_value())
         .map(|l| l as u32);
     let kind = if entry.tag() == gimli::DW_TAG_formal_parameter {
@@ -163,5 +182,12 @@ fn variable(
     } else {
         VariableKind::Local
     };
-    Some(Variable { name, kind, die, type_die, decl_line, depth })
+    Some(Variable {
+        name,
+        kind,
+        die,
+        type_die,
+        decl_line,
+        depth,
+    })
 }

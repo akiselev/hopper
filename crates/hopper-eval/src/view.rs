@@ -35,25 +35,68 @@ const BTREE_CAPACITY: u64 = 11;
 pub enum Shape {
     /// Integers, floats, bools, chars, C-like enums, `()`.
     Scalar,
-    Pointer { pointee: Option<TypeId>, addr: u64 },
+    Pointer {
+        pointee: Option<TypeId>,
+        addr: u64,
+    },
     /// Structs, unions and tuples; `base` is the value with its type stripped of typedefs.
-    Struct { st: StructType, base: Value },
+    Struct {
+        st: StructType,
+        base: Value,
+    },
     /// A Rust enum and its active variant with the variant's payload (`None` when no variant's
     /// discriminant matches: the bytes are not a valid value).
-    Enum { active: Option<(Variant, Value)> },
-    Array { elem: TypeId, len: u64, base: Value },
+    Enum {
+        active: Option<(Variant, Value)>,
+    },
+    Array {
+        elem: TypeId,
+        len: u64,
+        base: Value,
+    },
     /// `String`, `&str`, `OsString`, `PathBuf`: shown as text.
-    Text { kind: StdKind, data: u64, len: u64 },
+    Text {
+        kind: StdKind,
+        data: u64,
+        len: u64,
+    },
     /// `Vec`, `&[T]`, `VecDeque` (with its ring: `head` and capacity).
-    Seq { kind: StdKind, data: u64, len: u64, elem: TypeId, elem_size: u64, ring: Option<(u64, u64)> },
+    Seq {
+        kind: StdKind,
+        data: u64,
+        len: u64,
+        elem: TypeId,
+        elem_size: u64,
+        ring: Option<(u64, u64)>,
+    },
     /// `HashMap`, `HashSet` (hashbrown): the occupied slots' element addresses.
-    Hash { kind: StdKind, slots: Vec<u64>, items: u64, pair: TypeId },
-    /// `BTreeMap`, `BTreeSet`: `(key address, value address)` in order.
-    BTree { kind: StdKind, entries: Vec<(u64, u64)>, length: u64, key: TypeId, val: TypeId },
+    Hash {
+        kind: StdKind,
+        slots: Vec<u64>,
+        items: u64,
+        pair: TypeId,
+    },
+    /// `BTreeMap`, `BTreeSet`: the root node (`None` when empty), walked on demand.
+    BTree {
+        kind: StdKind,
+        root: Option<BTreeRoot>,
+        length: u64,
+        key: TypeId,
+        val: TypeId,
+    },
     /// `Rc`, `Arc` and their `Weak`s. `value` is `None` for a dangling `Weak`.
-    Shared { kind: StdKind, strong: u64, weak: u64, value: Option<Value> },
+    Shared {
+        kind: StdKind,
+        strong: u64,
+        weak: u64,
+        value: Option<Value>,
+    },
     /// `Cell`, `RefCell`, `Ref`, `RefMut`.
-    Wrapper { kind: StdKind, value: Value, borrow: Option<i64> },
+    Wrapper {
+        kind: StdKind,
+        value: Value,
+        borrow: Option<i64>,
+    },
     /// `NonZero<T>`.
     Number(Value),
 }
@@ -71,7 +114,10 @@ pub struct Child {
 /// garbage memory) falls back to its raw structure.
 pub fn shape(v: &Value, s: &mut Session<'_>) -> Result<Shape> {
     let stripped = s.strip(&v.ty)?;
-    let v = Value { ty: stripped.clone(), loc: v.loc.clone() };
+    let v = Value {
+        ty: stripped.clone(),
+        loc: v.loc.clone(),
+    };
     if let Some(layout) = layout_for(&stripped.name)
         && let Ok(shape) = std_shape(layout, &v, s)
     {
@@ -82,13 +128,23 @@ pub fn shape(v: &Value, s: &mut Session<'_>) -> Result<Shape> {
 
 fn raw_shape(v: &Value, s: &mut Session<'_>) -> Result<Shape> {
     Ok(match &v.ty.kind {
-        TypeKind::Base(_) | TypeKind::CEnum(_) | TypeKind::Void | TypeKind::Subroutine => Shape::Scalar,
-        TypeKind::Modified { .. } => Shape::Scalar,
-        TypeKind::Pointer { pointee, .. } => Shape::Pointer { pointee: pointee.clone(), addr: v.as_u64(s)? },
-        TypeKind::Struct(st) | TypeKind::Union(st) => Shape::Struct { st: st.clone(), base: v.clone() },
-        TypeKind::Array { elem, len } => {
-            Shape::Array { elem: elem.clone(), len: len.unwrap_or(0), base: v.clone() }
+        TypeKind::Base(_) | TypeKind::CEnum(_) | TypeKind::Void | TypeKind::Subroutine => {
+            Shape::Scalar
         }
+        TypeKind::Modified { .. } => Shape::Scalar,
+        TypeKind::Pointer { pointee, .. } => Shape::Pointer {
+            pointee: pointee.clone(),
+            addr: v.as_u64(s)?,
+        },
+        TypeKind::Struct(st) | TypeKind::Union(st) => Shape::Struct {
+            st: st.clone(),
+            base: v.clone(),
+        },
+        TypeKind::Array { elem, len } => Shape::Array {
+            elem: elem.clone(),
+            len: len.unwrap_or(0),
+            base: v.clone(),
+        },
         TypeKind::Enum(e) => {
             let active = active_variant(v, s, e)?;
             Shape::Enum { active }
@@ -108,14 +164,25 @@ fn active_variant(
             let tag = v.field(s, d)?;
             let size = tag.size(s)?;
             let raw = tag.as_u64(s)?;
-            let mask = if size >= 8 { u64::MAX } else { (1u64 << (size * 8)) - 1 };
+            let mask = if size >= 8 {
+                u64::MAX
+            } else {
+                (1u64 << (size * 8)) - 1
+            };
             let raw = raw & mask;
             let hit = e.variants.iter().find(|var| match &var.discriminant {
                 Discriminant::Value(x) => x & mask == raw,
-                Discriminant::Ranges(rs) => rs.iter().any(|(lo, hi)| (lo & mask) <= raw && raw <= (hi & mask)),
+                Discriminant::Ranges(rs) => rs
+                    .iter()
+                    .any(|(lo, hi)| (lo & mask) <= raw && raw <= (hi & mask)),
                 Discriminant::Default => false,
             });
-            hit.or_else(|| e.variants.iter().find(|var| var.discriminant == Discriminant::Default)).cloned()
+            hit.or_else(|| {
+                e.variants
+                    .iter()
+                    .find(|var| var.discriminant == Discriminant::Default)
+            })
+            .cloned()
         }
     };
     Ok(match chosen {
@@ -138,7 +205,10 @@ fn role_value(layout: &StdLayout, role: Role, v: &Value, s: &mut Session<'_>) ->
             return unwrap_newtypes(found, s);
         }
     }
-    Err(HopperError::Eval(format!("{}: no field for {role:?} (tried {paths:?})", v.ty.name)))
+    Err(HopperError::Eval(format!(
+        "{}: no field for {role:?} (tried {paths:?})",
+        v.ty.name
+    )))
 }
 
 /// Like [`role_value`] but stops at the field the path names (no unwrapping).
@@ -149,7 +219,10 @@ fn role_field(layout: &StdLayout, role: Role, v: &Value, s: &mut Session<'_>) ->
             return Ok(found);
         }
     }
-    Err(HopperError::Eval(format!("{}: no field for {role:?} (tried {paths:?})", v.ty.name)))
+    Err(HopperError::Eval(format!(
+        "{}: no field for {role:?} (tried {paths:?})",
+        v.ty.name
+    )))
 }
 
 fn follow(v: &Value, s: &mut Session<'_>, path: &[&str]) -> Result<Option<Value>> {
@@ -157,7 +230,9 @@ fn follow(v: &Value, s: &mut Session<'_>, path: &[&str]) -> Result<Option<Value>
     for name in path {
         if *name == "*" {
             let ptr = unwrap_newtypes(cur, s)?;
-            let Some(pointee) = pointee_of(&ptr) else { return Ok(None) };
+            let Some(pointee) = pointee_of(&ptr) else {
+                return Ok(None);
+            };
             cur = ptr.pointee(s, &pointee)?;
             continue;
         }
@@ -178,7 +253,9 @@ fn unwrap_newtypes(v: Value, s: &mut Session<'_>) -> Result<Value> {
     let mut cur = v;
     for _ in 0..16 {
         let ty = s.strip(&cur.ty)?;
-        let TypeKind::Struct(st) = &ty.kind else { return Ok(Value { ty, loc: cur.loc }) };
+        let TypeKind::Struct(st) = &ty.kind else {
+            return Ok(Value { ty, loc: cur.loc });
+        };
         let sized: Vec<_> = st
             .fields
             .iter()
@@ -187,7 +264,11 @@ fn unwrap_newtypes(v: Value, s: &mut Session<'_>) -> Result<Value> {
             .collect();
         let next = match sized.as_slice() {
             [only] => only.clone(),
-            _ => match st.fields.iter().find(|f| matches!(f.name.as_str(), "pointer" | "__0" | "value" | "v")) {
+            _ => match st
+                .fields
+                .iter()
+                .find(|f| matches!(f.name.as_str(), "pointer" | "__0" | "value" | "v"))
+            {
                 Some(f) => f.clone(),
                 None => return Ok(Value { ty, loc: cur.loc }),
             },
@@ -226,7 +307,10 @@ fn std_shape(layout: &StdLayout, v: &Value, s: &mut Session<'_>) -> Result<Shape
             let vec_layout = layout_for(&inner_ty.name)
                 .filter(|l| l.kind == StdKind::Vec)
                 .ok_or_else(|| HopperError::Eval(format!("{} does not wrap a Vec", v.ty.name)))?;
-            let inner = Value { ty: inner_ty, loc: inner.loc };
+            let inner = Value {
+                ty: inner_ty,
+                loc: inner.loc,
+            };
             let data = role_value(vec_layout, Role::DataPtr, &inner, s)?.as_u64(s)?;
             let len = role_value(vec_layout, Role::Len, &inner, s)?.as_u64(s)?;
             Ok(Shape::Text { kind, data, len })
@@ -249,13 +333,22 @@ fn std_shape(layout: &StdLayout, v: &Value, s: &mut Session<'_>) -> Result<Shape
                     role_value(layout, Role::Capacity, v, s)?.as_u64(s)?
                 };
                 if len > cap {
-                    return Err(HopperError::Eval("VecDeque longer than its capacity".into()));
+                    return Err(HopperError::Eval(
+                        "VecDeque longer than its capacity".into(),
+                    ));
                 }
                 Some((head, cap))
             } else {
                 None
             };
-            Ok(Shape::Seq { kind, data, len, elem, elem_size, ring })
+            Ok(Shape::Seq {
+                kind,
+                data,
+                len,
+                elem,
+                elem_size,
+                ring,
+            })
         }
         StdKind::HashMap | StdKind::HashSet => {
             let table = role_field(layout, Role::Table, v, s)?;
@@ -271,16 +364,31 @@ fn std_shape(layout: &StdLayout, v: &Value, s: &mut Session<'_>) -> Result<Shape
             let items = role_value(layout, Role::Items, v, s)?.as_u64(s)?;
             let mut slots = Vec::new();
             if items > 0 {
-                let buckets = mask.checked_add(1).filter(|b| b.is_power_of_two() && *b <= 1 << 24)
+                let buckets = mask
+                    .checked_add(1)
+                    .filter(|b| b.is_power_of_two() && *b <= 1 << 24)
                     .ok_or_else(|| HopperError::Eval("implausible hash table size".into()))?;
-                let control = s.read(ctrl, buckets)?;
-                for (i, c) in control.iter().enumerate() {
-                    if c & 0x80 == 0 {
-                        slots.push(ctrl.wrapping_sub((i as u64 + 1) * pair_size));
+                // A control byte with the top bit clear marks a full slot.
+                const CHUNK: u64 = 64 * 1024;
+                let mut start = 0;
+                while start < buckets && (slots.len() as u64) < items {
+                    let n = CHUNK.min(buckets - start);
+                    let control = s.read(ctrl + start, n)?;
+                    for (j, c) in control.iter().enumerate() {
+                        if c & 0x80 == 0 {
+                            let i = start + j as u64;
+                            slots.push(ctrl.wrapping_sub((i + 1) * pair_size));
+                        }
                     }
+                    start += n;
                 }
             }
-            Ok(Shape::Hash { kind, slots, items, pair })
+            Ok(Shape::Hash {
+                kind,
+                slots,
+                items,
+                pair,
+            })
         }
         StdKind::BTreeMap | StdKind::BTreeSet => {
             let map = if kind == StdKind::BTreeSet {
@@ -293,80 +401,130 @@ fn std_shape(layout: &StdLayout, v: &Value, s: &mut Session<'_>) -> Result<Shape
             let map_layout = layout_for(&map.ty.name)
                 .filter(|l| l.kind == StdKind::BTreeMap)
                 .ok_or_else(|| HopperError::Eval("BTreeSet without its map".into()))?;
-            let key = param(&map, "K").ok_or_else(|| HopperError::Eval("BTreeMap key type unknown".into()))?;
-            let val = param(&map, "V").ok_or_else(|| HopperError::Eval("BTreeMap value type unknown".into()))?;
+            let key = param(&map, "K")
+                .ok_or_else(|| HopperError::Eval("BTreeMap key type unknown".into()))?;
+            let val = param(&map, "V")
+                .ok_or_else(|| HopperError::Eval("BTreeMap value type unknown".into()))?;
             let length = role_value(map_layout, Role::Length, &map, s)?.as_u64(s)?;
             let root = role_value(map_layout, Role::Root, &map, s)?;
-            let entries = btree_entries(map_layout, &root, length, &key, &val, s)?;
-            Ok(Shape::BTree { kind, entries, length, key, val })
+            let root = btree_root(map_layout, &root, length, &key, &val, s)?;
+            Ok(Shape::BTree {
+                kind,
+                root,
+                length,
+                key,
+                val,
+            })
         }
         StdKind::Rc | StdKind::Arc | StdKind::RcWeak | StdKind::ArcWeak => {
             let ptr = role_value(layout, Role::SharedPtr, v, s)?;
             let addr = ptr.as_u64(s)?;
-            let inner_ty = pointee_of(&ptr).ok_or_else(|| HopperError::Eval("Rc without RcInner".into()))?;
+            let inner_ty =
+                pointee_of(&ptr).ok_or_else(|| HopperError::Eval("Rc without RcInner".into()))?;
             let weak_kind = matches!(kind, StdKind::RcWeak | StdKind::ArcWeak);
             if weak_kind && (addr == u64::MAX || addr == 0) {
-                return Ok(Shape::Shared { kind, strong: 0, weak: 0, value: None });
+                return Ok(Shape::Shared {
+                    kind,
+                    strong: 0,
+                    weak: 0,
+                    value: None,
+                });
             }
             let inner = s.at(&inner_ty, addr)?;
-            let inner = Value { ty: s.strip(&inner.ty)?, loc: inner.loc };
+            let inner = Value {
+                ty: s.strip(&inner.ty)?,
+                loc: inner.loc,
+            };
             let strong = role_value(layout, Role::Strong, &inner, s)?.as_u64(s)?;
             let weak = role_value(layout, Role::Weak, &inner, s)?.as_u64(s)?;
             let value = role_field(layout, Role::SharedValue, &inner, s)?;
             // The implicit weak reference all strong references share is not shown.
-            Ok(Shape::Shared { kind, strong, weak: weak.saturating_sub(1), value: Some(value) })
+            Ok(Shape::Shared {
+                kind,
+                strong,
+                weak: weak.saturating_sub(1),
+                value: Some(value),
+            })
         }
-        StdKind::Cell => Ok(Shape::Wrapper { kind, value: role_field(layout, Role::Value, v, s)?, borrow: None }),
+        StdKind::Cell => Ok(Shape::Wrapper {
+            kind,
+            value: role_field(layout, Role::Value, v, s)?,
+            borrow: None,
+        }),
         StdKind::RefCell => {
             let value = role_field(layout, Role::Value, v, s)?;
             let borrow = role_value(layout, Role::Borrow, v, s)?.as_i128(s)? as i64;
-            Ok(Shape::Wrapper { kind, value, borrow: Some(borrow) })
+            Ok(Shape::Wrapper {
+                kind,
+                value,
+                borrow: Some(borrow),
+            })
         }
         StdKind::Ref | StdKind::RefMut => {
             let ptr = role_value(layout, Role::Value, v, s)?;
-            let pointee = pointee_of(&ptr).ok_or_else(|| HopperError::Eval("Ref without a pointer".into()))?;
+            let pointee = pointee_of(&ptr)
+                .ok_or_else(|| HopperError::Eval("Ref without a pointer".into()))?;
             let value = ptr.pointee(s, &pointee)?;
             let borrow = role_value(layout, Role::Borrow, v, s)?.as_i128(s)? as i64;
-            Ok(Shape::Wrapper { kind, value, borrow: Some(borrow) })
+            Ok(Shape::Wrapper {
+                kind,
+                value,
+                borrow: Some(borrow),
+            })
         }
         StdKind::NonZero => Ok(Shape::Number(role_value(layout, Role::Number, v, s)?)),
     }
 }
 
-/// The in-order `(key, value)` addresses of a B-tree, from its `Option<NodeRef>` root.
-fn btree_entries(
+/// A B-tree's root node and the node layout, from its `Option<NodeRef>` root.
+fn btree_root(
     layout: &StdLayout,
     root: &Value,
     length: u64,
     key: &TypeId,
     val: &TypeId,
     s: &mut Session<'_>,
-) -> Result<Vec<(u64, u64)>> {
+) -> Result<Option<BTreeRoot>> {
     if length == 0 {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     // The root is `Option<NodeRef<..>>`: take the `Some` payload's `__0`.
     let root_ty = s.strip(&root.ty)?;
     let node_ref = match &root_ty.kind {
-        TypeKind::Enum(e) => match active_variant(&Value { ty: root_ty.clone(), loc: root.loc.clone() }, s, e)? {
+        TypeKind::Enum(e) => match active_variant(
+            &Value {
+                ty: root_ty.clone(),
+                loc: root.loc.clone(),
+            },
+            s,
+            e,
+        )? {
             Some((_, payload)) => {
                 let pty = s.strip(&payload.ty)?;
                 match &pty.kind {
                     TypeKind::Struct(st) if !st.fields.is_empty() => {
                         let f = st.fields[0].clone();
-                        Value { ty: pty, loc: payload.loc }.field(s, &f)?
+                        Value {
+                            ty: pty,
+                            loc: payload.loc,
+                        }
+                        .field(s, &f)?
                     }
-                    _ => return Ok(Vec::new()),
+                    _ => return Ok(None),
                 }
             }
-            None => return Ok(Vec::new()),
+            None => return Ok(None),
         },
         _ => root.clone(),
     };
-    let node_ref = Value { ty: s.strip(&node_ref.ty)?, loc: node_ref.loc };
+    let node_ref = Value {
+        ty: s.strip(&node_ref.ty)?,
+        loc: node_ref.loc,
+    };
     let node_ptr = role_value(layout, Role::RootNode, &node_ref, s)?;
     let height = role_value(layout, Role::RootHeight, &node_ref, s)?.as_u64(s)?;
-    let leaf_ty = pointee_of(&node_ptr).ok_or_else(|| HopperError::Eval("B-tree node type unknown".into()))?;
+    let leaf_ty = pointee_of(&node_ptr)
+        .ok_or_else(|| HopperError::Eval("B-tree node type unknown".into()))?;
     let leaf = s.ty(&leaf_ty)?;
     let leaf = s.strip(&leaf)?;
     let TypeKind::Struct(st) = &leaf.kind else {
@@ -374,25 +532,79 @@ fn btree_entries(
     };
     let field_offset = |role: Role| -> Result<u64> {
         let path = layout.paths(role, None);
-        let name = path.first().and_then(|p| p.first()).copied().unwrap_or_default();
-        st.field(name).map(|f| f.offset).ok_or_else(|| HopperError::Eval(format!("LeafNode has no {name}")))
+        let name = path
+            .first()
+            .and_then(|p| p.first())
+            .copied()
+            .unwrap_or_default();
+        st.field(name)
+            .map(|f| f.offset)
+            .ok_or_else(|| HopperError::Eval(format!("LeafNode has no {name}")))
     };
     let len_off = field_offset(Role::NodeLen)?;
     let keys_off = field_offset(Role::NodeKeys)?;
     let vals_off = field_offset(Role::NodeVals)?;
-    let leaf_size = leaf.size.ok_or_else(|| HopperError::Eval("LeafNode has no size".into()))?;
+    let leaf_size = leaf
+        .size
+        .ok_or_else(|| HopperError::Eval("LeafNode has no size".into()))?;
     // InternalNode { data: LeafNode, edges: [BoxedNode; 12] }: the edges follow the leaf,
     // pointer-aligned.
     let edges_off = leaf_size.div_ceil(8) * 8;
     let key_size = s.size_of(key)?;
     let val_size = s.size_of(val)?;
-    let mut out = Vec::new();
     let node = node_ptr.as_u64(s)?;
-    let layout_offsets = NodeOffsets { len_off, keys_off, vals_off, edges_off, key_size, val_size };
-    walk_btree(s, node, height, &layout_offsets, length, &mut out, 0)?;
-    Ok(out)
+    let offsets = NodeOffsets {
+        len_off,
+        keys_off,
+        vals_off,
+        edges_off,
+        key_size,
+        val_size,
+    };
+    Ok(Some(BTreeRoot {
+        node,
+        height,
+        offsets,
+    }))
 }
 
+/// A B-tree's root node and where a node keeps its fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BTreeRoot {
+    pub node: u64,
+    pub height: u64,
+    offsets: NodeOffsets,
+}
+
+/// Entries `offset..offset + limit` of a B-tree, in key order, as `(key, value)` addresses.
+pub fn btree_range(
+    root: &BTreeRoot,
+    s: &mut Session<'_>,
+    offset: u64,
+    limit: u64,
+) -> Result<Vec<(u64, u64)>> {
+    let mut walk = BTreeWalk {
+        skip: offset,
+        limit,
+        out: Vec::new(),
+    };
+    walk_btree(s, root.node, root.height, &root.offsets, &mut walk, 0)?;
+    Ok(walk.out)
+}
+
+struct BTreeWalk {
+    skip: u64,
+    limit: u64,
+    out: Vec<(u64, u64)>,
+}
+
+impl BTreeWalk {
+    fn full(&self) -> bool {
+        self.out.len() as u64 >= self.limit
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct NodeOffsets {
     len_off: u64,
     keys_off: u64,
@@ -407,8 +619,7 @@ fn walk_btree(
     node: u64,
     height: u64,
     o: &NodeOffsets,
-    limit: u64,
-    out: &mut Vec<(u64, u64)>,
+    walk: &mut BTreeWalk,
     depth: u32,
 ) -> Result<()> {
     if depth > 32 || node == 0 {
@@ -417,18 +628,27 @@ fn walk_btree(
     let b = s.read(node + o.len_off, 2)?;
     let len = u16::from_le_bytes([b[0], b[1]]) as u64;
     if len > BTREE_CAPACITY {
-        return Err(HopperError::Eval("B-tree node longer than its capacity".into()));
+        return Err(HopperError::Eval(
+            "B-tree node longer than its capacity".into(),
+        ));
     }
     for i in 0..=len {
-        if out.len() as u64 >= limit {
+        if walk.full() {
             return Ok(());
         }
         if height > 0 {
             let child = s.read_u64(node + o.edges_off + 8 * i)?;
-            walk_btree(s, child, height - 1, o, limit, out, depth + 1)?;
+            walk_btree(s, child, height - 1, o, walk, depth + 1)?;
         }
-        if i < len && (out.len() as u64) < limit {
-            out.push((node + o.keys_off + i * o.key_size, node + o.vals_off + i * o.val_size));
+        if i < len && !walk.full() {
+            if walk.skip > 0 {
+                walk.skip -= 1;
+            } else {
+                walk.out.push((
+                    node + o.keys_off + i * o.key_size,
+                    node + o.vals_off + i * o.val_size,
+                ));
+            }
         }
     }
     Ok(())
@@ -476,7 +696,7 @@ pub fn child_count(shape: &Shape, s: &Session<'_>) -> Option<u64> {
         },
         Shape::Array { len, .. } | Shape::Seq { len, .. } => Some(*len),
         Shape::Hash { slots, .. } => Some(slots.len() as u64),
-        Shape::BTree { entries, .. } => Some(entries.len() as u64),
+        Shape::BTree { root, length, .. } => Some(if root.is_some() { *length } else { 0 }),
         Shape::Shared { value, .. } => Some(if value.is_some() { 3 } else { 2 }),
         Shape::Wrapper { borrow, .. } => Some(if borrow.is_some() { 2 } else { 1 }),
     }
@@ -491,7 +711,38 @@ pub fn children(
     offset: u64,
     limit: u64,
 ) -> Result<Vec<Child>> {
-    let end = child_count(shape, s).unwrap_or(0).min(offset.saturating_add(limit));
+    let end = child_count(shape, s)
+        .unwrap_or(0)
+        .min(offset.saturating_add(limit));
+    if let Shape::BTree {
+        kind,
+        root: Some(root),
+        key,
+        val,
+        ..
+    } = shape
+    {
+        // One walk for the whole page.
+        let entries = btree_range(root, s, offset, end.saturating_sub(offset))?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (n, (k, v)) in entries.into_iter().enumerate() {
+            let i = offset + n as u64;
+            let key_v = s.at(key, k)?;
+            out.push(match kind {
+                StdKind::BTreeSet => Child {
+                    name: format!("[{i}]"),
+                    path: vec![PathElem::Index(i)],
+                    value: Ok(key_v),
+                },
+                _ => Child {
+                    name: format!("[{}]", summary(&key_v, s)),
+                    path: vec![PathElem::Index(i)],
+                    value: s.at(val, v),
+                },
+            });
+        }
+        return Ok(out);
+    }
     let mut out = Vec::new();
     for i in offset..end {
         out.push(child_at(shape, s, parent, i)?);
@@ -503,8 +754,14 @@ pub fn children(
 pub fn child_at(shape: &Shape, s: &mut Session<'_>, parent: &str, i: u64) -> Result<Child> {
     Ok(match shape {
         Shape::Pointer { pointee, addr } => {
-            let p = pointee.clone().ok_or_else(|| HopperError::Eval("pointer to unknown type".into()))?;
-            Child { name: format!("*{parent}"), path: vec![PathElem::Deref], value: s.at(&p, *addr) }
+            let p = pointee
+                .clone()
+                .ok_or_else(|| HopperError::Eval("pointer to unknown type".into()))?;
+            Child {
+                name: format!("*{parent}"),
+                path: vec![PathElem::Deref],
+                value: s.at(&p, *addr),
+            }
         }
         Shape::Struct { .. } | Shape::Enum { .. } => {
             let (owner, st, variant) = struct_of(shape, s)?;
@@ -519,56 +776,121 @@ pub fn child_at(shape: &Shape, s: &mut Session<'_>, parent: &str, i: u64) -> Res
             }
             path.push(PathElem::Field(f.display_name().to_string()));
             let value = owner.field(s, &f);
-            Child { name: f.display_name().to_string(), path, value }
+            Child {
+                name: f.display_name().to_string(),
+                path,
+                value,
+            }
         }
         Shape::Array { elem, len, base } => {
             let value = if i < *len {
-                s.size_of(elem).and_then(|size| base.slice(s, i * size, elem))
+                s.size_of(elem)
+                    .and_then(|size| base.slice(s, i * size, elem))
             } else {
-                Err(HopperError::Eval(format!("index {i} out of bounds (len {len})")))
+                Err(HopperError::Eval(format!(
+                    "index {i} out of bounds (len {len})"
+                )))
             };
-            Child { name: format!("[{i}]"), path: vec![PathElem::Index(i)], value }
+            Child {
+                name: format!("[{i}]"),
+                path: vec![PathElem::Index(i)],
+                value,
+            }
         }
         Shape::Seq { .. } => Child {
             name: format!("[{i}]"),
             path: vec![PathElem::Index(i)],
             value: seq_element(shape, s, i),
         },
-        Shape::Hash { kind, slots, pair, .. } => {
+        Shape::Hash {
+            kind, slots, pair, ..
+        } => {
             let addr = slots[i as usize];
             let entry = s.at(pair, addr)?;
             let (key, val) = tuple_parts(&entry, s)?;
             match kind {
-                StdKind::HashSet => Child { name: format!("[{i}]"), path: vec![PathElem::Index(i)], value: Ok(key) },
+                StdKind::HashSet => Child {
+                    name: format!("[{i}]"),
+                    path: vec![PathElem::Index(i)],
+                    value: Ok(key),
+                },
                 _ => {
                     let name = format!("[{}]", summary(&key, s));
-                    Child { name, path: vec![PathElem::Index(i)], value: Ok(val) }
+                    Child {
+                        name,
+                        path: vec![PathElem::Index(i)],
+                        value: Ok(val),
+                    }
                 }
             }
         }
-        Shape::BTree { kind, entries, key, val, .. } => {
-            let (k, v) = entries[i as usize];
+        Shape::BTree {
+            kind,
+            root,
+            key,
+            val,
+            ..
+        } => {
+            let root = root
+                .as_ref()
+                .ok_or_else(|| HopperError::Eval(format!("no entry {i}")))?;
+            let (k, v) = btree_range(root, s, i, 1)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| HopperError::Eval(format!("no entry {i}")))?;
             let key_v = s.at(key, k)?;
             match kind {
-                StdKind::BTreeSet => Child { name: format!("[{i}]"), path: vec![PathElem::Index(i)], value: Ok(key_v) },
+                StdKind::BTreeSet => Child {
+                    name: format!("[{i}]"),
+                    path: vec![PathElem::Index(i)],
+                    value: Ok(key_v),
+                },
                 _ => {
                     let name = format!("[{}]", summary(&key_v, s));
-                    Child { name, path: vec![PathElem::Index(i)], value: s.at(val, v) }
+                    Child {
+                        name,
+                        path: vec![PathElem::Index(i)],
+                        value: s.at(val, v),
+                    }
                 }
             }
         }
-        Shape::Shared { strong, weak, value, .. } => {
-            let names: Vec<&str> = if value.is_some() { vec!["value", "strong", "weak"] } else { vec!["strong", "weak"] };
-            let name = names.get(i as usize).copied().ok_or_else(|| HopperError::Eval(format!("no child {i}")))?;
+        Shape::Shared {
+            strong,
+            weak,
+            value,
+            ..
+        } => {
+            let names: Vec<&str> = if value.is_some() {
+                vec!["value", "strong", "weak"]
+            } else {
+                vec!["strong", "weak"]
+            };
+            let name = names
+                .get(i as usize)
+                .copied()
+                .ok_or_else(|| HopperError::Eval(format!("no child {i}")))?;
             let v = match name {
                 "value" => Ok(value.clone().expect("checked")),
                 "strong" => Ok(builtin_u64(*strong)),
                 _ => Ok(builtin_u64(*weak)),
             };
-            Child { name: name.to_string(), path: vec![PathElem::Field(name.to_string())], value: v }
+            Child {
+                name: name.to_string(),
+                path: vec![PathElem::Field(name.to_string())],
+                value: v,
+            }
         }
-        Shape::Wrapper { kind, value, borrow } => {
-            let value_name = if matches!(kind, StdKind::Ref | StdKind::RefMut) { "*value" } else { "value" };
+        Shape::Wrapper {
+            kind,
+            value,
+            borrow,
+        } => {
+            let value_name = if matches!(kind, StdKind::Ref | StdKind::RefMut) {
+                "*value"
+            } else {
+                "value"
+            };
             match (i, borrow) {
                 (0, _) => Child {
                     name: value_name.to_string(),
@@ -593,10 +915,19 @@ pub fn child_at(shape: &Shape, s: &mut Session<'_>, parent: &str, i: u64) -> Res
 fn struct_of(shape: &Shape, s: &mut Session<'_>) -> Result<(Value, StructType, Option<String>)> {
     match shape {
         Shape::Struct { st, base } => Ok((base.clone(), st.clone(), None)),
-        Shape::Enum { active: Some((var, payload)) } => {
+        Shape::Enum {
+            active: Some((var, payload)),
+        } => {
             let ty = s.strip(&payload.ty)?;
             match &ty.kind {
-                TypeKind::Struct(st) => Ok((Value { ty: ty.clone(), loc: payload.loc.clone() }, st.clone(), Some(var.name.clone()))),
+                TypeKind::Struct(st) => Ok((
+                    Value {
+                        ty: ty.clone(),
+                        loc: payload.loc.clone(),
+                    },
+                    st.clone(),
+                    Some(var.name.clone()),
+                )),
                 _ => Err(HopperError::Eval("enum payload is not a struct".into())),
             }
         }
@@ -605,9 +936,21 @@ fn struct_of(shape: &Shape, s: &mut Session<'_>) -> Result<(Value, StructType, O
 }
 
 fn seq_element(shape: &Shape, s: &mut Session<'_>, i: u64) -> Result<Value> {
-    let Shape::Seq { data, len, elem, elem_size, ring, .. } = shape else { unreachable!("seq shape") };
+    let Shape::Seq {
+        data,
+        len,
+        elem,
+        elem_size,
+        ring,
+        ..
+    } = shape
+    else {
+        unreachable!("seq shape")
+    };
     if i >= *len {
-        return Err(HopperError::Eval(format!("index {i} out of bounds (len {len})")));
+        return Err(HopperError::Eval(format!(
+            "index {i} out of bounds (len {len})"
+        )));
     }
     let physical = match ring {
         Some((head, cap)) if *cap != 0 && *cap != u64::MAX => (head + i) % cap,
@@ -622,8 +965,14 @@ fn tuple_parts(v: &Value, s: &mut Session<'_>) -> Result<(Value, Value)> {
     let TypeKind::Struct(st) = &ty.kind else {
         return Ok((v.clone(), v.clone()));
     };
-    let base = Value { ty: ty.clone(), loc: v.loc.clone() };
-    let k = st.field("__0").cloned().ok_or_else(|| HopperError::Eval("entry has no key".into()))?;
+    let base = Value {
+        ty: ty.clone(),
+        loc: v.loc.clone(),
+    };
+    let k = st
+        .field("__0")
+        .cloned()
+        .ok_or_else(|| HopperError::Eval("entry has no key".into()))?;
     let key = base.field(s, &k)?;
     let val = match st.field("__1").cloned() {
         Some(f) => base.field(s, &f)?,
@@ -635,7 +984,9 @@ fn tuple_parts(v: &Value, s: &mut Session<'_>) -> Result<(Value, Value)> {
 /// Select the child of `v` that `path` names, consuming one element (two for
 /// `Variant` + `Field`). Returns the child and how many elements were used.
 pub fn select(v: &Value, s: &mut Session<'_>, path: &[PathElem]) -> Result<(Value, usize)> {
-    let Some(first) = path.first() else { return Ok((v.clone(), 0)) };
+    let Some(first) = path.first() else {
+        return Ok((v.clone(), 0));
+    };
     let sh = shape(v, s)?;
     let not_found = |what: &str| HopperError::Eval(format!("{} has no {what}", v.ty.name));
     match (first, &sh) {
@@ -643,33 +994,55 @@ pub fn select(v: &Value, s: &mut Session<'_>, path: &[PathElem]) -> Result<(Valu
             let p = pointee.clone().ok_or_else(|| not_found("pointee type"))?;
             Ok((s.at(&p, *addr)?, 1))
         }
-        (PathElem::Deref, Shape::Shared { value: Some(inner), .. })
+        (
+            PathElem::Deref,
+            Shape::Shared {
+                value: Some(inner), ..
+            },
+        )
         | (PathElem::Deref, Shape::Wrapper { value: inner, .. }) => Ok((inner.clone(), 1)),
         (PathElem::Field(name), Shape::Struct { st, base }) => {
-            let f = st.field(name).cloned().ok_or_else(|| not_found(&format!("field {name}")))?;
+            let f = st
+                .field(name)
+                .cloned()
+                .ok_or_else(|| not_found(&format!("field {name}")))?;
             Ok((base.field(s, &f)?, 1))
         }
         (PathElem::Variant(want), Shape::Enum { active }) => {
-            let Some((var, _)) = active else { return Err(not_found("valid variant")) };
+            let Some((var, _)) = active else {
+                return Err(not_found("valid variant"));
+            };
             if &var.name != want {
-                return Err(HopperError::Eval(format!("variant {want} is not active (it is {})", var.name)));
+                return Err(HopperError::Eval(format!(
+                    "variant {want} is not active (it is {})",
+                    var.name
+                )));
             }
             let Some(PathElem::Field(name)) = path.get(1) else {
-                return Err(HopperError::Invalid("a variant must be followed by a field".into()));
+                return Err(HopperError::Invalid(
+                    "a variant must be followed by a field".into(),
+                ));
             };
             let (owner, st, _) = struct_of(&sh, s)?;
-            let f = st.field(name).cloned().ok_or_else(|| not_found(&format!("field {name}")))?;
+            let f = st
+                .field(name)
+                .cloned()
+                .ok_or_else(|| not_found(&format!("field {name}")))?;
             Ok((owner.field(s, &f)?, 2))
         }
         (PathElem::Field(name), Shape::Enum { active: Some(_) }) => {
             let (owner, st, _) = struct_of(&sh, s)?;
-            let f = st.field(name).cloned().ok_or_else(|| not_found(&format!("field {name}")))?;
+            let f = st
+                .field(name)
+                .cloned()
+                .ok_or_else(|| not_found(&format!("field {name}")))?;
             Ok((owner.field(s, &f)?, 1))
         }
         (PathElem::Index(i), Shape::Array { .. }) => Ok((child_at(&sh, s, "", *i)?.value?, 1)),
         (PathElem::Index(i), Shape::Seq { .. }) => Ok((seq_element(&sh, s, *i)?, 1)),
         (PathElem::Index(i), Shape::Hash { .. } | Shape::BTree { .. }) => {
-            let c = child_at(&sh, s, "", *i).map_err(|_| HopperError::Eval(format!("no entry {i}")))?;
+            let c =
+                child_at(&sh, s, "", *i).map_err(|_| HopperError::Eval(format!("no entry {i}")))?;
             Ok((c.value?, 1))
         }
         (PathElem::Field(name), Shape::Shared { .. } | Shape::Wrapper { .. }) => {
@@ -682,7 +1055,10 @@ pub fn select(v: &Value, s: &mut Session<'_>, path: &[PathElem]) -> Result<(Valu
             }
             Err(not_found(&format!("child {name}")))
         }
-        (elem, _) => Err(HopperError::Eval(format!("{:?} does not apply to {}", elem, v.ty.name))),
+        (elem, _) => Err(HopperError::Eval(format!(
+            "{:?} does not apply to {}",
+            elem, v.ty.name
+        ))),
     }
 }
 
@@ -756,7 +1132,13 @@ fn render_list(items: Vec<Result<Value>>, s: &mut Session<'_>, depth: usize, out
     }
 }
 
-fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &mut String) -> Result<()> {
+fn render_shape(
+    v: &Value,
+    sh: &Shape,
+    s: &mut Session<'_>,
+    depth: usize,
+    out: &mut String,
+) -> Result<()> {
     let ty = s.strip(&v.ty)?;
     match sh {
         Shape::Scalar => out.push_str(&scalar_text(v, &ty, s)?),
@@ -801,7 +1183,10 @@ fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &
                 if let TypeKind::Struct(st) = &pty.kind
                     && !st.fields.is_empty()
                 {
-                    let base = Value { ty: pty.clone(), loc: payload.loc.clone() };
+                    let base = Value {
+                        ty: pty.clone(),
+                        loc: payload.loc.clone(),
+                    };
                     if st.is_tuple_like() {
                         out.push('(');
                         let items = st.fields.iter().map(|f| base.field(s, f)).collect();
@@ -848,10 +1233,20 @@ fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &
                 out.push('}');
             }
         }
-        Shape::Hash { kind, items, .. } | Shape::BTree { kind, length: items, .. } => {
+        Shape::Hash { kind, items, .. }
+        | Shape::BTree {
+            kind,
+            length: items,
+            ..
+        } => {
             render_map(sh, *kind, *items, s, depth, out)?;
         }
-        Shape::Shared { kind, strong, weak, value } => {
+        Shape::Shared {
+            kind,
+            strong,
+            weak,
+            value,
+        } => {
             let label = match kind {
                 StdKind::Rc => "Rc",
                 StdKind::Arc => "Arc",
@@ -859,14 +1254,20 @@ fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &
             };
             match value {
                 Some(inner) => {
-                    out.push_str(&format!("{label}(strong={strong}, weak={weak}) = {{value = "));
+                    out.push_str(&format!(
+                        "{label}(strong={strong}, weak={weak}) = {{value = "
+                    ));
                     render(inner, s, depth + 1, out);
                     out.push_str(&format!(", strong = {strong}, weak = {weak}}}"));
                 }
                 None => out.push_str(&format!("{label}(dangling)")),
             }
         }
-        Shape::Wrapper { kind, value, borrow } => {
+        Shape::Wrapper {
+            kind,
+            value,
+            borrow,
+        } => {
             let label = match kind {
                 StdKind::Cell => "Cell".to_string(),
                 StdKind::RefCell | StdKind::Ref | StdKind::RefMut => {
@@ -883,7 +1284,11 @@ fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &
                 }
                 _ => String::new(),
             };
-            let value_name = if matches!(kind, StdKind::Ref | StdKind::RefMut) { "*value" } else { "value" };
+            let value_name = if matches!(kind, StdKind::Ref | StdKind::RefMut) {
+                "*value"
+            } else {
+                "value"
+            };
             out.push_str(&format!("{label} = {{{value_name} = "));
             render(value, s, depth + 1, out);
             if let Some(b) = borrow {
@@ -896,7 +1301,14 @@ fn render_shape(v: &Value, sh: &Shape, s: &mut Session<'_>, depth: usize, out: &
     Ok(())
 }
 
-fn render_map(sh: &Shape, kind: StdKind, items: u64, s: &mut Session<'_>, depth: usize, out: &mut String) -> Result<()> {
+fn render_map(
+    sh: &Shape,
+    kind: StdKind,
+    items: u64,
+    s: &mut Session<'_>,
+    depth: usize,
+    out: &mut String,
+) -> Result<()> {
     let label = match kind {
         StdKind::HashMap => "HashMap",
         StdKind::HashSet => "HashSet",
@@ -911,11 +1323,10 @@ fn render_map(sh: &Shape, kind: StdKind, items: u64, s: &mut Session<'_>, depth:
     out.push_str(" = {");
     let shown = n.min(SUMMARY_ELEMENTS as u64);
     let is_map = matches!(kind, StdKind::HashMap | StdKind::BTreeMap);
-    for i in 0..shown {
+    for (i, c) in children(sh, s, "", 0, shown)?.into_iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
-        let c = child_at(sh, s, "", i)?;
         if is_map {
             out.push_str(&c.name);
             out.push_str(" = ");
@@ -932,7 +1343,13 @@ fn render_map(sh: &Shape, kind: StdKind, items: u64, s: &mut Session<'_>, depth:
     Ok(())
 }
 
-fn render_named_fields(base: &Value, st: &StructType, s: &mut Session<'_>, depth: usize, out: &mut String) {
+fn render_named_fields(
+    base: &Value,
+    st: &StructType,
+    s: &mut Session<'_>,
+    depth: usize,
+    out: &mut String,
+) {
     for (i, f) in st.fields.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
@@ -948,7 +1365,15 @@ fn render_named_fields(base: &Value, st: &StructType, s: &mut Session<'_>, depth
 
 /// Array elements, collapsing runs of ten or more equal elements as gdb does
 /// (`0 <repeats 16 times>`).
-fn render_array(v: &Value, s: &mut Session<'_>, elem: &TypeId, size: u64, len: u64, depth: usize, out: &mut String) {
+fn render_array(
+    v: &Value,
+    s: &mut Session<'_>,
+    elem: &TypeId,
+    size: u64,
+    len: u64,
+    depth: usize,
+    out: &mut String,
+) {
     let shown = len.min(SUMMARY_ELEMENTS as u64);
     let mut texts = Vec::with_capacity(shown as usize);
     for i in 0..shown {
@@ -996,7 +1421,11 @@ pub fn scalar_text(v: &Value, ty: &Type, s: &mut Session<'_>) -> Result<String> 
                 BaseKind::Bool => (if v.as_u64(s)? != 0 { "true" } else { "false" }).to_string(),
                 BaseKind::Char | BaseKind::SignedChar | BaseKind::UnsignedChar => {
                     let code = v.as_u64(s)?;
-                    let shown = if matches!(kind, BaseKind::SignedChar) { v.as_i128(s)?.to_string() } else { code.to_string() };
+                    let shown = if matches!(kind, BaseKind::SignedChar) {
+                        v.as_i128(s)?.to_string()
+                    } else {
+                        code.to_string()
+                    };
                     format!("{shown} {}", char_literal(code as u32))
                 }
                 BaseKind::Signed => v.as_i128(s)?.to_string(),

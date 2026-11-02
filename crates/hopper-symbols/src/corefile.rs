@@ -112,10 +112,15 @@ impl CoreFile {
         let elf = ElfFile64::<Endianness>::parse(&*data).map_err(bad)?;
         let endian = elf.endian();
         if elf.elf_header().e_type(endian) != elf::ET_CORE {
-            return Err(HopperError::Symbols(format!("{}: not a core file", path.display())));
+            return Err(HopperError::Symbols(format!(
+                "{}: not a core file",
+                path.display()
+            )));
         }
         if elf.elf_header().e_machine(endian) != elf::EM_X86_64 {
-            return Err(HopperError::Unsupported("core files of machines other than x86-64".into()));
+            return Err(HopperError::Unsupported(
+                "core files of machines other than x86-64".into(),
+            ));
         }
         let mut segments = Vec::new();
         let mut threads: Vec<CoreThread> = Vec::new();
@@ -131,7 +136,9 @@ impl CoreFile {
                     filesz: ph.p_filesz(endian),
                 }),
                 elf::PT_NOTE => {
-                    let Ok(Some(mut notes)) = ph.notes(endian, &*data) else { continue };
+                    let Ok(Some(mut notes)) = ph.notes(endian, &*data) else {
+                        continue;
+                    };
                     while let Ok(Some(note)) = notes.next() {
                         let desc = note.desc();
                         match note.n_type(endian).0 {
@@ -160,7 +167,15 @@ impl CoreFile {
             }
         }
         segments.sort_by_key(|s| s.vaddr);
-        Ok(CoreFile { path, data, segments, threads, mapped, auxv, command })
+        Ok(CoreFile {
+            path,
+            data,
+            segments,
+            threads,
+            mapped,
+            auxv,
+            command,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -197,13 +212,18 @@ impl CoreFile {
     /// The mapped file that holds the program's entry point: the executable.
     pub fn executable(&self) -> Option<&MappedFile> {
         let entry = crate::auxv::Auxv::parse(&self.auxv).entry()?;
-        self.mapped.iter().find(|m| m.start <= entry && entry < m.end)
+        self.mapped
+            .iter()
+            .find(|m| m.start <= entry && entry < m.end)
     }
 
     /// The core's memory. Ranges the core left out (file-backed read-only mappings) are read from
     /// the mapped files when they still exist on disk.
     pub fn memory(&self) -> CoreMemory<'_> {
-        CoreMemory { core: self, files: HashMap::new() }
+        CoreMemory {
+            core: self,
+            files: HashMap::new(),
+        }
     }
 
     /// A symbol set with a module for every mapped ELF file that can be opened: the executable
@@ -220,11 +240,17 @@ impl CoreFile {
             }
             done.push(&m.path);
             // The lowest mapping of the file places it.
-            let Some(first) = self.mapped.iter().filter(|x| x.path == m.path).min_by_key(|x| x.start)
+            let Some(first) = self
+                .mapped
+                .iter()
+                .filter(|x| x.path == m.path)
+                .min_by_key(|x| x.start)
             else {
                 continue;
             };
-            let Ok(binary) = Binary::open(&first.path) else { continue };
+            let Ok(binary) = Binary::open(&first.path) else {
+                continue;
+            };
             set.add(Module::from_mapping(binary, first.start, first.file_offset));
         }
         set
@@ -233,7 +259,9 @@ impl CoreFile {
     fn segment_bytes(&self, seg: &CoreSegment) -> &[u8] {
         let start = seg.file_offset as usize;
         let end = (seg.file_offset + seg.filesz) as usize;
-        self.data.get(start..end.min(self.data.len())).unwrap_or(&[])
+        self.data
+            .get(start..end.min(self.data.len()))
+            .unwrap_or(&[])
     }
 }
 
@@ -256,7 +284,9 @@ impl CoreMemory<'_> {
             let n = avail.min(buf.len());
             if off < seg.filesz {
                 let bytes = self.core.segment_bytes(seg);
-                let from_core = ((seg.filesz - off) as usize).min(n).min(bytes.len() - off as usize);
+                let from_core = ((seg.filesz - off) as usize)
+                    .min(n)
+                    .min(bytes.len() - off as usize);
                 buf[..from_core].copy_from_slice(&bytes[off as usize..off as usize + from_core]);
                 return from_core;
             }
@@ -267,7 +297,12 @@ impl CoreMemory<'_> {
     }
 
     fn read_mapped(&mut self, addr: u64, buf: &mut [u8]) -> usize {
-        let Some(m) = self.core.mapped.iter().find(|m| m.start <= addr && addr < m.end) else {
+        let Some(m) = self
+            .core
+            .mapped
+            .iter()
+            .find(|m| m.start <= addr && addr < m.end)
+        else {
             return 0;
         };
         let data = self
@@ -308,7 +343,9 @@ fn parse_prstatus(desc: &[u8]) -> Option<CoreThread> {
     }
     let u64_at = |o: usize| u64::from_le_bytes(desc[o..o + 8].try_into().expect("8 bytes"));
     let signal = u16::from_le_bytes([desc[PR_CURSIG], desc[PR_CURSIG + 1]]);
-    let tid = Tid(i32::from_le_bytes(desc[PR_PID..PR_PID + 4].try_into().expect("4 bytes")));
+    let tid = Tid(i32::from_le_bytes(
+        desc[PR_PID..PR_PID + 4].try_into().expect("4 bytes"),
+    ));
     let mut regs = RegisterSet::default();
     for (i, reg) in USER_REGS.iter().enumerate() {
         if let Some(r) = reg {
@@ -329,16 +366,24 @@ fn add_fpregs(regs: &mut RegisterSet, desc: &[u8]) {
 }
 
 fn parse_nt_file(desc: &[u8]) -> Vec<MappedFile> {
-    let u64_at = |o: usize| desc.get(o..o + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8")));
-    let (Some(count), Some(page)) = (u64_at(0), u64_at(8)) else { return Vec::new() };
+    let u64_at = |o: usize| {
+        desc.get(o..o + 8)
+            .map(|b| u64::from_le_bytes(b.try_into().expect("8")))
+    };
+    let (Some(count), Some(page)) = (u64_at(0), u64_at(8)) else {
+        return Vec::new();
+    };
     let count = count as usize;
     let names_start = 16 + count * 24;
-    let Some(names) = desc.get(names_start..) else { return Vec::new() };
+    let Some(names) = desc.get(names_start..) else {
+        return Vec::new();
+    };
     let mut names = names.split(|b| *b == 0);
     let mut out = Vec::new();
     for i in 0..count {
         let base = 16 + i * 24;
-        let (Some(start), Some(end), Some(ofs)) = (u64_at(base), u64_at(base + 8), u64_at(base + 16))
+        let (Some(start), Some(end), Some(ofs)) =
+            (u64_at(base), u64_at(base + 8), u64_at(base + 16))
         else {
             break;
         };

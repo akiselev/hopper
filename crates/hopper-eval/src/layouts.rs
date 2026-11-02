@@ -96,14 +96,23 @@ pub struct Versions {
 }
 
 impl Versions {
-    pub const ALL: Versions = Versions { since: None, until: None };
+    pub const ALL: Versions = Versions {
+        since: None,
+        until: None,
+    };
 
     pub const fn since(major: u32, minor: u32) -> Versions {
-        Versions { since: Some((major, minor)), until: None }
+        Versions {
+            since: Some((major, minor)),
+            until: None,
+        }
     }
 
     pub const fn until(major: u32, minor: u32) -> Versions {
-        Versions { since: None, until: Some((major, minor)) }
+        Versions {
+            since: None,
+            until: Some((major, minor)),
+        }
     }
 
     pub fn contains(&self, v: RustcVersion) -> bool {
@@ -121,7 +130,11 @@ pub struct Rule {
 }
 
 const fn rule(role: Role, path: &'static [&'static str]) -> Rule {
-    Rule { role, path, rustc: Versions::ALL }
+    Rule {
+        role,
+        path,
+        rustc: Versions::ALL,
+    }
 }
 
 const fn rule_in(role: Role, path: &'static [&'static str], rustc: Versions) -> Rule {
@@ -133,7 +146,11 @@ const fn rule_in(role: Role, path: &'static [&'static str], rustc: Versions) -> 
 pub enum TypePattern {
     /// `<root>::(<module>::)+<name>`, followed by `<...>` when `generic`. The same shape as
     /// `rust_types.py`'s `^(alloc::([a-z_]+::)+)Vec<.+>$`.
-    Path { root: &'static str, name: &'static str, generic: bool },
+    Path {
+        root: &'static str,
+        name: &'static str,
+        generic: bool,
+    },
     /// `&str`, `&mut str` and the raw pointer forms.
     StrRef,
     /// `&[T]`, `&mut [T]`, `*const [T]`, `*mut [T]`.
@@ -147,7 +164,11 @@ impl TypePattern {
             TypePattern::SliceRef => ["&[", "&mut [", "*const [", "*mut ["]
                 .iter()
                 .any(|p| name.starts_with(p) && name.ends_with(']') && !name.contains("; ")),
-            TypePattern::Path { root, name: want, generic } => {
+            TypePattern::Path {
+                root,
+                name: want,
+                generic,
+            } => {
                 let Some(rest) = name.strip_prefix(root).and_then(|r| r.strip_prefix("::")) else {
                     return false;
                 };
@@ -213,7 +234,11 @@ const VEC_RULES: &[Rule] = &[
 ];
 
 const STRING_RULES: &[Rule] = &[
-    rule_in(DataPtr, &["vec", "buf", "inner", "ptr"], Versions::since(1, 83)),
+    rule_in(
+        DataPtr,
+        &["vec", "buf", "inner", "ptr"],
+        Versions::since(1, 83),
+    ),
     rule_in(DataPtr, &["vec", "buf", "ptr"], Versions::until(1, 83)),
     rule(Len, &["vec", "len"]),
 ];
@@ -222,7 +247,11 @@ const STRING_RULES: &[Rule] = &[
 pub static STD_LAYOUTS: &[StdLayout] = &[
     StdLayout {
         kind: StdKind::String,
-        pattern: TypePattern::Path { root: "alloc", name: "String", generic: false },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "String",
+            generic: false,
+        },
         rules: STRING_RULES,
     },
     StdLayout {
@@ -237,12 +266,20 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::Vec,
-        pattern: TypePattern::Path { root: "alloc", name: "Vec", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "Vec",
+            generic: true,
+        },
         rules: VEC_RULES,
     },
     StdLayout {
         kind: StdKind::VecDeque,
-        pattern: TypePattern::Path { root: "alloc", name: "VecDeque", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "VecDeque",
+            generic: true,
+        },
         rules: &[
             // `head` became the `WrappedIndex` newtype after rustc 1.95 (gdb_providers.py:
             // "BACKCOMPAT: rust 1.95").
@@ -257,7 +294,11 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::HashMap,
-        pattern: TypePattern::Path { root: "std", name: "HashMap", generic: true },
+        pattern: TypePattern::Path {
+            root: "std",
+            name: "HashMap",
+            generic: true,
+        },
         rules: &[
             rule(Table, &["base", "table"]),
             rule(BucketMask, &["base", "table", "table", "bucket_mask"]),
@@ -267,17 +308,28 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::HashSet,
-        pattern: TypePattern::Path { root: "std", name: "HashSet", generic: true },
+        pattern: TypePattern::Path {
+            root: "std",
+            name: "HashSet",
+            generic: true,
+        },
         rules: &[
             rule(Table, &["base", "map", "table"]),
-            rule(BucketMask, &["base", "map", "table", "table", "bucket_mask"]),
+            rule(
+                BucketMask,
+                &["base", "map", "table", "table", "bucket_mask"],
+            ),
             rule(Ctrl, &["base", "map", "table", "table", "ctrl"]),
             rule(Items, &["base", "map", "table", "table", "items"]),
         ],
     },
     StdLayout {
         kind: StdKind::BTreeMap,
-        pattern: TypePattern::Path { root: "alloc", name: "BTreeMap", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "BTreeMap",
+            generic: true,
+        },
         rules: &[
             rule(Root, &["root"]),
             rule(Length, &["length"]),
@@ -290,12 +342,20 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::BTreeSet,
-        pattern: TypePattern::Path { root: "alloc", name: "BTreeSet", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "BTreeSet",
+            generic: true,
+        },
         rules: &[rule(Inner, &["map"])],
     },
     StdLayout {
         kind: StdKind::Rc,
-        pattern: TypePattern::Path { root: "alloc", name: "Rc", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "Rc",
+            generic: true,
+        },
         rules: &[
             rule(SharedPtr, &["ptr"]),
             rule(Strong, &["strong"]),
@@ -305,7 +365,11 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::Arc,
-        pattern: TypePattern::Path { root: "alloc", name: "Arc", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "Arc",
+            generic: true,
+        },
         rules: &[
             rule(SharedPtr, &["ptr"]),
             rule(Strong, &["strong"]),
@@ -315,7 +379,11 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::RcWeak,
-        pattern: TypePattern::Path { root: "alloc", name: "Weak", generic: true },
+        pattern: TypePattern::Path {
+            root: "alloc",
+            name: "Weak",
+            generic: true,
+        },
         rules: &[
             rule(SharedPtr, &["ptr"]),
             rule(Strong, &["strong"]),
@@ -326,38 +394,72 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
     },
     StdLayout {
         kind: StdKind::RefCell,
-        pattern: TypePattern::Path { root: "core", name: "RefCell", generic: true },
+        pattern: TypePattern::Path {
+            root: "core",
+            name: "RefCell",
+            generic: true,
+        },
         rules: &[rule(Value, &["value", "value"]), rule(Borrow, &["borrow"])],
     },
     StdLayout {
         kind: StdKind::Cell,
-        pattern: TypePattern::Path { root: "core", name: "Cell", generic: true },
+        pattern: TypePattern::Path {
+            root: "core",
+            name: "Cell",
+            generic: true,
+        },
         rules: &[rule(Value, &["value", "value"])],
     },
     StdLayout {
         kind: StdKind::Ref,
-        pattern: TypePattern::Path { root: "core", name: "Ref", generic: true },
-        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow", "*"])],
+        pattern: TypePattern::Path {
+            root: "core",
+            name: "Ref",
+            generic: true,
+        },
+        rules: &[
+            rule(Value, &["value"]),
+            rule(Borrow, &["borrow", "borrow", "*"]),
+        ],
     },
     StdLayout {
         kind: StdKind::RefMut,
-        pattern: TypePattern::Path { root: "core", name: "RefMut", generic: true },
-        rules: &[rule(Value, &["value"]), rule(Borrow, &["borrow", "borrow", "*"])],
+        pattern: TypePattern::Path {
+            root: "core",
+            name: "RefMut",
+            generic: true,
+        },
+        rules: &[
+            rule(Value, &["value"]),
+            rule(Borrow, &["borrow", "borrow", "*"]),
+        ],
     },
     StdLayout {
         kind: StdKind::NonZero,
-        pattern: TypePattern::Path { root: "core", name: "NonZero", generic: true },
+        pattern: TypePattern::Path {
+            root: "core",
+            name: "NonZero",
+            generic: true,
+        },
         rules: &[rule(Number, &["__0"])],
     },
     StdLayout {
         kind: StdKind::OsString,
-        pattern: TypePattern::Path { root: "std", name: "OsString", generic: false },
+        pattern: TypePattern::Path {
+            root: "std",
+            name: "OsString",
+            generic: false,
+        },
         // `OsString { inner: Buf { inner: Vec<u8> } }` on Unix.
         rules: &[rule(Inner, &["inner", "inner"])],
     },
     StdLayout {
         kind: StdKind::PathBuf,
-        pattern: TypePattern::Path { root: "std", name: "PathBuf", generic: false },
+        pattern: TypePattern::Path {
+            root: "std",
+            name: "PathBuf",
+            generic: false,
+        },
         rules: &[rule(Inner, &["inner", "inner", "inner"])],
     },
 ];
@@ -365,18 +467,25 @@ pub static STD_LAYOUTS: &[StdLayout] = &[
 /// The row for a type name.
 pub fn layout_for(type_name: &str) -> Option<&'static StdLayout> {
     // `alloc::rc::Weak` and `alloc::sync::Weak` share a name; tell them apart by module.
-    STD_LAYOUTS.iter().find(|l| l.pattern.matches(type_name)).map(|l| {
-        if l.kind == StdKind::RcWeak && type_name.starts_with("alloc::sync::") {
-            &ARC_WEAK
-        } else {
-            l
-        }
-    })
+    STD_LAYOUTS
+        .iter()
+        .find(|l| l.pattern.matches(type_name))
+        .map(|l| {
+            if l.kind == StdKind::RcWeak && type_name.starts_with("alloc::sync::") {
+                &ARC_WEAK
+            } else {
+                l
+            }
+        })
 }
 
 static ARC_WEAK: StdLayout = StdLayout {
     kind: StdKind::ArcWeak,
-    pattern: TypePattern::Path { root: "alloc", name: "Weak", generic: true },
+    pattern: TypePattern::Path {
+        root: "alloc",
+        name: "Weak",
+        generic: true,
+    },
     rules: &[
         rule(SharedPtr, &["ptr"]),
         rule(Strong, &["strong"]),
@@ -396,42 +505,85 @@ mod tests {
     #[test]
     fn recognises_std_type_names() {
         assert_eq!(kind("alloc::string::String"), Some(StdKind::String));
-        assert_eq!(kind("alloc::vec::Vec<u32, alloc::alloc::Global>"), Some(StdKind::Vec));
+        assert_eq!(
+            kind("alloc::vec::Vec<u32, alloc::alloc::Global>"),
+            Some(StdKind::Vec)
+        );
         assert_eq!(
             kind("alloc::collections::vec_deque::VecDeque<i32, alloc::alloc::Global>"),
             Some(StdKind::VecDeque)
         );
         assert_eq!(
-            kind("std::collections::hash::map::HashMap<alloc::string::String, i32, std::hash::random::RandomState, alloc::alloc::Global>"),
+            kind(
+                "std::collections::hash::map::HashMap<alloc::string::String, i32, std::hash::random::RandomState, alloc::alloc::Global>"
+            ),
             Some(StdKind::HashMap)
         );
-        assert_eq!(kind("std::collections::hash::set::HashSet<u8, std::hash::random::RandomState>"), Some(StdKind::HashSet));
-        assert_eq!(kind("alloc::collections::btree::map::BTreeMap<u8, char, alloc::alloc::Global>"), Some(StdKind::BTreeMap));
-        assert_eq!(kind("alloc::rc::Rc<alloc::string::String, alloc::alloc::Global>"), Some(StdKind::Rc));
-        assert_eq!(kind("alloc::sync::Arc<u64, alloc::alloc::Global>"), Some(StdKind::Arc));
-        assert_eq!(kind("alloc::rc::Weak<u8, alloc::alloc::Global>"), Some(StdKind::RcWeak));
-        assert_eq!(kind("alloc::sync::Weak<u8, alloc::alloc::Global>"), Some(StdKind::ArcWeak));
-        assert_eq!(kind("core::cell::RefCell<alloc::vec::Vec<u8, alloc::alloc::Global>>"), Some(StdKind::RefCell));
+        assert_eq!(
+            kind("std::collections::hash::set::HashSet<u8, std::hash::random::RandomState>"),
+            Some(StdKind::HashSet)
+        );
+        assert_eq!(
+            kind("alloc::collections::btree::map::BTreeMap<u8, char, alloc::alloc::Global>"),
+            Some(StdKind::BTreeMap)
+        );
+        assert_eq!(
+            kind("alloc::rc::Rc<alloc::string::String, alloc::alloc::Global>"),
+            Some(StdKind::Rc)
+        );
+        assert_eq!(
+            kind("alloc::sync::Arc<u64, alloc::alloc::Global>"),
+            Some(StdKind::Arc)
+        );
+        assert_eq!(
+            kind("alloc::rc::Weak<u8, alloc::alloc::Global>"),
+            Some(StdKind::RcWeak)
+        );
+        assert_eq!(
+            kind("alloc::sync::Weak<u8, alloc::alloc::Global>"),
+            Some(StdKind::ArcWeak)
+        );
+        assert_eq!(
+            kind("core::cell::RefCell<alloc::vec::Vec<u8, alloc::alloc::Global>>"),
+            Some(StdKind::RefCell)
+        );
         assert_eq!(kind("core::cell::Cell<i32>"), Some(StdKind::Cell));
         assert_eq!(kind("&str"), Some(StdKind::Str));
         assert_eq!(kind("&[u32]"), Some(StdKind::Slice));
         assert_eq!(kind("&mut [u8]"), Some(StdKind::Slice));
         assert_eq!(kind("&[u8; 4]"), None);
-        assert_eq!(kind("values::Vec<u8>"), None, "a user type named Vec is not std's");
-        assert_eq!(kind("alloc::vec::Vec"), None, "Vec without arguments is not the generic");
-        assert_eq!(kind("alloc::vec::into_iter::IntoIter<u8, alloc::alloc::Global>"), None);
+        assert_eq!(
+            kind("values::Vec<u8>"),
+            None,
+            "a user type named Vec is not std's"
+        );
+        assert_eq!(
+            kind("alloc::vec::Vec"),
+            None,
+            "Vec without arguments is not the generic"
+        );
+        assert_eq!(
+            kind("alloc::vec::into_iter::IntoIter<u8, alloc::alloc::Global>"),
+            None
+        );
         assert_eq!(kind("core::cell::RefCell"), None);
         assert_eq!(kind("core::cell::UnsafeCell<i32>"), None);
     }
 
     #[test]
     fn version_gates_order_paths() {
-        let deque = layout_for("alloc::collections::vec_deque::VecDeque<i32, alloc::alloc::Global>").unwrap();
+        let deque =
+            layout_for("alloc::collections::vec_deque::VecDeque<i32, alloc::alloc::Global>")
+                .unwrap();
         let v195 = RustcVersion::new(1, 95, 0);
         let v197 = RustcVersion::new(1, 97, 0);
         assert_eq!(deque.paths(Role::Head, Some(v195))[0], &["head"]);
         assert_eq!(deque.paths(Role::Head, Some(v197))[0], &["head", "__0"]);
-        assert_eq!(deque.paths(Role::Head, Some(v197)).len(), 2, "the other version's path is a fallback");
+        assert_eq!(
+            deque.paths(Role::Head, Some(v197)).len(),
+            2,
+            "the other version's path is a fallback"
+        );
         assert!(Versions::since(1, 96).contains(RustcVersion::new(1, 96, 0)));
         assert!(!Versions::until(1, 96).contains(RustcVersion::new(1, 96, 1)));
     }
