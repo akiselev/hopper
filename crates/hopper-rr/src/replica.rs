@@ -205,9 +205,7 @@ impl<C: Connection> RrReplica<C> {
         };
         Ok(StopEvent {
             tid,
-            reason: StopReason::Other {
-                packet: format!("seek event {event}"),
-            },
+            reason: StopReason::Arrived,
         })
     }
 
@@ -500,9 +498,7 @@ impl<C: Connection> Target for RrReplica<C> {
         self.sub = SubPosition::Known(to.sub);
         Ok(StopEvent {
             tid: to.tid,
-            reason: StopReason::Other {
-                packet: format!("seek {to}"),
-            },
+            reason: StopReason::Arrived,
         })
     }
 
@@ -523,9 +519,7 @@ impl<C: Connection> Target for RrReplica<C> {
         let tid = self.remote.current_tid()?;
         Ok(StopEvent {
             tid,
-            reason: StopReason::Other {
-                packet: format!("restore checkpoint {}", id.0),
-            },
+            reason: StopReason::Arrived,
         })
     }
 

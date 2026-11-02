@@ -51,6 +51,11 @@ pub const HOPPER_PROTOCOL_VERSION: &str = "1";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchTarget {
     Recording(PathBuf),
+    /// A program to run live under gdbserver (forward only).
+    Live {
+        program: PathBuf,
+        args: Vec<std::ffi::OsString>,
+    },
     Fake,
 }
 
@@ -59,10 +64,35 @@ impl LaunchTarget {
         if args.get("fake").and_then(Value::as_bool) == Some(true) {
             return Ok(LaunchTarget::Fake);
         }
+        if let Some(p) = args.get("program").and_then(Value::as_str)
+            && !p.is_empty()
+        {
+            let program_args = match args.get("args") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|a| {
+                        a.as_str().map(std::ffi::OsString::from).ok_or_else(|| {
+                            HopperError::Invalid("\"args\" must be an array of strings".into())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                Some(_) => {
+                    return Err(HopperError::Invalid(
+                        "\"args\" must be an array of strings".into(),
+                    ));
+                }
+            };
+            return Ok(LaunchTarget::Live {
+                program: PathBuf::from(p),
+                args: program_args,
+            });
+        }
         match args.get("recording").and_then(Value::as_str) {
             Some(p) if !p.is_empty() => Ok(LaunchTarget::Recording(PathBuf::from(p))),
             _ => Err(HopperError::Invalid(
-                "launch and attach take {\"recording\": \"<trace dir>\"} or {\"fake\": true}"
+                "launch and attach take {\"recording\": \"<trace dir>\"}, {\"program\": \
+                 \"<path>\", \"args\": [..]} (live) or {\"fake\": true}"
                     .into(),
             )),
         }
@@ -1020,5 +1050,13 @@ mod tests {
             LaunchTarget::Recording("/t".into())
         );
         assert!(LaunchTarget::from_arguments(&json!({})).is_err());
+        assert_eq!(
+            LaunchTarget::from_arguments(&json!({"program": "/bin/p", "args": ["x"]})).unwrap(),
+            LaunchTarget::Live {
+                program: "/bin/p".into(),
+                args: vec!["x".into()]
+            }
+        );
+        assert!(LaunchTarget::from_arguments(&json!({"program": "/bin/p", "args": [1]})).is_err());
     }
 }

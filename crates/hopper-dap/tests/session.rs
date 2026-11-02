@@ -86,9 +86,11 @@ impl Client {
                 opened.push(t.clone());
                 match t {
                     LaunchTarget::Fake => Ok(Arc::new(FakeDebugger::new()) as Arc<dyn Debugger>),
-                    LaunchTarget::Recording(_) => Err(hopper_core::HopperError::Unsupported(
-                        "engine not built yet".into(),
-                    )),
+                    LaunchTarget::Recording(_) | LaunchTarget::Live { .. } => {
+                        Err(hopper_core::HopperError::Unsupported(
+                            "this test opens only the fake".into(),
+                        ))
+                    }
                 }
             },
             Cursor::new(input),
@@ -520,7 +522,7 @@ fn requests_before_launch_fail_and_disconnect_terminates() {
         t.response(bad_launch)["message"]
             .as_str()
             .unwrap()
-            .contains("engine not built yet")
+            .contains("this test opens only the fake")
     );
     assert_eq!(t.response(empty)["success"], false);
     assert_eq!(t.ok(th)["threads"][0]["id"], hopper_fake::PID);

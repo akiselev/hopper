@@ -73,6 +73,9 @@ pub enum StopReason {
     HistoryStart,
     /// Forward execution reached the end of the recording.
     HistoryEnd,
+    /// The target moved by a seek or a checkpoint restore rather than by executing: it is at
+    /// the requested position and nothing stopped it.
+    Arrived,
     /// Anything else the target reported, kept verbatim.
     Other { packet: String },
 }

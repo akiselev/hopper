@@ -33,7 +33,8 @@ fn run_args(args: &[&str], input: &str) -> Result<String, HopperError> {
 #[test]
 fn opening_a_trace_goes_through_open_debugger() {
     let err = open_debugger("/some/trace".as_ref()).err().unwrap();
-    assert_eq!(err, HopperError::Unsupported("engine not built yet".into()));
+    assert!(matches!(err, HopperError::NotFound(_)), "{err}");
+    assert!(err.to_string().contains("not an rr trace directory"));
     assert!(open(Some("/some/trace".as_ref()), false).is_err());
     assert!(open(None, false).is_err());
     assert!(open(Some("/ignored".as_ref()), true).is_ok());
@@ -41,9 +42,24 @@ fn opening_a_trace_goes_through_open_debugger() {
         run_args(&["hopper", "info", "/some/trace"], "")
             .unwrap_err()
             .to_string()
-            .contains("engine not built yet")
+            .contains("not an rr trace directory")
     );
-    assert!(run_args(&["hopper", "record", "--", "ls", "-l"], "").is_err());
+    assert!(run_args(&["hopper", "live"], "").is_err(), "live needs a program");
+    assert!(
+        run_args(&["hopper", "show", "--live", "--at", "start"], "").is_err(),
+        "--live needs a program after --"
+    );
+}
+
+#[test]
+fn cargo_hopper_build_reports_its_executables() {
+    let report = "   Compiling x\nhopper-build: /t/debug/a -> /t/debug/a.hsc\nhopper-build: /t/debug/b -> /t/debug/b.hsc\n";
+    assert_eq!(
+        hopper_cli::built_executables(report),
+        vec![std::path::PathBuf::from("/t/debug/a"), "/t/debug/b".into()]
+    );
+    let e = hopper_cli::hopper_build("/nonexistent".as_ref(), None).unwrap_err();
+    assert!(e.to_string().contains("not a cargo project"));
 }
 
 #[test]
@@ -227,7 +243,7 @@ fn mcp_and_dap_subcommands_serve_stdio() {
     .concat();
     let out = run_args(&["hopper", "dap"], &input).unwrap();
     assert!(
-        out.contains("engine not built yet"),
+        out.contains("not an rr trace directory"),
         "a recording goes through open_debugger"
     );
     let out = run_args(&["hopper", "dap", "--fake"], &input).unwrap();

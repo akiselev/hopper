@@ -1,5 +1,6 @@
 [package]
 name = "hopper-engine"
+description = "hopper's engine: implements the Debugger API over rr replicas or a live gdbserver."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,15 @@ publish.workspace = true
 
 [dependencies]
 hopper-core.workspace = true
+hopper-rr.workspace = true
+hopper-symbols.workspace = true
+hopper-eval.workspace = true
+hopper-sidecar.workspace = true
+iced-x86.workspace = true
+object.workspace = true
+
+[dev-dependencies]
+hopper-symbols = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

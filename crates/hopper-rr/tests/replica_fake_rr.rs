@@ -197,7 +197,7 @@ fn checkpoints_restore_position_and_sub() {
     r.seek(&expected(45)).unwrap();
     r.insert(Breakpoint::code(0x1000)).unwrap();
     let ev = r.restore(id).unwrap();
-    assert!(matches!(ev.reason, StopReason::Other { .. }));
+    assert_eq!(ev.reason, StopReason::Arrived);
     assert_eq!(fake.pos(), 16);
     assert_eq!(r.registers(Tid(TID)).unwrap(), regs);
     let vruns = fake.vruns();
