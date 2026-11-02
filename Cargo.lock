@@ -285,8 +285,11 @@ dependencies = [
  "clap",
  "hopper-core",
  "hopper-dap",
+ "hopper-engine",
  "hopper-fake",
  "hopper-mcp",
+ "hopper-rr",
+ "hopper-symbols",
 ]
 
 [[package]]
@@ -313,6 +316,12 @@ name = "hopper-engine"
 version = "0.1.0"
 dependencies = [
  "hopper-core",
+ "hopper-eval",
+ "hopper-rr",
+ "hopper-sidecar",
+ "hopper-symbols",
+ "iced-x86",
+ "object",
 ]
 
 [[package]]
@@ -336,6 +345,16 @@ name = "hopper-index"
 version = "0.1.0"
 dependencies = [
  "hopper-core",
+ "hopper-eval",
+ "hopper-rr",
+ "hopper-symbols",
+ "iced-x86",
+ "object",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zstd",
 ]
 
 [[package]]
@@ -547,6 +566,15 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "redb"
+version = "4.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39178e0a867f9e3eaa6292a4ab1dd3613f2519c5b564341e1e7b29b270736cc4"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "rustc-demangle"

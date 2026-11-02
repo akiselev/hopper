@@ -1,5 +1,6 @@
 [package]
 name = "hopper-index"
+description = "hopper's background index: call tree, line hits, allocator lineage, timeline, windowed write log, divergence."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,19 @@ publish.workspace = true
 
 [dependencies]
 hopper-core.workspace = true
+hopper-rr.workspace = true
+hopper-symbols.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+redb.workspace = true
+zstd.workspace = true
+iced-x86.workspace = true
+object.workspace = true
+
+[dev-dependencies]
+hopper-eval.workspace = true
+hopper-symbols = { workspace = true, features = ["test-fixtures"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

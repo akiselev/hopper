@@ -71,3 +71,62 @@ about 30 points tall from a 150-point request). *Meanwhile:* hopper inserts the 
 **B2. A non-closable pane shows no close button.** `PaneInfo { closable: false }` panes still draw
 the tab's × (seen in the headless render). *Meanwhile:* hopper's dock policy refuses user closes
 (`FixedPanes` in `gui/src/ui.rs`, as cadatomic's `HostCloses` does), so the × does nothing.
+
+## Index (lane G, 2026-11-02)
+
+Read against cadabra3 at the checkout in `/home/user/cadabra3` (`crates/cadabra-decide/src/trace_log.rs`)
+and rr's `RerunCommand.cc` and `TraceField.cc` (rr sources in the session scratchpad).
+
+### cadabra3 (owner: the cadabra3 coordinator)
+
+**C1. A serialised `decision-trace` stream, one JSON object per line.** `trace_log::capture` keeps
+events in memory only (`Trace { events: Vec<Event> }`); nothing writes them out, so hopper cannot
+compare two runs' decisions without reading them from a recording. Ask: an opt-in writer (for
+example `trace_log::write_jsonl(&Trace, impl Write)`, or an env-var-selected sink under the
+`decision-trace` feature) that emits exactly this shape, which `hopper_index::divergence::load_jsonl`
+reads:
+
+```json
+{"site":"intersect.plane_cylinder.classify","kind":"cmp","cmp":"Lt","lhs":0.5,"rhs":1.0,"outcome":true,"role":3,"file":"crates/x/src/a.rs","line":12,"column":9}
+{"site":"decide/0x1f3a","kind":"decision","expr":"0x1f3a","role":2,"first":7,"second":9,"rung":1,"band":1e-9,"lo":-2e-10,"hi":3e-10,"class":"Within"}
+```
+
+- `site` (required, string): the `SiteName` text for a `CmpEvent`. A `DecisionEvent` has no
+  `SiteName` today; until it carries one, `decide/<ExprId>` keeps decisions with the same predicate
+  on one site. hopper aligns events by (site, per-site ordinal), so `site` must be stable across
+  runs and must not contain addresses.
+- Every other member is the payload, compared by JSON value. Floats must be written with
+  round-trip precision (serde_json's default) so that a 1-ulp difference is a difference. `file`,
+  `line` and `column` are debug information; they belong in the payload only if a moved line should
+  count as a divergence (hopper would prefer them under a `debug` member it can ignore later).
+- `at` (optional): a `hopper://` position URL, which hopper fills in when it reads events from a
+  recording; cadabra3 leaves it out.
+- *Meanwhile:* hopper's phase-A index can anchor the emitters' entries on the timeline
+  (`IndexConfig::anchors` = `PathSuffix("trace_log::push_cmp")`, `PathSuffix("trace_log::record_decision")`),
+  which gives where and how often, but not the payloads.
+
+### hopper-symbols (owner: lane B)
+
+**SY1. Public enumeration of functions and line-table rows.** `LineTable::rows`, `DwarfIndex::line_table`
+and the function index are `pub(crate)`, so `hopper-index` walks gimli's line programs itself and
+re-implements `render_file` (`crates/hopper-index/src/phase_a/plan.rs`) to plan line breakpoints,
+and reads functions from the ELF symbol table. Ask: `SymbolSet::functions(module) -> impl Iterator<Item = FunctionInfo>`
+and `SymbolSet::statement_rows(module) -> impl Iterator<Item = (u64, SourceLoc)>` (runtime
+addresses, `is_stmt` rows). *Meanwhile:* the private copy, which follows hopper-symbols' rendering
+rule exactly.
+
+### hopper-rr (owner: lane A)
+
+**RR1. A cheap moment at breakpoint stops.** `RrReplica::now` measures `sub` after every continue
+by seeking to (event, ticks) and single-stepping until the registers match
+(`replica.rs`, `measure_sub`). Phase A asks for the moment at every breakpoint hit, so on rr each
+hit costs a seek plus up to `sub` steps; for 10^5–10^6 hits that dominates the index. Ask: a way to
+get the moment of a breakpoint stop without re-stepping, for example `sub` counted by an rr-side
+instruction counter, or a lazily resolved moment (event, ticks, rip and a register fingerprint)
+that the index stores and resolves only when asked. *Meanwhile:* phase A calls `Target::now` and is
+correct but slow on rr; not measured here (no PMU).
+
+**RR2. Thread events.** Neither target enables `QThreadEvents`, so phase A finds thread starts and
+exits from std's `thread_start` entry and return, and from the first stop on an unknown thread.
+Non-Rust threads that never hit a breakpoint do not appear on the timeline. Ask: `QThreadEvents:1`
+on gdbserver and `StopReason` variants for thread create and exit, if rr reports them.
