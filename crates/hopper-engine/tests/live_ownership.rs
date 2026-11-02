@@ -48,14 +48,20 @@ fn a_is_moved_out_at_line_14() {
     let s17 = run_to_line(&d, "main.rs", 17);
     let locals = d.locals(s17.at, top(&s17)).unwrap();
     assert!(
-        matches!(&by_name(&locals, "c").ownership, OwnershipState::MovedOut { to: Some(_), .. }),
+        matches!(
+            &by_name(&locals, "c").ownership,
+            OwnershipState::MovedOut { to: Some(_), .. }
+        ),
         "{:?}",
         by_name(&locals, "c").ownership
     );
     assert_eq!(by_name(&locals, "v").ownership, OwnershipState::Live);
     // The earlier moment still answers from the cache with its own state.
     let again = d.locals(s.at, top(&s)).unwrap();
-    assert!(matches!(by_name(&again, "a").ownership, OwnershipState::MovedOut { .. }));
+    assert!(matches!(
+        by_name(&again, "a").ownership,
+        OwnershipState::MovedOut { .. }
+    ));
 }
 
 #[test]
@@ -73,6 +79,8 @@ fn without_a_sidecar_ownership_is_unknown() {
     let locals = d.locals(s.at, top(&s)).unwrap();
     assert_eq!(by_name(&locals, "a").ownership, OwnershipState::Unknown);
     // The plain fixture build has no sidecar beside it.
-    let Some(plain) = live("worked-example") else { return };
+    let Some(plain) = live("worked-example") else {
+        return;
+    };
     assert_eq!(plain.sidecar_status(), &SidecarStatus::Absent);
 }

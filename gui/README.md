@@ -6,7 +6,8 @@ locals, calls, query and timeline panes over an `Arc<dyn Debugger>`.
 ```sh
 cargo run --release -- --fake                 # the scripted worked example (hopper-fake)
 cargo run -- --fake --shot out.png --keys F10,F10,Alt+Left   # headless render (lavapipe works)
-cargo run -- <trace-dir>                      # not wired yet: prints an error
+cargo run -- <trace-dir>                      # an rr trace (hopper_cli::open_debugger)
+cargo run -- --live -- <prog> [args]          # a live process under gdbserver, forward only
 ```
 
 ## Building
@@ -18,7 +19,7 @@ cargo run -- <trace-dir>                      # not wired yet: prints an error
 | skelter, skelter-base/-core/-canvas/-compositor/-platform/-text/-widgets/-test | `../../svelters/crates/` |
 | skelter_berth, berth-core | `../../berth/crates/` |
 | skelter_quire, quire-core (and quire-text, through a `[patch]`) | `../../quire/crates/` |
-| hopper-core, hopper-fake | `../crates/` |
+| hopper-core, hopper-fake, hopper-cli (which opens traces and live sessions) | `../crates/` |
 
 `[patch]` sections point the git dependencies of skelter_berth, skelter_quire and skelter-widgets
 (svelters and quire by `branch = "master"`/rev) at the same sibling paths, so the graph holds one

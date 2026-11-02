@@ -90,7 +90,13 @@ pub fn tracepoints(sidecar: &Sidecar, syms: &SymbolSet) -> HashMap<u64, TracePoi
 
 /// The hits of one frame instance before `at`, from a log of hits in execution order: those
 /// with the frame's thread, CFA and function after the frame's latest entry.
-pub fn frame_hits(log: &[LineHit], at: &Moment, tid: Tid, cfa: u64, function: usize) -> Vec<LineHit> {
+pub fn frame_hits(
+    log: &[LineHit],
+    at: &Moment,
+    tid: Tid,
+    cfa: u64,
+    function: usize,
+) -> Vec<LineHit> {
     let mine: Vec<LineHit> = log
         .iter()
         .filter(|h| h.tid == tid && h.cfa == cfa && h.function == function && h.at.is_before(at))
@@ -231,10 +237,16 @@ mod tests {
         ];
         // At line 13 itself, the move has not run yet.
         let hits = frame_hits(&log, &m(3), Tid(1), 0x100, 0);
-        assert_eq!(local_state(&sc, 0, "a", &hits, Some(12)), OwnershipState::Live);
+        assert_eq!(
+            local_state(&sc, 0, "a", &hits, Some(12)),
+            OwnershipState::Live
+        );
         let hits = frame_hits(&log, &m(4), Tid(1), 0x100, 0);
         assert_eq!(hits.len(), 3);
-        assert_eq!(local_state(&sc, 0, "a", &hits, Some(13)), OwnershipState::Live);
+        assert_eq!(
+            local_state(&sc, 0, "a", &hits, Some(13)),
+            OwnershipState::Live
+        );
         let hits = frame_hits(&log, &m(5), Tid(1), 0x100, 0);
         match local_state(&sc, 0, "a", &hits, Some(14)) {
             OwnershipState::MovedOut { to, at, moment } => {
@@ -244,7 +256,10 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(local_state(&sc, 0, "b", &hits, Some(14)), OwnershipState::Live);
+        assert_eq!(
+            local_state(&sc, 0, "b", &hits, Some(14)),
+            OwnershipState::Live
+        );
     }
 
     #[test]

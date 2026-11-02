@@ -10,9 +10,9 @@ use hopper_core::{FrameId, HopperError, Moment, RegisterSet, Result, Tid};
 use hopper_eval::{EvalContext, FrameRef};
 use hopper_symbols::StackFrame;
 
+use crate::Shared;
 use crate::cache::{Fetch, MomentMemory};
 use crate::symbols::ProcessSymbols;
-use crate::Shared;
 
 /// Fetches from the replica when there is one; otherwise notes the miss.
 pub struct ViewFetch<'b, 'c> {
@@ -170,10 +170,7 @@ pub fn root_variable(expr: &str) -> Option<&str> {
 }
 
 /// Give every view whose root variable has a known state that state.
-pub fn apply_ownership(
-    views: &mut [ValueView],
-    state_of: &dyn Fn(&str) -> Option<OwnershipState>,
-) {
+pub fn apply_ownership(views: &mut [ValueView], state_of: &dyn Fn(&str) -> Option<OwnershipState>) {
     for v in views {
         let root = match &v.handle.target {
             hopper_core::api::ValueTarget::Expr(e) => root_variable(e),

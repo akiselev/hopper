@@ -36,16 +36,15 @@ pub fn open_debugger(path: &Path) -> Result<Arc<dyn Debugger>> {
     Ok(Arc::new(Session::open_rr(path, SessionOptions::default())?))
 }
 
-/// Run `program` under gdbserver: a forward-only live session.
+/// Run `program` under gdbserver, stopped at the start of its `main`: a forward-only live
+/// session.
 pub fn open_live(program: &[OsString]) -> Result<Arc<dyn Debugger>> {
     let (prog, args) = program
         .split_first()
         .ok_or_else(|| HopperError::Invalid("give the program to run after --".into()))?;
-    Ok(Arc::new(Session::live(
-        Path::new(prog),
-        args,
-        SessionOptions::default(),
-    )?))
+    let session = Session::live(Path::new(prog), args, SessionOptions::default())?;
+    session.run_to_main()?;
+    Ok(Arc::new(session))
 }
 
 /// The fake when `fake` is set, otherwise the recording at `trace`.
@@ -257,7 +256,9 @@ pub fn hopper_build(dir: &Path, bin: Option<&str>) -> Result<PathBuf> {
         Some(tool) => std::process::Command::new(tool),
         None => std::process::Command::new("cargo"),
     };
-    cmd.arg("hopper-build").arg("--manifest-path").arg(&manifest);
+    cmd.arg("hopper-build")
+        .arg("--manifest-path")
+        .arg(&manifest);
     if let Some(b) = bin {
         cmd.arg("--bin").arg(b);
     }
@@ -293,7 +294,6 @@ pub fn built_executables(report: &str) -> Vec<PathBuf> {
         .filter_map(|l| l.split_once(" -> ").map(|(bin, _)| PathBuf::from(bin)))
         .collect()
 }
-
 
 // ---------------------------------------------------------------- shared printing
 
@@ -496,7 +496,11 @@ fn run_to_location(d: &dyn Debugger, text: &str) -> Result<Moment> {
         if let Some(start) = start
             && d.cursor()?.at != start
         {
-            d.seek(start)?;
+            match d.seek(start) {
+                // A live session cannot go back: run on from where it is.
+                Ok(_) | Err(HopperError::Unsupported(_)) => {}
+                Err(e) => return Err(e),
+            }
         }
         d.run(Direction::Forward, Until::Breakpoints)
     })();

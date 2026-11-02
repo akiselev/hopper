@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 hopper-core = { path = "../crates/hopper-core" }
 hopper-fake = { path = "../crates/hopper-fake" }
+hopper-cli = { path = "../crates/hopper-cli" }
 
 skelter = { path = "../../svelters/crates/skelter" }
 skelter-base = { path = "../../svelters/crates/skelter-base" }

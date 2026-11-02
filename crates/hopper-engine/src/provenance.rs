@@ -61,6 +61,17 @@ pub enum NoWrite {
     FrameEntered,
 }
 
+/// How one hop's bytes got their value.
+enum Source {
+    /// Copied unchanged from memory at `from`, which held them at moment `at`.
+    Copied { from: u64, at: Moment },
+    /// The chain ends here.
+    End {
+        machine: MachineKind,
+        end: OriginEnd,
+    },
+}
+
 /// Reverse-execution work on one replica, with a step budget.
 pub struct Reverse<'a> {
     pub t: &'a mut dyn Target,
@@ -216,51 +227,51 @@ impl<'a> Reverse<'a> {
         }
     }
 
-    /// From the writing instruction (the replica is just before it), find where the byte
-    /// `watched` got its value: the source place, how the machine made it, and the moment at
-    /// which the source bytes are read. `None` source ends the chain with `end`.
-    fn source_of(
-        &mut self,
-        w: &FoundWrite,
-    ) -> Result<(MachineKind, Option<(u64, Moment)>, Option<OriginEnd>)> {
+    /// From the writing instruction (the replica is just before it), how the byte `watched` got
+    /// its value: copied from somewhere the walk continues at, or an end of the chain.
+    fn source_of(&mut self, w: &FoundWrite) -> Result<Source> {
         let Some(insn) = w.insn else {
-            return Ok((
-                MachineKind::Unknown,
-                None,
-                Some(OriginEnd::Unknown {
+            return Ok(Source::End {
+                machine: MachineKind::Unknown,
+                end: OriginEnd::Unknown {
                     reason: format!("cannot decode the writer at {:#x}", w.event.pc),
-                }),
-            ));
+                },
+            });
         };
         let regs = self.t.registers(w.tid)?;
-        match decode::classify_write(&insn, &regs, w.watched) {
-            WriteSource::Memory { addr } => Ok((MachineKind::Copy, Some((addr, self.t.now()?)), None)),
-            WriteSource::Immediate => Ok((MachineKind::Immediate, None, Some(OriginEnd::Literal))),
-            WriteSource::Syscall => Ok((
-                MachineKind::Syscall,
-                None,
-                Some(OriginEnd::Input {
+        Ok(match decode::classify_write(&insn, &regs, w.watched) {
+            WriteSource::Memory { addr } => Source::Copied {
+                from: addr,
+                at: self.t.now()?,
+            },
+            WriteSource::Immediate => Source::End {
+                machine: MachineKind::Immediate,
+                end: OriginEnd::Literal,
+            },
+            WriteSource::Syscall => Source::End {
+                machine: MachineKind::Syscall,
+                end: OriginEnd::Input {
                     syscall: Some(decode::text(&insn)),
-                }),
-            )),
-            WriteSource::Arithmetic { .. } => {
-                Ok((MachineKind::Arithmetic, None, Some(OriginEnd::Computed)))
-            }
-            WriteSource::Register { reg, offset } => self.register_source(w.tid, reg, offset),
-        }
+                },
+            },
+            WriteSource::Arithmetic { .. } => Source::End {
+                machine: MachineKind::Arithmetic,
+                end: OriginEnd::Computed,
+            },
+            WriteSource::Register { reg, offset } => self.register_source(w.tid, reg, offset)?,
+        })
     }
 
-    fn register_source(
-        &mut self,
-        tid: Tid,
-        mut reg: Register,
-        offset: u64,
-    ) -> Result<(MachineKind, Option<(u64, Moment)>, Option<OriginEnd>)> {
+    /// Walk back from a store of `reg` to the instruction that defined it.
+    fn register_source(&mut self, tid: Tid, mut reg: Register, offset: u64) -> Result<Source> {
         for _ in 0..MAX_REGISTER_WALK {
             self.spend()?;
             let ev = self.t.resume(Resume::Step { tid }, Direction::Reverse)?;
             if ev.reason == StopReason::HistoryStart {
-                return Ok((MachineKind::Copy, None, Some(OriginEnd::HistoryStart)));
+                return Ok(Source::End {
+                    machine: MachineKind::Copy,
+                    end: OriginEnd::HistoryStart,
+                });
             }
             let regs = self.t.registers(tid)?;
             let pc = regs.pc().unwrap_or(0);
@@ -271,36 +282,38 @@ impl<'a> Reverse<'a> {
             let Some(insn) = decode::decode(&b, pc) else {
                 continue;
             };
+            let end = |machine, end| Ok(Source::End { machine, end });
             match decode::register_definition(&insn, &regs, reg, offset) {
                 RegisterDefinition::Untouched => {}
                 RegisterDefinition::Copy { reg: r } => reg = r,
                 RegisterDefinition::Load { addr } => {
-                    return Ok((MachineKind::Copy, Some((addr, self.t.now()?)), None));
+                    return Ok(Source::Copied {
+                        from: addr,
+                        at: self.t.now()?,
+                    });
                 }
                 RegisterDefinition::Immediate => {
-                    return Ok((MachineKind::Immediate, None, Some(OriginEnd::Literal)));
+                    return end(MachineKind::Immediate, OriginEnd::Literal);
                 }
                 RegisterDefinition::Syscall => {
-                    return Ok((
+                    return end(
                         MachineKind::Syscall,
-                        None,
-                        Some(OriginEnd::Input {
+                        OriginEnd::Input {
                             syscall: Some("syscall".into()),
-                        }),
-                    ));
+                        },
+                    );
                 }
                 RegisterDefinition::Arithmetic { .. } => {
-                    return Ok((MachineKind::Arithmetic, None, Some(OriginEnd::Computed)));
+                    return end(MachineKind::Arithmetic, OriginEnd::Computed);
                 }
             }
         }
-        Ok((
-            MachineKind::Copy,
-            None,
-            Some(OriginEnd::Unknown {
+        Ok(Source::End {
+            machine: MachineKind::Copy,
+            end: OriginEnd::Unknown {
                 reason: format!("no definition of {reg:?} within {MAX_REGISTER_WALK} instructions"),
-            }),
-        ))
+            },
+        })
     }
 
     /// The ownership label of the hop at the writer (the replica is just before it).
@@ -311,7 +324,9 @@ impl<'a> Reverse<'a> {
         let at = self.t.now().ok()?;
         let stack = {
             let mut mem = TargetMemory(&mut *self.t);
-            syms.set.stack(&mut mem as &mut dyn Memory, &regs, w.tid).ok()?
+            syms.set
+                .stack(&mut mem as &mut dyn Memory, &regs, w.tid)
+                .ok()?
         };
         let mut pc_info = pc_info(&syms.set, &stack);
         let size = |p: Option<Place>| match p {
@@ -361,22 +376,21 @@ impl<'a> Reverse<'a> {
             let Ok(locals) = self.shared.evaluator.locals(&mut cx) else {
                 continue;
             };
-            for v in locals.iter().filter(|v| contains(v)) {
-                let mut name = v.name.clone();
-                if let Ok(kids) = self
-                    .shared
-                    .evaluator
-                    .children(&mut cx, &v.handle, hopper_core::api::PageReq::first(64))
-                    && let Some(k) = kids.iter().find(|k| contains(k))
-                {
-                    name = if k.name.starts_with('[') {
-                        format!("{name}{}", k.name)
-                    } else {
-                        format!("{name}.{}", k.name)
-                    };
-                }
-                return Some(name);
-            }
+            let Some(v) = locals.iter().find(|v| contains(v)) else {
+                continue;
+            };
+            // A field (or element) when one holds the bytes.
+            let kids = self.shared.evaluator.children(
+                &mut cx,
+                &v.handle,
+                hopper_core::api::PageReq::first(64),
+            );
+            let name = match kids.ok().and_then(|k| k.into_iter().find(|k| contains(k))) {
+                Some(k) if k.name.starts_with('[') => format!("{}{}", v.name, k.name),
+                Some(k) => format!("{}.{}", v.name, k.name),
+                None => v.name.clone(),
+            };
+            return Some(name);
         }
         None
     }
@@ -428,16 +442,21 @@ impl<'a> Reverse<'a> {
                 }
             };
             let written = Place::memory(process, w.watched, w.len);
-            let (machine, source, end) = match self.source_of(&w) {
+            let source = match self.source_of(&w) {
                 Ok(x) => x,
-                Err(HopperError::BudgetExhausted { .. }) => (
-                    MachineKind::Unknown,
-                    None,
-                    Some(OriginEnd::Budget),
-                ),
+                Err(HopperError::BudgetExhausted { .. }) => Source::End {
+                    machine: MachineKind::Unknown,
+                    end: OriginEnd::Budget,
+                },
                 Err(e) => return Err(e),
             };
-            let read = source.map(|(a, _)| Place::memory(process, a, w.len));
+            let (machine, read) = match &source {
+                Source::Copied { from, .. } => (
+                    MachineKind::Copy,
+                    Some(Place::memory(process, *from, w.len)),
+                ),
+                Source::End { machine, .. } => (*machine, None),
+            };
             let ownership = self.label(&w, read);
             let allocation = self.shared.allocation_of(w.watched, &w.event.at);
             hops.push(OriginHop {
@@ -451,16 +470,9 @@ impl<'a> Reverse<'a> {
                 ownership,
                 allocation,
             });
-            if let Some(end) = end {
-                return Ok(OriginChain { hops, end });
-            }
-            let Some((src, moment)) = source else {
-                return Ok(OriginChain {
-                    hops,
-                    end: OriginEnd::Unknown {
-                        reason: "no source".into(),
-                    },
-                });
+            let (src, moment) = match source {
+                Source::End { end, .. } => return Ok(OriginChain { hops, end }),
+                Source::Copied { from, at } => (from, at),
             };
             if self.read_only(src) {
                 return Ok(OriginChain {
@@ -509,9 +521,10 @@ pub fn pc_info(syms: &SymbolSet, stack: &[StackFrame]) -> PcInfo {
         // Innermost first in the stack; the join wants outermost first.
         let mut chain = Vec::new();
         for i in (1..group.len()).rev() {
-            if let (Some(func), Some(site)) =
-                (group[i - 1].frame.function.clone(), group[i].frame.location.clone())
-            {
+            if let (Some(func), Some(site)) = (
+                group[i - 1].frame.function.clone(),
+                group[i].frame.location.clone(),
+            ) {
                 chain.push(DwarfInline {
                     function: func,
                     call_site: site,
@@ -536,9 +549,35 @@ pub fn pc_info(syms: &SymbolSet, stack: &[StackFrame]) -> PcInfo {
 }
 
 /// The frame of `stack` with this CFA and function, for re-finding a frame at another moment.
-pub fn frame_with(stack: &[StackFrame], cfa: Option<u64>, function: Option<&str>) -> Option<FrameId> {
+pub fn frame_with(
+    stack: &[StackFrame],
+    cfa: Option<u64>,
+    function: Option<&str>,
+) -> Option<FrameId> {
     stack
         .iter()
         .find(|f| f.cfa == cfa && f.frame.function.as_deref() == function)
         .map(|f| f.frame.id)
+}
+
+/// The source view of an origin chain: one hop per ownership event, as the plan's worked-example
+/// table shows it. Machine hops without a label (std internals the sidecar has no event for) are
+/// left out, and consecutive hops labelled with the same event (the several copies one move or
+/// one call makes) collapse into the first of them. The machine hops stay in the chain.
+pub fn source_hops(chain: &OriginChain) -> Vec<OriginHop> {
+    let mut out: Vec<OriginHop> = Vec::new();
+    for h in &chain.hops {
+        let Some(label) = &h.ownership else { continue };
+        let same = out
+            .last()
+            .and_then(|p| p.ownership.as_ref())
+            .is_some_and(|l| {
+                (l.kind, &l.src, &l.dst, &l.span)
+                    == (label.kind, &label.src, &label.dst, &label.span)
+            });
+        if !same {
+            out.push(h.clone());
+        }
+    }
+    out
 }

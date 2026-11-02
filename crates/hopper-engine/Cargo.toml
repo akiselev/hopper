@@ -12,11 +12,15 @@ hopper-rr.workspace = true
 hopper-symbols.workspace = true
 hopper-eval.workspace = true
 hopper-sidecar.workspace = true
+hopper-index.workspace = true
 iced-x86.workspace = true
 object.workspace = true
 
 [dev-dependencies]
 hopper-symbols = { workspace = true, features = ["test-fixtures"] }
+tempfile.workspace = true
+hopper-mcp.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

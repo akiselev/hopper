@@ -290,6 +290,7 @@ dependencies = [
  "hopper-mcp",
  "hopper-rr",
  "hopper-symbols",
+ "tempfile",
 ]
 
 [[package]]
@@ -317,11 +318,15 @@ version = "0.1.0"
 dependencies = [
  "hopper-core",
  "hopper-eval",
+ "hopper-index",
+ "hopper-mcp",
  "hopper-rr",
  "hopper-sidecar",
  "hopper-symbols",
  "iced-x86",
  "object",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

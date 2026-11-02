@@ -10,17 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hopper_core::api::{
-    Budget, CallFilter, CallId, CallNode, Completeness, OriginChain, Page, PageReq,
-    ProcessInfo, ValueHandle, ValueView, WriteEvent,
+    Budget, CallFilter, CallId, CallNode, Completeness, OriginChain, Page, PageReq, ProcessInfo,
+    ValueHandle, ValueTarget, ValueView, WriteEvent,
 };
 use hopper_core::target::{
     BreakKind, Breakpoint, Direction, Memory, Resume, StopReason, Target, TargetMemory,
 };
-use hopper_core::{HopperError, Moment, MomentRange, Place, Result, SourceLoc, Tid};
+use hopper_core::{FrameId, HopperError, Moment, MomentRange, Place, Result, SourceLoc, Tid};
 use hopper_symbols::{StackFrame, SymbolSet};
 
 use crate::ownership::{self, LineHit};
-use crate::provenance::{Reverse, frame_with};
+use crate::provenance::Reverse;
 use crate::view::MomentView;
 use crate::{Mode, Session, Shared, at_moment, lock, watch_pieces};
 
@@ -138,11 +138,20 @@ pub fn frame_hits(
             &log, &at, key.tid, key.cfa, function,
         )));
     }
+    if let Ok(ix) = &shared.index
+        && let Some(h) = crate::indexed::frame_hits(shared, ix, at, key, function)
+    {
+        return Some(Arc::new(ownership::frame_hits(
+            &h, &at, key.tid, key.cfa, function,
+        )));
+    }
     let cache_key = (at, key.tid, key.cfa);
     if let Some(h) = lock(&shared.replay_hits).get(&cache_key) {
         return h.clone();
     }
-    let hits = replay_frame_hits(shared, at, key.clone(), function).ok().flatten();
+    let hits = replay_frame_hits(shared, at, key.clone(), function)
+        .ok()
+        .flatten();
     lock(&shared.replay_hits).insert(cache_key, hits.clone());
     hits
 }
@@ -224,10 +233,7 @@ pub fn processes(shared: &Arc<Shared>) -> Result<Vec<ProcessInfo>> {
     if let Some(p) = shared.processes.get() {
         return Ok(p.clone());
     }
-    let threads = shared
-        .pool
-        .cursor(|t| t.threads())?
-        .unwrap_or_default();
+    let threads = shared.pool.cursor(|t| t.threads())?.unwrap_or_default();
     let mut out = vec![ProcessInfo {
         id: shared.process,
         executable: shared.exe.display().to_string(),
@@ -361,6 +367,11 @@ pub fn line_hits(
     range: MomentRange,
     page: PageReq,
 ) -> Result<Page<Moment>> {
+    if let Ok(ix) = &shared.index
+        && let Some(p) = crate::indexed::complete(ix.index.line_hits(&loc, range, page))
+    {
+        return Ok(p);
+    }
     let cached = lock(&shared.line_hit_cache).get(&loc).cloned();
     let all = match cached {
         Some(a) => a,
@@ -412,6 +423,16 @@ pub fn line_hits(
 /// The calls of the functions a name matches, by replaying with breakpoints at their entries
 /// and at each call's return address.
 pub fn calls(shared: &Arc<Shared>, filter: CallFilter, page: PageReq) -> Result<Page<CallNode>> {
+    if let Ok(ix) = &shared.index {
+        let answer = ix.index.calls(&filter, page);
+        if let Some(p) = crate::indexed::complete(answer.clone()) {
+            return Ok(p);
+        }
+        // Still building: a named function can be replayed now; the tree waits for the index.
+        if filter.function.is_none() {
+            return answer;
+        }
+    }
     let Some(name) = filter.function.clone() else {
         return Err(HopperError::Unsupported(
             "the whole call tree comes from hopper-index; without it, give a function name".into(),
@@ -469,7 +490,11 @@ pub fn calls(shared: &Arc<Shared>, filter: CallFilter, page: PageReq) -> Result<
             }
             if let Some((fname, decl)) = entries.get(&addr) {
                 let mut b = [0u8; 8];
-                let ret = ins.t.read_memory(sp, &mut b).ok().map(|()| u64::from_le_bytes(b));
+                let ret = ins
+                    .t
+                    .read_memory(sp, &mut b)
+                    .ok()
+                    .map(|()| u64::from_le_bytes(b));
                 let parent = open
                     .iter()
                     .rev()
@@ -517,8 +542,15 @@ pub fn calls(shared: &Arc<Shared>, filter: CallFilter, page: PageReq) -> Result<
     Ok(page_of(&nodes, page, completeness))
 }
 
-/// Where a value handle's bytes are at its moment, with its frame's identity.
-fn place_of(shared: &Arc<Shared>, h: &ValueHandle) -> Result<(Place, Option<FrameKey>, Option<String>)> {
+/// Where a value handle's bytes are at its moment, their type, and the frame's identity.
+struct Located {
+    place: Place,
+    ty: hopper_core::api::TypeKey,
+    name: String,
+    frame: Option<FrameKey>,
+}
+
+fn place_of(shared: &Arc<Shared>, h: &ValueHandle) -> Result<Located> {
     let handle = h.clone();
     let frame = Session::handle_frame(h);
     at_moment(shared, h.at, move |v| {
@@ -526,15 +558,39 @@ fn place_of(shared: &Arc<Shared>, h: &ValueHandle) -> Result<(Place, Option<Fram
         let place = ev.place.ok_or_else(|| {
             HopperError::Unsupported("the value is not in memory (a register or a constant)".into())
         })?;
+        let name = v.with_eval(frame, |ev, cx| ev.view(cx, &handle))?.name;
         let f = v.frame(frame)?;
         let syms = v.symbols()?;
-        Ok((place, FrameKey::of(&syms.set, &f), f.frame.function.clone()))
+        Ok(Located {
+            place,
+            ty: ev.type_key,
+            name,
+            frame: FrameKey::of(&syms.set, &f),
+        })
     })
 }
 
 /// The last write to `place` before `before`.
-pub fn last_write(shared: &Arc<Shared>, place: Place, before: Moment) -> Result<Option<WriteEvent>> {
+pub fn last_write(
+    shared: &Arc<Shared>,
+    place: Place,
+    before: Moment,
+) -> Result<Option<WriteEvent>> {
     shared.check_moment(&before)?;
+    // The phase-B write log, where it covers the range and recorded the bytes.
+    if let (Ok(ix), Some(main)) = (&shared.index, &shared.main_symbols)
+        && let Ok(answer) = ix.index.last_write(place, before)
+        && answer.completeness == Completeness::Complete
+    {
+        match answer.value {
+            None => return Ok(None),
+            Some(w) => {
+                if let Some(ev) = w.to_event(main) {
+                    return Ok(Some(ev));
+                }
+            }
+        }
+    }
     let lease = shared.pool.lease()?;
     let s = shared.clone();
     lease.run(move |t| -> Result<Option<WriteEvent>> {
@@ -553,7 +609,7 @@ pub fn last_write(shared: &Arc<Shared>, place: Place, before: Moment) -> Result<
 
 /// The origin chain of a value.
 pub fn origin(shared: &Arc<Shared>, value: &ValueHandle, budget: Budget) -> Result<OriginChain> {
-    let (place, _, _) = place_of(shared, value)?;
+    let place = place_of(shared, value)?.place;
     let at = value.at;
     let lease = shared.pool.lease()?;
     let s = shared.clone();
@@ -573,13 +629,21 @@ pub fn origin(shared: &Arc<Shared>, value: &ValueHandle, budget: Budget) -> Resu
 
 /// How a value changed over a range: its value at the frame's entry (or the range's start)
 /// and after every write to its bytes, until the frame returns or the range ends.
+///
+/// The value is read by place at each moment (its bytes, with its type): a write can happen
+/// where the variable's name is not in scope yet, as in the instructions of `let b = a;`.
 pub fn value_history(
     shared: &Arc<Shared>,
     value: &ValueHandle,
     range: MomentRange,
     page: PageReq,
 ) -> Result<Page<(Moment, ValueView)>> {
-    let (place, key, function) = place_of(shared, value)?;
+    let Located {
+        place,
+        ty,
+        name,
+        frame: key,
+    } = place_of(shared, value)?;
     let Place::Memory { addr, len, .. } = place else {
         return Err(HopperError::Unsupported("history of a register".into()));
     };
@@ -618,19 +682,19 @@ pub fn value_history(
         let view_here = |t: &mut dyn Target| -> Option<(Moment, ValueView)> {
             let at = t.now().ok()?;
             let mut v = MomentView::on(&s, at, t);
-            let frame = match &key {
-                Some(k) => {
-                    let stack = v.stack(k.tid).ok()?;
-                    frame_with(&stack, Some(k.cfa), function.as_deref())?
-                }
-                None => Session::handle_frame(&h),
+            let frame = FrameId {
+                tid: h.at.tid,
+                depth: 0,
             };
             let handle = ValueHandle {
                 at,
-                frame: Some(frame),
-                ..h.clone()
+                process: h.process,
+                frame: None,
+                target: ValueTarget::Place { place, ty },
+                path: Vec::new(),
             };
-            let view = v.with_eval(frame, |ev, cx| ev.view(cx, &handle)).ok()?;
+            let mut view = v.with_eval(frame, |ev, cx| ev.view(cx, &handle)).ok()?;
+            view.name = name.clone();
             Some((at, view))
         };
         let mut items: Vec<(Moment, ValueView)> = Vec::new();

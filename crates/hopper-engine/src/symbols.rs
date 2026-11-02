@@ -74,10 +74,13 @@ pub struct LoadedObject {
     pub bias: u64,
 }
 
+/// A binary opened once, with its facts; `None` when it could not be read.
+type Opened = Option<(Arc<Binary>, Arc<ElfFacts>)>;
+
 /// Every process symbol set the session has built.
 #[derive(Debug, Default)]
 pub struct SymbolCache {
-    binaries: Mutex<HashMap<PathBuf, Option<(Arc<Binary>, Arc<ElfFacts>)>>>,
+    binaries: Mutex<HashMap<PathBuf, Opened>>,
     sets: Mutex<HashMap<Vec<LoadedObject>, Arc<ProcessSymbols>>>,
 }
 
@@ -102,7 +105,7 @@ impl ProcessSymbols {
 }
 
 impl SymbolCache {
-    fn binary(&self, path: &Path) -> Option<(Arc<Binary>, Arc<ElfFacts>)> {
+    fn binary(&self, path: &Path) -> Opened {
         let mut map = self.binaries.lock().unwrap_or_else(|p| p.into_inner());
         map.entry(path.to_path_buf())
             .or_insert_with(|| {
@@ -282,7 +285,10 @@ mod tests {
             .with(0x3000, lm(0, 0x4000, 0x3100))
             .with(0x3100, lm(0x7f00_0000_0000, 0x4100, 0))
             .with(0x4000, vec![0; 64])
-            .with(0x4100, b"/lib/libc.so.6\0".iter().copied().chain([0; 49]).collect());
+            .with(
+                0x4100,
+                b"/lib/libc.so.6\0".iter().copied().chain([0; 49]).collect(),
+            );
         let objs = link_map(&mut mem, dynamic);
         assert_eq!(objs.len(), 2);
         assert_eq!(objs[0].path, PathBuf::new());

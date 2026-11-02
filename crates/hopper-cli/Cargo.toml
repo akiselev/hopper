@@ -22,6 +22,7 @@ clap.workspace = true
 
 [dev-dependencies]
 hopper-symbols = { workspace = true, features = ["test-fixtures"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

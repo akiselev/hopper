@@ -57,12 +57,15 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     }
 }
 
+type Chunks = Lru<(Moment, u64), Arc<[u8]>>;
+type Stacks = Lru<(Moment, Tid), Arc<Vec<StackFrame>>>;
+
 /// The cache shared by every replica of a session.
 #[derive(Debug)]
 pub struct MomentCache {
-    chunks: Mutex<Lru<(Moment, u64), Arc<[u8]>>>,
+    chunks: Mutex<Chunks>,
     registers: Mutex<Lru<(Moment, Tid), RegisterSet>>,
-    stacks: Mutex<Lru<(Moment, Tid), Arc<Vec<StackFrame>>>>,
+    stacks: Mutex<Stacks>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -136,7 +139,9 @@ pub struct MomentMemory<'a, F: Fetch> {
 
 impl<F: Fetch> std::fmt::Debug for MomentMemory<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MomentMemory").field("at", &self.at).finish()
+        f.debug_struct("MomentMemory")
+            .field("at", &self.at)
+            .finish()
     }
 }
 

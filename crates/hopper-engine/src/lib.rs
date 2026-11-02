@@ -18,6 +18,7 @@
 
 pub mod cache;
 pub mod decode;
+mod indexed;
 mod nav;
 pub mod ownership;
 mod provenance;
@@ -38,20 +39,22 @@ use hopper_core::api::{
 };
 use hopper_core::target::{Breakpoint, Direction, Memory, Target, TargetMemory};
 use hopper_core::{
-    FrameId, HopperError, Moment, MomentRange, Place, ProcessId, RecordingId, RegisterSet,
-    Result, SourceLoc, Tid,
+    FrameId, HopperError, Moment, MomentRange, Place, ProcessId, RecordingId, RegisterSet, Result,
+    SourceLoc, Tid,
 };
 use hopper_eval::Evaluator;
 use hopper_rr::{
-    GdbserverConfig, GdbserverFactory, ReplayOptions, ReplicaFactory, ReplicaPool, ReplicaRole,
-    Rr, RrReplicaFactory,
+    GdbserverConfig, GdbserverFactory, ReplayOptions, ReplicaFactory, ReplicaPool, ReplicaRole, Rr,
+    RrReplicaFactory,
 };
 use hopper_sidecar::{Sidecar, sidecar_path};
 use hopper_symbols::{Binary, Module, SymbolSet};
 
+pub use indexed::IndexPolicy;
 pub use nav::watch_pieces;
 use nav::{Driver, Halt};
 use ownership::{LineHit, TracePoint};
+pub use provenance::source_hops;
 use symbols::{ProcessSymbols, SymbolCache};
 use view::MomentView;
 
@@ -77,6 +80,7 @@ pub struct SessionOptions {
     pub replay: ReplayOptions,
     pub gdbserver: GdbserverConfig,
     pub sidecar: SidecarPolicy,
+    pub index: IndexPolicy,
     /// Memory chunks ([`cache::CHUNK`] bytes each) the moment cache keeps.
     pub cache_chunks: usize,
     /// Resumes one navigation command may spend.
@@ -93,6 +97,7 @@ impl Default for SessionOptions {
             replay: ReplayOptions::default(),
             gdbserver: GdbserverConfig::default(),
             sidecar: SidecarPolicy::default(),
+            index: IndexPolicy::default(),
             cache_chunks: 16_384,
             navigation_budget: 2_000_000,
             query_budget: 100_000,
@@ -107,7 +112,10 @@ pub enum SidecarStatus {
     Absent,
     Disabled,
     /// The sidecar was found but refused (stale build id, unreadable).
-    Rejected { path: PathBuf, reason: String },
+    Rejected {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 /// A boxed factory, so one pool type serves rr, gdbserver and tests.
@@ -121,10 +129,17 @@ impl ReplicaFactory for Factory {
 
 #[derive(Debug)]
 enum Mode {
-    Recording { trace_dir: PathBuf, rr: Rr },
+    Recording {
+        trace_dir: PathBuf,
+        rr: Rr,
+    },
     /// A reverse-capable replay from another source (tests, transcripts).
-    Replay { description: String },
-    Live { program: PathBuf },
+    Replay {
+        description: String,
+    },
+    Live {
+        program: PathBuf,
+    },
 }
 
 #[derive(Debug)]
@@ -156,6 +171,10 @@ pub(crate) struct Shared {
     /// Every sidecar tracepoint, for replays on background replicas.
     pub sidecar_lines: HashMap<u64, TracePoint>,
     pub options: SessionOptions,
+    /// The index, when the session keeps one; why not otherwise.
+    pub index: std::result::Result<indexed::Indexed, indexed::NoIndex>,
+    /// The main executable's symbols alone (what the index was built against).
+    pub main_symbols: Option<SymbolSet>,
     start: Stop,
     rr_version: Option<String>,
     state: Mutex<CursorState>,
@@ -163,7 +182,8 @@ pub(crate) struct Shared {
     trace: Mutex<Vec<LineHit>>,
     end: OnceLock<Option<Moment>>,
     processes: OnceLock<Vec<ProcessInfo>>,
-    replay_hits: Mutex<HashMap<(Moment, Tid, u64), Option<Arc<Vec<LineHit>>>>>,
+    /// Frame-instance line hits found by replay, by (moment, thread, CFA).
+    replay_hits: Mutex<HashMap<(Moment, Tid, u64), FrameHits>>,
     line_hit_cache: Mutex<HashMap<SourceLoc, Arc<Vec<Moment>>>>,
 }
 
@@ -176,6 +196,12 @@ impl std::fmt::Debug for Shared {
             .finish()
     }
 }
+
+/// A frame instance's tracepoint hits; `None` when they cannot be known.
+type FrameHits = Option<Arc<Vec<LineHit>>>;
+
+/// The ownership state of a frame's locals, by variable name.
+type OwnershipLookup = Box<dyn Fn(&str) -> Option<OwnershipState>>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -216,8 +242,13 @@ impl Shared {
     }
 
     /// The heap allocation holding `addr` at `at`, from the index.
-    pub fn allocation_of(&self, _addr: u64, _at: &Moment) -> Option<AllocationId> {
-        None
+    pub fn allocation_of(&self, addr: u64, at: &Moment) -> Option<AllocationId> {
+        let ix = self.index.as_ref().ok()?;
+        ix.index
+            .allocation_at(self.process, addr, *at)
+            .ok()?
+            .value
+            .map(|a| a.id)
     }
 
     fn live_refusal(&self, what: &str) -> HopperError {
@@ -403,6 +434,7 @@ impl Session {
             Ok(s) => provenance::describe(s, open.pc),
             Err(_) => (None, None),
         };
+        let index = open_index(&options.index, &mode, open.recording, &exe);
         let start = Stop {
             at: open.at,
             tid: open.tid,
@@ -426,6 +458,8 @@ impl Session {
             tracepoints,
             sidecar_lines,
             options,
+            index,
+            main_symbols: main_syms.as_ref().ok().cloned(),
             start: start.clone(),
             rr_version: open.rr_version,
             state: Mutex::new(CursorState {
@@ -452,6 +486,9 @@ impl Session {
                 Ok(())
             })??;
         }
+        if let (Ok(ix), Some(main)) = (&shared.index, &shared.main_symbols) {
+            indexed::start_phase_a(&shared, ix, main.clone())?;
+        }
         Ok(Session { inner: shared })
     }
 
@@ -463,6 +500,48 @@ impl Session {
     /// Whether the session runs a live process (forward only).
     pub fn is_live(&self) -> bool {
         self.inner.is_live()
+    }
+
+    /// Why this session has no index, when it has none.
+    pub fn index_unavailable(&self) -> Option<String> {
+        self.inner.index.as_ref().err().map(|e| e.to_string())
+    }
+
+    /// Run to the start of the program's `main` (gdb's `start`): a live session begins at the
+    /// dynamic linker's first instruction.
+    pub fn run_to_main(&self) -> Result<Stop> {
+        let bp = self.add_breakpoint(BreakLocation::Function("main".into()))?;
+        let stop = self.run(Direction::Forward, Until::Breakpoints);
+        let removed = self.remove_breakpoint(bp.id);
+        let stop = stop?;
+        removed?;
+        Ok(stop)
+    }
+
+    /// The same value at another moment: the handle's frame is found at `to` by its CFA and
+    /// function (a frame's depth changes as calls come and go). `NotFound` when that frame does
+    /// not exist at `to`.
+    pub fn relocate(&self, handle: &ValueHandle, to: Moment) -> Result<ValueHandle> {
+        let Some(frame) = handle.frame else {
+            return Ok(handle.at(to));
+        };
+        let (cfa, function) = at_moment(self.shared(), handle.at, move |v| {
+            let f = v.frame(frame)?;
+            Ok((f.cfa, f.frame.function.clone()))
+        })?;
+        let tid = frame.tid;
+        let found = at_moment(self.shared(), to, move |v| {
+            let stack = v.stack(tid)?;
+            Ok(provenance::frame_with(&stack, cfa, function.as_deref()))
+        })?;
+        let depth = found.ok_or_else(|| {
+            HopperError::NotFound(format!("the frame of {:?} at {to}", handle.target))
+        })?;
+        Ok(ValueHandle {
+            at: to,
+            frame: Some(depth),
+            ..handle.clone()
+        })
     }
 
     /// The line hits the cursor has observed at tracepoints (live sessions with a sidecar).
@@ -597,11 +676,7 @@ impl Session {
     }
 
     /// The ownership state of locals of `frame` at `at`, as a lookup by variable name.
-    fn ownership_lookup(
-        &self,
-        at: Moment,
-        frame: FrameId,
-    ) -> Option<Box<dyn Fn(&str) -> Option<OwnershipState>>> {
+    fn ownership_lookup(&self, at: Moment, frame: FrameId) -> Option<OwnershipLookup> {
         let sidecar = self.inner.sidecar.clone()?;
         let key = self.frame_key(at, frame).ok().flatten()?;
         let function = sidecar.function_named(&key.linkage)?;
@@ -625,6 +700,43 @@ impl Session {
             depth: 0,
         })
     }
+}
+
+/// Open the index the policy names (rr and replays only: a live process cannot be replayed).
+fn open_index(
+    policy: &IndexPolicy,
+    mode: &Mode,
+    recording: RecordingId,
+    exe: &Path,
+) -> std::result::Result<indexed::Indexed, indexed::NoIndex> {
+    use indexed::NoIndex;
+    let dir = match (policy, mode) {
+        (IndexPolicy::Off, _) => return Err(NoIndex::NotKept("the index is off".into())),
+        (_, Mode::Live { .. }) => {
+            return Err(NoIndex::NotKept(
+                "a live session has no index: it cannot be replayed".into(),
+            ));
+        }
+        (IndexPolicy::Dir(d), _) => d.clone(),
+        (IndexPolicy::BesideTrace, Mode::Recording { trace_dir, .. }) => {
+            PathBuf::from(format!("{}.hopper-index", trace_dir.display()))
+        }
+        (IndexPolicy::BesideTrace, Mode::Replay { .. }) => {
+            return Err(NoIndex::NotKept(
+                "this replay has no trace to keep an index beside".into(),
+            ));
+        }
+    };
+    let build_id = Binary::open(exe)
+        .ok()
+        .and_then(|b| b.build_id().map(|id| id.to_hex()));
+    let meta = hopper_index::RecordingMeta {
+        recording,
+        build_ids: build_id.into_iter().collect(),
+    };
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NoIndex::Failed(format!("index directory {}: {e}", dir.display())))?;
+    indexed::Indexed::open(&dir, meta).map_err(|e| NoIndex::Failed(e.to_string()))
 }
 
 fn load_sidecar(policy: &SidecarPolicy, exe: &Path) -> (Option<Arc<Sidecar>>, SidecarStatus) {
@@ -685,6 +797,15 @@ fn frame_of(f: &hopper_symbols::StackFrame) -> Frame {
     f.frame.clone()
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Phase A holds the shared state until it stops; stop it.
+        if let Ok(ix) = &self.inner.index {
+            ix.control.cancel();
+        }
+    }
+}
+
 impl Debugger for Session {
     fn recording(&self) -> Result<RecordingInfo> {
         let s = self.shared();
@@ -706,8 +827,11 @@ impl Debugger for Session {
         })
     }
 
-    fn timeline(&self, _range: MomentRange, _page: PageReq) -> Result<Page<TimelineEvent>> {
-        // Syscalls, signals and thread events come from the index; without it nothing is known.
+    fn timeline(&self, range: MomentRange, page: PageReq) -> Result<Page<TimelineEvent>> {
+        // Thread and process events come from the index; without it nothing is known.
+        if let Ok(ix) = &self.inner.index {
+            return ix.index.timeline(range, page);
+        }
         Ok(Page {
             items: Vec::new(),
             total: None,
@@ -718,12 +842,21 @@ impl Debugger for Session {
     }
 
     fn index_status(&self) -> IndexStatus {
-        IndexStatus {
-            phases: Vec::new(),
-            done: true,
-            error: Some(
-                "no index: omniscient queries replay on demand on background replicas".into(),
-            ),
+        match &self.inner.index {
+            Ok(ix) => ix.control.status(),
+            // Nothing is building: queries replay on demand.
+            Err(indexed::NoIndex::NotKept(_)) => IndexStatus {
+                phases: Vec::new(),
+                done: true,
+                error: None,
+            },
+            Err(indexed::NoIndex::Failed(why)) => IndexStatus {
+                phases: Vec::new(),
+                done: true,
+                error: Some(format!(
+                    "the index could not be opened ({why}); queries replay on demand"
+                )),
+            },
         }
     }
 
@@ -735,7 +868,9 @@ impl Debugger for Session {
         if dir == Direction::Reverse && self.is_live() {
             return Err(self.inner.live_refusal("stepping backwards"));
         }
-        self.navigate(History::Record, StopCause::Step, move |d, tid| d.step(tid, kind, dir))
+        self.navigate(History::Record, StopCause::Step, move |d, tid| {
+            d.step(tid, kind, dir)
+        })
     }
 
     fn run(&self, dir: Direction, until: Until) -> Result<Stop> {
@@ -743,13 +878,15 @@ impl Debugger for Session {
             return Err(self.inner.live_refusal("running backwards"));
         }
         match until {
-            Until::Breakpoints => {
-                self.navigate(History::Record, StopCause::Step, move |d, _| d.continue_to_breakpoints(dir))
-            }
-            Until::EndOfTrace => self.navigate(History::Record, StopCause::Step, move |d, _| d.continue_to_end(dir)),
-            Until::Watch(place) => {
-                self.navigate(History::Record, StopCause::Step, move |d, _| d.continue_to_write(place, dir))
-            }
+            Until::Breakpoints => self.navigate(History::Record, StopCause::Step, move |d, _| {
+                d.continue_to_breakpoints(dir)
+            }),
+            Until::EndOfTrace => self.navigate(History::Record, StopCause::Step, move |d, _| {
+                d.continue_to_end(dir)
+            }),
+            Until::Watch(place) => self.navigate(History::Record, StopCause::Step, move |d, _| {
+                d.continue_to_write(place, dir)
+            }),
             Until::Moment(m) => self.seek(m),
         }
     }
@@ -993,15 +1130,18 @@ impl Debugger for Session {
     fn allocation(
         &self,
         process: ProcessId,
-        _addr: u64,
-        _at: Moment,
+        addr: u64,
+        at: Moment,
     ) -> Result<Option<AllocationInfo>> {
         if process != self.inner.process {
             return Err(HopperError::NotFound(format!("process {}", process.pid)));
         }
-        Err(HopperError::Unsupported(
-            "allocation lineage comes from hopper-index, which this session does not have".into(),
-        ))
+        match &self.inner.index {
+            Ok(ix) => Ok(ix.index.allocation_at(process, addr, at)?.value),
+            Err(why) => Err(HopperError::Unsupported(format!(
+                "allocation lineage comes from hopper-index, and this session has none ({why})"
+            ))),
+        }
     }
 }
 

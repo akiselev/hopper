@@ -44,7 +44,10 @@ fn opening_a_trace_goes_through_open_debugger() {
             .to_string()
             .contains("not an rr trace directory")
     );
-    assert!(run_args(&["hopper", "live"], "").is_err(), "live needs a program");
+    assert!(
+        run_args(&["hopper", "live"], "").is_err(),
+        "live needs a program"
+    );
     assert!(
         run_args(&["hopper", "show", "--live", "--at", "start"], "").is_err(),
         "--live needs a program after --"

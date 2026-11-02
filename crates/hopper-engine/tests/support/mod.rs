@@ -93,3 +93,6 @@ pub fn hopper_built_worked_example() -> Option<PathBuf> {
         None
     }
 }
+
+pub mod gdb;
+pub mod step_recording;

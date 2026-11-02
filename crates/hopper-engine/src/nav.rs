@@ -25,10 +25,10 @@ use hopper_core::target::{
 };
 use hopper_core::{HopperError, Place, RegisterSet, Result, SourceLoc, Tid};
 
+use crate::Shared;
 use crate::decode::{self, Flow};
 use crate::ownership::LineHit;
 use crate::symbols::ProcessSymbols;
-use crate::Shared;
 
 /// How a navigation command ended, before it becomes a [`hopper_core::api::Stop`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,10 +312,7 @@ impl<'a> Driver<'a> {
     fn has_lines(&mut self, pc: u64) -> bool {
         let syms = self.syms_for(pc);
         syms.set.location(pc).is_some_and(|l| l.line != 0)
-            && syms
-                .set
-                .function_at(pc)
-                .is_some_and(|f| f.die().is_some())
+            && syms.set.function_at(pc).is_some_and(|f| f.die().is_some())
     }
 
     /// Step one source line forward (`Into` or `Over`).
@@ -341,12 +338,11 @@ impl<'a> Driver<'a> {
                             let syms = self.syms_for(callee);
                             if let Some(f) = syms.set.function_at(callee) {
                                 let body = syms.set.breakpoint_address(&f);
-                                if body != callee {
-                                    if let Reach::Halted(h) =
+                                if body != callee
+                                    && let Reach::Halted(h) =
                                         self.run_to(body, tid, None, Direction::Forward)?
-                                    {
-                                        return Ok(h);
-                                    }
+                                {
+                                    return Ok(h);
                                 }
                             }
                             return Ok(Halt::Stepped);
@@ -487,7 +483,9 @@ impl<'a> Driver<'a> {
             return Ok(Ok(false));
         };
         // At the callee's entry the stack pointer is the caller's minus the return address.
-        if let Reach::Halted(h) = self.run_to(entry, tid, Some(sp_before - 8), Direction::Reverse)? {
+        if let Reach::Halted(h) =
+            self.run_to(entry, tid, Some(sp_before - 8), Direction::Reverse)?
+        {
             return Ok(Err(h));
         }
         if let Some(h) = self.step_once(tid, Direction::Reverse)? {
@@ -510,9 +508,8 @@ impl<'a> Driver<'a> {
             here
         } else {
             loop {
-                match self.back_one(tid, into)? {
-                    Err(h) => return Ok(h),
-                    Ok(_) => {}
+                if let Err(h) = self.back_one(tid, into)? {
+                    return Ok(h);
                 }
                 let pc = self.pc(tid)?;
                 if let Some(lr) = self.line_at(pc) {

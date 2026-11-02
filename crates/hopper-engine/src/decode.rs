@@ -39,7 +39,9 @@ pub fn text(insn: &Instruction) -> String {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Flow {
     /// A call; `next` is the return address.
-    Call { next: u64 },
+    Call {
+        next: u64,
+    },
     Return,
     Other,
 }
@@ -81,9 +83,7 @@ pub fn dwarf_reg(r: Register) -> Option<Reg> {
     }
     // xmm/ymm/zmm n share DWARF number 17 + n (hopper models the low 16 bytes).
     let n = match full {
-        f if (Register::ZMM0..=Register::ZMM15).contains(&f) => {
-            f as u32 - Register::ZMM0 as u32
-        }
+        f if (Register::ZMM0..=Register::ZMM15).contains(&f) => f as u32 - Register::ZMM0 as u32,
         _ => return None,
     };
     Some(Reg(17 + n as u16))
@@ -261,12 +261,19 @@ pub fn register_definition(
     offset: u64,
 ) -> RegisterDefinition {
     let full = target.full_register();
+    // The kernel's result: iced does not list `syscall`'s write of rax among its registers.
+    if insn.mnemonic() == Mnemonic::Syscall && full == Register::RAX {
+        return RegisterDefinition::Syscall;
+    }
     let mut info = InstructionInfoFactory::new();
     let writes = info.info(insn).used_registers().iter().any(|u| {
         u.register().full_register() == full
             && matches!(
                 u.access(),
-                OpAccess::Write | OpAccess::ReadWrite | OpAccess::CondWrite | OpAccess::ReadCondWrite
+                OpAccess::Write
+                    | OpAccess::ReadWrite
+                    | OpAccess::CondWrite
+                    | OpAccess::ReadCondWrite
             )
     });
     if !writes {
@@ -280,8 +287,10 @@ pub fn register_definition(
         && insn.op0_kind() == OpKind::Register
         && insn.op0_register().full_register() == full;
     // Zeroing idioms.
-    if matches!(m, Mnemonic::Xor | Mnemonic::Pxor | Mnemonic::Vpxor | Mnemonic::Xorps)
-        && insn.op_count() >= 2
+    if matches!(
+        m,
+        Mnemonic::Xor | Mnemonic::Pxor | Mnemonic::Vpxor | Mnemonic::Xorps
+    ) && insn.op_count() >= 2
         && insn.op1_kind() == OpKind::Register
         && insn.op0_kind() == OpKind::Register
         && insn.op_register(insn.op_count() - 1) == insn.op_register(insn.op_count() - 2)
@@ -428,7 +437,10 @@ mod tests {
             classify_write(&i, &RegisterSet::default(), 0),
             WriteSource::Arithmetic { .. }
         ));
-        assert_eq!(classify_write(&insn(&[0x0f, 0x05]), &r, 0), WriteSource::Syscall);
+        assert_eq!(
+            classify_write(&insn(&[0x0f, 0x05]), &r, 0),
+            WriteSource::Syscall
+        );
     }
 
     #[test]

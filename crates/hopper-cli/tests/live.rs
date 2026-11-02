@@ -28,7 +28,10 @@ fn run_args(args: &[&str], input: &str) -> String {
 fn show_live_runs_to_a_line_and_prints_every_local() {
     let Some(bin) = worked_example() else { return };
     let bin = bin.display().to_string();
-    let out = run_args(&["hopper", "show", "--live", "--at", "main.rs:14", "--", &bin], "");
+    let out = run_args(
+        &["hopper", "show", "--live", "--at", "main.rs:14", "--", &bin],
+        "",
+    );
     assert!(out.starts_with("hopper://"), "{out}");
     assert!(out.contains("worked_example::main at"), "{out}");
     assert!(out.contains("main.rs:14"), "{out}");
@@ -39,7 +42,9 @@ fn show_live_runs_to_a_line_and_prints_every_local() {
     assert!(out.contains("stack:"));
     assert!(out.contains("locals of #0 worked_example::main:"));
     assert!(
-        out.contains("b: worked_example::Config = worked_example::Config {name: \"alpha\", retries: 3}"),
+        out.contains(
+            "b: worked_example::Config = worked_example::Config {name: \"alpha\", retries: 3}"
+        ),
         "{out}"
     );
     assert!(out.contains("a: worked_example::Config = "), "{out}");
@@ -52,13 +57,39 @@ fn live_repl_breaks_steps_and_prints() {
     let script = "b main.rs:16\nc\nlocals\nn\nwhere\np v[0].name\nbt\nrn\nc\nq\n";
     let out = run_args(&["hopper", "live", "--", &bin], script);
     let replies: Vec<&str> = out.split("(hopper) ").collect();
-    assert!(replies[1].starts_with("breakpoint 1 at main.rs:16 (0x"), "{}", replies[1]);
-    assert!(replies[2].contains("main.rs:16") && replies[2].contains("[breakpoint 1]"), "{}", replies[2]);
-    assert!(replies[3].contains("c: worked_example::Config"), "{}", replies[3]);
+    // The session starts at main (gdb's `start`), which used breakpoint 1.
+    assert!(
+        replies[0].contains("worked_example::main at"),
+        "{}",
+        replies[0]
+    );
+    assert!(
+        replies[1].starts_with("breakpoint 2 at main.rs:16 (0x"),
+        "{}",
+        replies[1]
+    );
+    assert!(
+        replies[2].contains("main.rs:16") && replies[2].contains("[breakpoint 2]"),
+        "{}",
+        replies[2]
+    );
+    assert!(
+        replies[3].contains("c: worked_example::Config"),
+        "{}",
+        replies[3]
+    );
     assert!(replies[4].contains("main.rs:17"), "{}", replies[4]);
     assert!(replies[5].starts_with("hopper://"), "{}", replies[5]);
     assert!(replies[6].contains("\"alpha\""), "{}", replies[6]);
-    assert!(replies[7].contains("#0 worked_example::main at"), "{}", replies[7]);
-    assert!(replies[8].starts_with("error: unsupported"), "{}", replies[8]);
+    assert!(
+        replies[7].contains("#0 worked_example::main at"),
+        "{}",
+        replies[7]
+    );
+    assert!(
+        replies[8].starts_with("error: unsupported"),
+        "{}",
+        replies[8]
+    );
     assert!(replies[9].contains("[exited 0]"), "{}", replies[9]);
 }
