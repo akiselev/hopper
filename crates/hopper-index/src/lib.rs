@@ -13,7 +13,7 @@
 //!   [`writes::rerun`] drives `rr rerun --singlestep` shards and decodes their register dumps.
 //! - **Storage** ([`store`]) is seekable zstd chunks plus a redb catalogue (chunk table,
 //!   coverage per index kind, metadata). It persists incrementally.
-//! - **Queries** live on [`Index`]: [`Index::calls`], [`Index::line_hits`],
+//! - **Queries** live on [`Index`]: [`Index::calls`], [`Index::profile`], [`Index::line_hits`],
 //!   [`Index::allocation_at`], [`Index::timeline`], [`Index::last_write`] and
 //!   [`Index::writes_in`]. Every answer says how complete it is.
 //! - [`divergence`] aligns two event streams (cadabra3 decision traces) by site and per-site
@@ -26,6 +26,7 @@ pub mod control;
 pub mod divergence;
 mod index;
 mod phase_a;
+mod profile;
 pub mod store;
 pub mod writes;
 

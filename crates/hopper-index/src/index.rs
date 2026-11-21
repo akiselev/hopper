@@ -13,13 +13,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use hopper_core::api::{
     AllocationId, AllocationInfo, CallFilter, CallId, CallNode, Completeness, Page, PageReq,
-    TimelineEvent, TimelineKind,
+    ProfileNode, ProfileNodeId, ProfileRequest, TimelineEvent, TimelineKind,
 };
 use hopper_core::{
     HopperError, Moment, MomentRange, Place, ProcessId, RecordingId, Result, SourceLoc,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::profile::{ProfileCache, ProfileKey, build_profile};
 use crate::store::{Batch, CapKey, ChunkEntry, Coverage, Record, Stamp, Store};
 use crate::writes::{LoggedWrite, WriteValue};
 
@@ -93,23 +94,25 @@ pub struct Answer<T> {
 }
 
 #[derive(Clone, Debug)]
-struct CallRow {
-    id: u64,
-    fid: u32,
-    parent: Option<u64>,
-    process: ProcessId,
-    entry: Stamp,
-    exit: Option<Stamp>,
-    depth: u32,
+pub(crate) struct CallRow {
+    pub(crate) id: u64,
+    pub(crate) fid: u32,
+    pub(crate) parent: Option<u64>,
+    pub(crate) process: ProcessId,
+    pub(crate) entry: Stamp,
+    pub(crate) exit: Option<Stamp>,
+    pub(crate) depth: u32,
 }
 
 #[derive(Debug, Default)]
-struct CallCache {
-    functions: HashMap<u32, (String, Option<SourceLoc>)>,
-    rows: Vec<CallRow>,
-    by_id: HashMap<u64, usize>,
-    children: HashMap<u64, Vec<u64>>,
-    roots: Vec<u64>,
+pub(crate) struct CallCache {
+    pub(crate) functions: HashMap<u32, (String, Option<SourceLoc>)>,
+    pub(crate) rows: Vec<CallRow>,
+    pub(crate) by_id: HashMap<u64, usize>,
+    pub(crate) children: HashMap<u64, Vec<u64>>,
+    pub(crate) roots: Vec<u64>,
+    /// Profile trees built since the rows last changed.
+    pub(crate) profiles: ProfileCache,
 }
 
 #[derive(Debug, Default)]
@@ -556,6 +559,53 @@ impl Index {
         Ok(page_of(nodes, page, completeness))
     }
 
+    /// The profile of `req`, as [`hopper_core::api::Debugger::profile`] defines it. The tree is
+    /// built in one pass over the root's subtree on the first request and cached until the
+    /// call rows change.
+    pub fn profile(
+        &self,
+        req: &ProfileRequest,
+        parent: Option<ProfileNodeId>,
+        page: PageReq,
+    ) -> Result<Page<ProfileNode>> {
+        let mut g = self.lock();
+        Self::refresh(&mut g, IndexKind::Calls)?;
+        let cov = g.store.coverage(IndexKind::Calls)?;
+        let inner = &mut *g;
+        let cache = &mut inner.loaded.calls;
+        let key = ProfileKey::of(req);
+        let tree = match cache.profiles.get(&key) {
+            Some(t) => t,
+            None => {
+                let t = Arc::new(build_profile(cache, &cov, self.recording, req)?);
+                cache.profiles.insert(key, Arc::clone(&t));
+                t
+            }
+        };
+        let nodes = tree.children(parent)?;
+        let range = match tree.root_row.map(|i| &cache.rows[i]) {
+            Some(r) => MomentRange {
+                start: Some(self.moment(r.entry)),
+                end: r.exit.map(|s| self.moment(s)),
+            },
+            None => MomentRange::all(),
+        };
+        let completeness =
+            self.pending_with_caps(&cov, &range, |k| matches!(k, CapKey::Function(_)));
+        let total = nodes.len() as u64;
+        let items = nodes
+            .iter()
+            .skip(page.offset.min(usize::MAX as u64) as usize)
+            .take(page.limit as usize)
+            .map(|&n| tree.node(n, &cache.functions))
+            .collect();
+        Ok(Page {
+            items,
+            total: Some(total),
+            completeness,
+        })
+    }
+
     /// One call by id.
     pub fn call(&self, id: CallId) -> Result<Option<CallNode>> {
         let mut g = self.lock();
@@ -807,6 +857,7 @@ fn fold(l: &mut Loaded, r: Record) {
             name,
             location,
         } => {
+            l.calls.profiles.clear();
             l.calls.functions.insert(fid, (name, location));
         }
         Record::CallEnter {
@@ -818,6 +869,7 @@ fn fold(l: &mut Loaded, r: Record) {
             depth,
         } => {
             let c = &mut l.calls;
+            c.profiles.clear();
             c.by_id.insert(id, c.rows.len());
             c.rows.push(CallRow {
                 id,
@@ -834,6 +886,7 @@ fn fold(l: &mut Loaded, r: Record) {
             }
         }
         Record::CallExit { id, at } => {
+            l.calls.profiles.clear();
             if let Some(&i) = l.calls.by_id.get(&id) {
                 l.calls.rows[i].exit = Some(at);
             }
@@ -927,6 +980,96 @@ mod tests {
 
     fn all() -> PageReq {
         PageReq::first(100)
+    }
+
+    #[test]
+    fn profile_pages_follow_calls_coverage_and_see_new_records() {
+        use hopper_core::api::{ProfileRequest, Threshold};
+        let (_t, ix) = open();
+        let t = |ticks: u64| Stamp(ticks, 1, ticks, 0);
+        let enter = |id, fid, parent, at, depth| Record::CallEnter {
+            id,
+            fid,
+            parent,
+            process: P,
+            at: t(at),
+            depth,
+        };
+        let func = |fid, name: &str| Record::Function {
+            fid,
+            name: name.into(),
+            location: Some(SourceLoc::new("/p/src/main.rs", 1)),
+        };
+        ix.commit(Batch {
+            chunks: vec![(
+                IndexKind::Calls,
+                vec![
+                    func(0, "app::main"),
+                    func(1, "app::work"),
+                    enter(0, 0, None, 0, 0),
+                    enter(1, 1, Some(0), 10, 1),
+                    Record::CallExit { id: 1, at: t(60) },
+                ],
+            )],
+            coverage: vec![(IndexKind::Calls, cov(Some(60), vec![]))],
+            resume: None,
+        })
+        .unwrap();
+        let req = ProfileRequest {
+            threshold: Threshold {
+                of_root: 0.0,
+                of_parent: None,
+            },
+            ..ProfileRequest::new()
+        };
+        let top = ix.profile(&req, None, all()).unwrap();
+        assert_eq!(top.total, Some(1));
+        assert_eq!(top.items[0].function, "app::main");
+        // main has not returned: its cost runs to the end of coverage, and the answer is partial.
+        assert_eq!(top.items[0].inclusive, 60);
+        assert!(matches!(top.completeness, Completeness::Partial { .. }));
+        let kids = ix
+            .profile(
+                &req,
+                Some(top.items[0].id),
+                PageReq {
+                    offset: 0,
+                    limit: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(kids.items.len(), 1);
+        assert_eq!(kids.items[0].function, "app::work");
+        assert_eq!(kids.items[0].inclusive, 50);
+        assert_eq!(
+            kids.items[0].location,
+            Some(SourceLoc::new("/p/src/main.rs", 1))
+        );
+        let past_end = ix
+            .profile(
+                &req,
+                Some(top.items[0].id),
+                PageReq {
+                    offset: 1,
+                    limit: 5,
+                },
+            )
+            .unwrap();
+        assert!(past_end.items.is_empty() && past_end.total == Some(1));
+        assert!(ix.profile(&req, Some(ProfileNodeId(77)), all()).is_err());
+        // More records arrive: the cached tree is rebuilt.
+        ix.commit(Batch {
+            chunks: vec![(
+                IndexKind::Calls,
+                vec![Record::CallExit { id: 0, at: t(100) }],
+            )],
+            coverage: vec![(IndexKind::Calls, cov(Some(100), vec![]))],
+            resume: None,
+        })
+        .unwrap();
+        let top = ix.profile(&req, None, all()).unwrap();
+        assert_eq!(top.items[0].inclusive, 100);
+        assert_eq!(top.items[0].self_cost, 50);
     }
 
     #[test]

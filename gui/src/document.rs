@@ -90,6 +90,7 @@ impl HopperDocument {
         let mut doc = new_document(&fonts);
         let ui = Ui::build(&mut doc, fonts);
         ui.attach_calls(&mut doc, &viewer);
+        ui.attach_profile(&mut doc, &viewer);
         HopperDocument {
             core: CoreDocument::new(doc, KindId::of("box")),
             viewer,
@@ -164,6 +165,7 @@ impl HopperDocument {
             };
             match (action, name) {
                 (Action::Command(c), Some("clicked")) => self.viewer.command(c),
+                (Action::Profile(c), Some("clicked")) => self.viewer.profile_control(c),
                 (Action::UrlSubmit, Some("submit")) => self.viewer.open_url(&text),
                 (Action::UrlSubmit, Some("cancel")) => self.viewer.close_url_box(),
                 (Action::MemorySubmit, Some("submit")) => self.viewer.memory_address(&text),
@@ -177,8 +179,12 @@ impl HopperDocument {
                 _ => {}
             }
         }
-        // the call table's signals
-        for ev in events.iter().filter(|e| e.target == self.ui.calls) {
+        // the call and profile tables' signals
+        for ev in events {
+            let calls = ev.target == self.ui.calls;
+            if !calls && ev.target != self.ui.profile {
+                continue;
+            }
             let name = self.core.doc.registry().get(w::TABLE).and_then(|e| {
                 e.spec
                     .signals
@@ -189,11 +195,21 @@ impl HopperDocument {
             });
             match (name, &ev.arg) {
                 (Some("activated"), Some(Value::I64(row))) => {
-                    self.viewer.activate_call(*row as usize)
+                    let row = *row as usize;
+                    if calls {
+                        self.viewer.activate_call(row)
+                    } else {
+                        self.viewer.activate_profile(row)
+                    }
                 }
                 (Some("activated"), Some(Value::Record(r))) => {
                     if let Some((_, Value::I64(row))) = r.first() {
-                        self.viewer.activate_call(*row as usize);
+                        let row = *row as usize;
+                        if calls {
+                            self.viewer.activate_call(row)
+                        } else {
+                            self.viewer.activate_profile(row)
+                        }
                     }
                 }
                 (Some("changed"), arg) => {
@@ -210,11 +226,21 @@ impl HopperDocument {
                         Value::F64(f) => Some(f as u64),
                         _ => None,
                     }) {
-                        let tree = self.viewer.calls.borrow();
-                        let row = (0..tree.len()).find(|&i| tree.row_key(i) == Some(id));
-                        drop(tree);
-                        if let Some(row) = row {
-                            self.viewer.select_call(row);
+                        if calls {
+                            let tree = self.viewer.calls.borrow();
+                            let row = (0..tree.len()).find(|&i| tree.row_key(i) == Some(id));
+                            drop(tree);
+                            if let Some(row) = row {
+                                self.viewer.select_call(row);
+                            }
+                        } else {
+                            let view = self.viewer.profile.borrow();
+                            let row =
+                                (0..view.tree.len()).find(|&i| view.tree.row_key(i) == Some(id));
+                            drop(view);
+                            if let Some(row) = row {
+                                self.viewer.select_profile_row(row);
+                            }
                         }
                     }
                 }

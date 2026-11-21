@@ -1,4 +1,4 @@
-//! hopper's MCP server: the engine API for agents, as about thirteen typed tools over stdio.
+//! hopper's MCP server: the engine API for agents, as about fourteen typed tools over stdio.
 //!
 //! Transport: JSON-RPC 2.0, one message per line (MCP's stdio transport). The server answers
 //! `initialize` (negotiating `2025-06-18` or `2025-11-25`: a supported client version is echoed,

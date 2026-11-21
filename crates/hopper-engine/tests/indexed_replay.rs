@@ -7,7 +7,10 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hopper_core::api::{CallFilter, Completeness, Debugger, OwnershipState, PageReq, Until};
+use hopper_core::api::{
+    CallFilter, CodeScope, Completeness, Debugger, OwnershipState, PageReq, ProfileRequest,
+    Threshold, Until,
+};
 use hopper_core::target::Direction;
 use hopper_core::{MomentRange, SourceLoc};
 use hopper_engine::writes::WindowState;
@@ -86,6 +89,37 @@ fn queries_answer_from_the_index() {
     assert!(load.exit.is_some_and(|x| load.entry.is_before(&x)));
     // Line 13 starts where load returns to (its return address is line 13's first instruction).
     assert!(!hits.items[0].is_before(&load.exit.unwrap()));
+
+    // The profile covers the same calls: `load` is a node under the call tree's top, its cost is
+    // the ticks between its entry and exit, and the own-code view keeps the program's functions.
+    let everything = ProfileRequest {
+        threshold: Threshold {
+            of_root: 0.0,
+            of_parent: None,
+        },
+        ..ProfileRequest::new()
+    };
+    let tops = d.profile(&everything, None, PageReq::first(100)).unwrap();
+    assert_eq!(tops.completeness, Completeness::Complete, "{tops:?}");
+    let load_node = find_profile_node(&d, &everything, None, "::load").expect("a node for load");
+    assert_eq!(load_node.calls, 1);
+    assert_eq!(load_node.first_call, load.id);
+    assert_eq!(
+        load_node.inclusive,
+        load.exit.unwrap().ticks - load.entry.ticks
+    );
+    let own = ProfileRequest {
+        scope: CodeScope::Own,
+        ..everything
+    };
+    let own_top = d.profile(&own, None, PageReq::first(100)).unwrap();
+    assert!(
+        own_top.items.iter().all(|n| n
+            .location
+            .as_ref()
+            .is_some_and(|l| !l.file.starts_with("/rustc/"))),
+        "{own_top:?}"
+    );
 
     // Ownership from the index's lines and calls, at line 14.
     let s14 = run_to_line(&d, "main.rs", 14);

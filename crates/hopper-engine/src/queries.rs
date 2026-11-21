@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hopper_core::api::{
     Budget, CallFilter, CallId, CallNode, Completeness, OriginChain, Page, PageReq, ProcessInfo,
-    ValueHandle, ValueTarget, ValueView, WriteEvent,
+    ProfileNode, ProfileNodeId, ProfileRequest, ValueHandle, ValueTarget, ValueView, WriteEvent,
 };
 use hopper_core::target::{
     BreakKind, Breakpoint, Direction, Memory, Resume, StopReason, Target, TargetMemory,
@@ -423,6 +423,21 @@ pub fn line_hits(
     };
     let items: Vec<Moment> = all.iter().filter(|m| range.contains(m)).copied().collect();
     Ok(page_of(&items, page, Completeness::Complete))
+}
+
+/// The calling-context tree, from the index; it is `Partial` while the index is still building.
+pub fn profile(
+    shared: &Arc<Shared>,
+    req: &ProfileRequest,
+    parent: Option<ProfileNodeId>,
+    page: PageReq,
+) -> Result<Page<ProfileNode>> {
+    match &shared.index {
+        Ok(ix) => ix.index.profile(req, parent, page),
+        Err(_) => Err(HopperError::Unsupported(
+            "the profile comes from hopper-index; this session has no index".into(),
+        )),
+    }
 }
 
 /// The calls of the functions a name matches, by replaying with breakpoints at their entries

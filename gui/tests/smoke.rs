@@ -537,3 +537,200 @@ fn a_live_session_shows_calls_hits_and_an_origin() {
     assert!(calls > 0, "the reference run's call tree arrived");
     assert!(v.machine.registers.is_some() && !v.machine.instructions.is_empty());
 }
+
+fn profile_rows(h: &Harness) -> usize {
+    h.state().viewer.profile.borrow().tree.len()
+}
+
+fn profile_names(h: &Harness) -> Vec<String> {
+    let v = h.state().viewer.profile.borrow();
+    v.tree
+        .rows()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Node { key, .. } => v.tree.item(key).map(|n| n.function.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_profile_pane_fills_in_and_expands_lazily() {
+    let mut h = window();
+    let v = h.state().viewer.profile.borrow();
+    let roots = v.tree.len();
+    assert!(roots >= 1, "the top-level nodes arrived");
+    assert!(v.root_cost > 0, "the percentages have a root cost");
+    drop(v);
+    h.state_mut().viewer.activate_profile(0);
+    settle(&mut h);
+    assert!(
+        profile_rows(&h) > roots,
+        "the first node's children were paged in"
+    );
+    h.state_mut().viewer.activate_profile(0);
+    settle(&mut h);
+    assert_eq!(profile_rows(&h), roots, "and collapse again");
+}
+
+#[test]
+fn changing_the_threshold_or_scope_asks_again_from_the_top() {
+    use hopper_gui::profile::{ProfileControl, ThresholdPreset};
+    let mut h = window();
+    h.state_mut().viewer.activate_profile(0);
+    settle(&mut h);
+    let expanded = profile_rows(&h);
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::Threshold(ThresholdPreset::FivePercent));
+    settle(&mut h);
+    let v = &h.state().viewer;
+    assert_eq!(v.profile_request.threshold.of_root, 0.05);
+    assert!(v.profile_control_active(ProfileControl::Threshold(ThresholdPreset::FivePercent)));
+    assert!(!v.profile_control_active(ProfileControl::Threshold(ThresholdPreset::OnePercent)));
+    assert!(
+        profile_rows(&h) <= expanded,
+        "a new request shows its top level, collapsed"
+    );
+    let all = profile_names(&h);
+    h.state_mut().viewer.profile_control(ProfileControl::MyCode);
+    settle(&mut h);
+    assert_eq!(
+        h.state().viewer.profile_request.scope,
+        hopper_core::api::CodeScope::Own
+    );
+    assert!(profile_rows(&h) >= 1);
+    h.state_mut().viewer.profile_control(ProfileControl::MyCode);
+    settle(&mut h);
+    assert_eq!(
+        profile_names(&h),
+        all,
+        "back to all code, the same top level"
+    );
+}
+
+#[test]
+fn profiling_the_selected_call_roots_the_profile_there() {
+    use hopper_gui::profile::ProfileControl;
+    let mut h = window();
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::ProfileSelectedCall);
+    assert!(
+        h.state().viewer.profile_request.root.is_none(),
+        "nothing is selected in Calls yet"
+    );
+    h.state_mut().viewer.select_call(0);
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::ProfileSelectedCall);
+    settle(&mut h);
+    let v = &h.state().viewer;
+    assert!(v.profile_request.root.is_some());
+    assert!(v.profile_summary().starts_with("calls under "));
+    assert_eq!(
+        v.profile.borrow().tree.len(),
+        1,
+        "the root call alone, at the top"
+    );
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::AllRoots);
+    settle(&mut h);
+    assert!(h.state().viewer.profile_request.root.is_none());
+}
+
+#[test]
+fn selecting_a_profile_row_selects_its_call_and_moves_the_cursor() {
+    let mut h = window();
+    let (first_call, function) = {
+        let v = h.state().viewer.profile.borrow();
+        let hopper_gui::tree::Row::Node { key, .. } = v.tree.row(0).cloned().unwrap() else {
+            panic!("a node row");
+        };
+        let n = v.tree.item(&key).unwrap();
+        (n.first_call, n.function.clone())
+    };
+    h.state_mut().viewer.select_profile_row(0);
+    settle(&mut h);
+    let v = &h.state().viewer;
+    let heading = v
+        .query
+        .first()
+        .and_then(|l| l.cells.first())
+        .map(|c| c.text.clone());
+    assert_eq!(
+        heading.as_deref(),
+        Some(format!("Call of {function}").as_str())
+    );
+    let tree = v.calls.borrow();
+    let row = tree
+        .rows()
+        .iter()
+        .position(|r| matches!(r, Row::Node { key, .. } if *key == first_call));
+    assert_eq!(v.calls_selected, row, "the call is selected in Calls");
+    let entry = row
+        .and_then(|i| match tree.row(i) {
+            Some(Row::Node { key, .. }) => tree.item(key).map(|c| c.entry),
+            _ => None,
+        })
+        .expect("a root call is loaded in Calls");
+    drop(tree);
+    assert_eq!(cursor(&h), entry, "the cursor is at the call's entry");
+}
+
+#[test]
+fn calls_and_profile_are_asked_again_when_the_index_completes() {
+    use hopper_fake::{FakeConfig, FakeDebugger, IndexSchedule};
+    let complete = window();
+    let want_cost = complete.state().viewer.profile.borrow().root_cost;
+    let want_calls = complete.state().viewer.calls.borrow().len();
+    let fake = FakeDebugger::with_config(FakeConfig {
+        index: IndexSchedule::AfterPolls(3),
+        ..FakeConfig::default()
+    });
+    let h = harness(std::sync::Arc::new(fake), (1200.0, 800.0));
+    let v = &h.state().viewer;
+    assert!(v.index.as_ref().is_some_and(|i| i.done));
+    assert_eq!(
+        v.profile.borrow().root_cost,
+        want_cost,
+        "the profile covers the whole recording"
+    );
+    assert_eq!(v.calls.borrow().len(), want_calls);
+    assert!(
+        !v.profile_summary().contains("still building"),
+        "{}",
+        v.profile_summary()
+    );
+}
+
+#[test]
+fn pin_origin_pins_the_chain_last_shown_and_toggles_off() {
+    use hopper_gui::profile::ProfileControl;
+    let mut h = window();
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::PinOrigin);
+    assert!(
+        h.state().viewer.profile_request.pins.is_empty(),
+        "no origin has been shown yet"
+    );
+    for _ in 0..6 {
+        press(&mut h, "F10").unwrap();
+    }
+    let locals = h.state().ui.locals;
+    click_row(&mut h, locals, 0, 60.0);
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::PinOrigin);
+    settle(&mut h);
+    let v = &h.state().viewer;
+    assert!(!v.profile_request.pins.is_empty());
+    assert!(v.profile_control_active(ProfileControl::PinOrigin));
+    h.state_mut()
+        .viewer
+        .profile_control(ProfileControl::PinOrigin);
+    settle(&mut h);
+    assert!(h.state().viewer.profile_request.pins.is_empty());
+}

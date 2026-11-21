@@ -1,5 +1,7 @@
 use hopper_core::PositionUrl;
-use hopper_core::api::{MachineKind, OwnershipKind, OwnershipState};
+use hopper_core::api::{
+    CallId, CodeScope, Hidden, MachineKind, OwnershipKind, OwnershipState, Threshold,
+};
 
 use super::*;
 
@@ -584,4 +586,206 @@ fn is_a_shareable_trait_object() {
     let h = std::thread::spawn(move || d2.step(StepKind::Over, Direction::Forward).unwrap());
     let stop = h.join().unwrap();
     assert_eq!(d.cursor().unwrap().at, stop.at);
+}
+
+fn show_everything() -> ProfileRequest {
+    ProfileRequest {
+        threshold: Threshold {
+            of_root: 0.0,
+            of_parent: None,
+        },
+        ..ProfileRequest::new()
+    }
+}
+
+fn profile_children(d: &FakeDebugger, req: &ProfileRequest, of: &ProfileNode) -> Vec<ProfileNode> {
+    d.profile(req, Some(of.id), PageReq::first(100))
+        .unwrap()
+        .items
+}
+
+fn profile_top(d: &FakeDebugger, req: &ProfileRequest) -> ProfileNode {
+    let top = d.profile(req, None, PageReq::first(100)).unwrap();
+    assert_eq!(top.items.len(), 1, "{top:?}");
+    top.items[0].clone()
+}
+
+#[test]
+fn profile_costs_are_the_ticks_of_the_scripted_calls() {
+    let d = FakeDebugger::new();
+    let req = show_everything();
+    let calls = d.calls(CallFilter::default(), PageReq::first(10)).unwrap();
+    let main_call = &calls.items[0];
+    let main = profile_top(&d, &req);
+    assert_eq!(main.function, script::MAIN);
+    assert_eq!(main.first_call, main_call.id);
+    assert_eq!(main.parent, None);
+    // main never returns inside the script: it costs up to the last step.
+    assert!(main_call.exit.is_none());
+    assert_eq!(
+        main.inclusive,
+        d.steps().last().unwrap().moment.ticks - main_call.entry.ticks
+    );
+    let kids = profile_children(&d, &req, &main);
+    let names: Vec<&str> = kids.iter().map(|n| n.function.as_str()).collect();
+    assert_eq!(kids.len() as u64, main.child_count);
+    assert_eq!(kids.len(), 4);
+    for name in [
+        script::LOAD,
+        script::CONFIG_CLONE,
+        script::VEC_PUSH,
+        script::PRINT,
+    ] {
+        assert!(names.contains(&name), "{names:?}");
+    }
+    // Most expensive first, and the parts add up to the whole.
+    assert!(kids.windows(2).all(|w| w[0].inclusive >= w[1].inclusive));
+    assert!(kids.iter().all(|n| n.parent == Some(main.id)));
+    assert_eq!(
+        main.self_cost + kids.iter().map(|n| n.inclusive).sum::<u64>(),
+        main.inclusive
+    );
+    assert_eq!(main.hidden, Hidden::default());
+}
+
+#[test]
+fn profile_own_scope_folds_toolchain_calls_into_their_caller() {
+    let d = FakeDebugger::new();
+    let all = show_everything();
+    let own = ProfileRequest {
+        scope: CodeScope::Own,
+        ..show_everything()
+    };
+    let main_all = profile_top(&d, &all);
+    let main_own = profile_top(&d, &own);
+    assert_eq!(main_own.inclusive, main_all.inclusive);
+    let own_names: Vec<String> = profile_children(&d, &own, &main_own)
+        .into_iter()
+        .map(|n| n.function)
+        .collect();
+    assert!(
+        !own_names.contains(&script::VEC_PUSH.to_string()),
+        "{own_names:?}"
+    );
+    assert!(
+        !own_names.contains(&script::PRINT.to_string()),
+        "{own_names:?}"
+    );
+    let foreign: u64 = profile_children(&d, &all, &main_all)
+        .iter()
+        .filter(|n| n.function == script::VEC_PUSH || n.function == script::PRINT)
+        .map(|n| n.inclusive)
+        .sum();
+    assert!(foreign > 0);
+    assert_eq!(main_own.self_cost, main_all.self_cost + foreign);
+}
+
+#[test]
+fn profile_threshold_hides_and_pins_show() {
+    let d = FakeDebugger::new();
+    let strict = ProfileRequest {
+        threshold: Threshold {
+            of_root: 0.999,
+            of_parent: None,
+        },
+        ..ProfileRequest::new()
+    };
+    let main = profile_top(&d, &strict);
+    assert_eq!(main.child_count, 0);
+    let everything = profile_children(&d, &show_everything(), &profile_top(&d, &show_everything()));
+    assert_eq!(main.hidden.nodes, 4);
+    assert_eq!(
+        main.hidden.cost,
+        everything.iter().map(|n| n.inclusive).sum::<u64>()
+    );
+    assert!(profile_children(&d, &strict, &main).is_empty());
+
+    // A pin inside `print` shows it, and main, whatever the threshold.
+    let print_call = d
+        .calls(
+            CallFilter {
+                function: Some(script::PRINT.into()),
+                ..Default::default()
+            },
+            PageReq::first(1),
+        )
+        .unwrap()
+        .items
+        .remove(0);
+    let pinned = ProfileRequest {
+        pins: vec![print_call.entry],
+        ..strict
+    };
+    let main = profile_top(&d, &pinned);
+    assert!(main.pinned);
+    let kids = profile_children(&d, &pinned, &main);
+    assert_eq!(kids.len(), 1);
+    assert_eq!(kids[0].function, script::PRINT);
+    assert!(kids[0].pinned);
+    assert_eq!(kids[0].first_call, print_call.id);
+    assert_eq!(main.hidden.nodes, 3);
+}
+
+#[test]
+fn profile_of_one_call_and_unknown_ids() {
+    let d = FakeDebugger::new();
+    let load = d
+        .calls(
+            CallFilter {
+                function: Some(script::LOAD.into()),
+                ..Default::default()
+            },
+            PageReq::first(1),
+        )
+        .unwrap()
+        .items
+        .remove(0);
+    let req = ProfileRequest {
+        root: Some(load.id),
+        ..show_everything()
+    };
+    let top = profile_top(&d, &req);
+    assert_eq!(top.function, script::LOAD);
+    assert_eq!(top.inclusive, load.exit.unwrap().ticks - load.entry.ticks);
+    assert_eq!(profile_children(&d, &req, &top).len(), 1);
+    let missing = ProfileRequest {
+        root: Some(CallId(999)),
+        ..show_everything()
+    };
+    assert!(d.profile(&missing, None, PageReq::first(5)).is_err());
+    assert!(
+        d.profile(
+            &show_everything(),
+            Some(ProfileNodeId(999)),
+            PageReq::first(5)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn profile_pages_and_follows_index_progress() {
+    let d = FakeDebugger::with_config(FakeConfig {
+        latency: None,
+        index: IndexSchedule::AfterPolls(8),
+    });
+    let req = show_everything();
+    let early = d.profile(&req, None, PageReq::first(10)).unwrap();
+    assert!(early.items.is_empty());
+    assert!(matches!(early.completeness, Completeness::Partial { .. }));
+    while !d.index_status().done {}
+    let main = profile_top(&d, &req);
+    let second = d
+        .profile(
+            &req,
+            Some(main.id),
+            PageReq {
+                offset: 1,
+                limit: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(second.total, Some(4));
+    assert_eq!(second.items.len(), 2);
+    assert_eq!(second.completeness, Completeness::Complete);
 }

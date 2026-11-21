@@ -27,6 +27,20 @@ impl SourceLoc {
     pub fn file_matches(&self, query: &str) -> bool {
         file_suffix_match(&self.file, query)
     }
+
+    /// Whether the file is the program's own code: not in a toolchain or registry directory.
+    pub fn is_own_code(&self) -> bool {
+        !is_toolchain_path(&self.file)
+    }
+}
+
+/// Toolchain and registry directories: never the program's own code.
+pub fn is_toolchain_path(path: &str) -> bool {
+    path.starts_with("/rustc/")
+        || path.contains("/.rustup/")
+        || path.contains("cargo/registry/")
+        || path.contains("cargo/git/")
+        || path.contains("/rustlib/")
 }
 
 /// `path` ends with `query` on a path-component boundary.
@@ -56,5 +70,16 @@ mod tests {
         assert!(file_suffix_match("/a/src/main.rs", "src/main.rs"));
         assert!(!file_suffix_match("/a/src/xmain.rs", "main.rs"));
         assert!(file_suffix_match("main.rs", "main.rs"));
+    }
+
+    #[test]
+    fn toolchain_paths() {
+        assert!(is_toolchain_path("/rustc/abc/library/std/src/rt.rs"));
+        assert!(is_toolchain_path("/home/u/.cargo/registry/src/x/lib.rs"));
+        assert!(is_toolchain_path("/usr/local/cargo/registry/src/x/lib.rs"));
+        assert!(is_toolchain_path("/home/u/.cargo/git/checkouts/x/lib.rs"));
+        assert!(!is_toolchain_path("/home/u/proj/src/main.rs"));
+        assert!(SourceLoc::new("/home/u/proj/src/main.rs", 1).is_own_code());
+        assert!(!SourceLoc::new("/rustc/abc/library/std/src/rt.rs", 1).is_own_code());
     }
 }

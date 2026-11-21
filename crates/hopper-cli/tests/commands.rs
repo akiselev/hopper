@@ -255,3 +255,66 @@ fn mcp_and_dap_subcommands_serve_stdio() {
         "--fake opens the fake whatever launch says"
     );
 }
+
+#[test]
+fn repl_profile_prints_the_merged_tree() {
+    let r = replies(
+        "profile --min 0\nprofile --own --min 0\nprofile worked_example::load --min 0\nprofile --min 99.9\nprofile --min x\nprofile nosuchfn\nprofile --wat\nq\n",
+    );
+    let all = &r[1];
+    let lines: Vec<&str> = all.lines().filter(|l| l.contains("ticks")).collect();
+    assert!(lines[0].contains("100.0%") && lines[0].contains("worked_example::main"));
+    assert!(lines[0].starts_with("  "), "{all}");
+    // The four callees are indented under main, most expensive first.
+    let kids: Vec<&&str> = lines.iter().filter(|l| l.starts_with("    ")).collect();
+    assert!(
+        kids.iter()
+            .any(|l| l.contains("alloc::vec::Vec<T,A>::push")),
+        "{all}"
+    );
+    assert!(all.contains("std::io::stdio::_print"));
+    assert!(
+        all.contains("String as core::convert::From<&str>>::from"),
+        "{all}"
+    );
+
+    let own = &r[2];
+    assert!(own.contains("worked_example::load"), "{own}");
+    assert!(!own.contains("alloc::vec::Vec<T,A>::push"), "{own}");
+    assert!(!own.contains("std::io::stdio::_print"), "{own}");
+
+    let load = &r[3];
+    assert!(
+        load.lines().filter(|l| l.contains("ticks")).count() >= 2,
+        "{load}"
+    );
+    assert!(
+        load.lines()
+            .find(|l| l.contains("ticks"))
+            .unwrap()
+            .contains("worked_example::load"),
+        "{load}"
+    );
+    assert!(!load.contains("worked_example::main"), "{load}");
+
+    let strict = &r[4];
+    assert!(strict.contains("worked_example::main"), "{strict}");
+    assert!(strict.contains("(+4 hidden,"), "{strict}");
+    assert!(!strict.contains("worked_example::load"), "{strict}");
+
+    assert!(
+        r[5].starts_with("error: invalid: --min needs a percentage"),
+        "{}",
+        r[5]
+    );
+    assert!(
+        r[6].starts_with("error: not found: a call of nosuchfn"),
+        "{}",
+        r[6]
+    );
+    assert!(
+        r[7].starts_with("error: invalid: unknown option --wat"),
+        "{}",
+        r[7]
+    );
+}

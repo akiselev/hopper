@@ -50,7 +50,7 @@ fn tools(calls: Vec<Value>) -> Vec<Value> {
 }
 
 #[test]
-fn lists_thirteen_tools_with_schemas() {
+fn lists_fourteen_tools_with_schemas() {
     let r = tools(vec![json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})]);
     let list = r[0]["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = list.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -66,6 +66,7 @@ fn lists_thirteen_tools_with_schemas() {
             "eval",
             "memory",
             "calls",
+            "profile",
             "line_hits",
             "value_history",
             "last_write",
@@ -266,6 +267,74 @@ fn calls_tree() {
     let push = &ok(&r[2])["calls"][0];
     assert!(push["entry"].as_str().unwrap().starts_with("hopper://"));
     assert!(push["exit"].as_str().unwrap().starts_with("hopper://"));
+}
+
+#[test]
+fn profile_walks_the_merged_tree() {
+    let r = tools(vec![
+        call(
+            1,
+            "profile",
+            json!({"min_percent": 0, "min_percent_of_parent": 0}),
+        ),
+        call(2, "calls", json!({"function": "load"})),
+    ]);
+    let top = ok(&r[0]);
+    assert_eq!(top["total"], 1);
+    let main = &top["nodes"][0];
+    assert_eq!(main["function"], "worked_example::main");
+    assert_eq!(main["child_count"], 4);
+    assert_eq!(main["parent"], Value::Null);
+    assert!(main["inclusive_ticks"].as_u64().unwrap() > 0);
+    assert_eq!(top["completeness"], ok(&r[1])["completeness"]);
+    let load_call = ok(&r[1])["calls"][0]["id"].clone();
+
+    let r = tools(vec![
+        call(
+            1,
+            "profile",
+            json!({"min_percent": 0, "min_percent_of_parent": 0}),
+        ),
+        call(
+            2,
+            "profile",
+            json!({"min_percent": 0, "min_percent_of_parent": 0, "node": main["id"], "limit": 2}),
+        ),
+        call(
+            3,
+            "profile",
+            json!({"function": "load", "scope": "own", "min_percent": 0}),
+        ),
+        call(
+            4,
+            "profile",
+            json!({"min_percent": 99.9, "min_percent_of_parent": 100}),
+        ),
+    ]);
+    let kids = ok(&r[1]);
+    assert_eq!(kids["total"], 4);
+    assert_eq!(kids["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(kids["nodes"][0]["parent"], main["id"]);
+    let by_load = ok(&r[2]);
+    assert_eq!(by_load["root"], load_call);
+    assert_eq!(by_load["nodes"][0]["first_call"], load_call);
+    let strict = ok(&r[3]);
+    assert_eq!(strict["nodes"][0]["child_count"], 0);
+    assert_eq!(strict["nodes"][0]["hidden"]["nodes"], 4);
+}
+
+#[test]
+fn profile_rejects_bad_arguments() {
+    let r = tools(vec![
+        call(1, "profile", json!({"scope": "mine"})),
+        call(2, "profile", json!({"min_percent": 150})),
+        call(3, "profile", json!({"root": 0, "function": "load"})),
+        call(4, "profile", json!({"pins": ["hopper://bad"]})),
+        call(5, "profile", json!({"node": 9999})),
+    ]);
+    for reply in &r {
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+    }
 }
 
 #[test]

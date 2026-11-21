@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use hopper_core::api::{
-    BreakLocation, CallFilter, CallId, Debugger, OriginHop, OwnershipState, PageReq, StepKind,
-    Stop, StopCause, Until, ValueView,
+    BreakLocation, CallFilter, CallId, CodeScope, Debugger, OriginHop, OwnershipState, PageReq,
+    ProfileRequest, StepKind, Stop, StopCause, Threshold, Until, ValueView,
 };
 use hopper_core::target::Direction;
 use hopper_core::wire::{parse_break_location, parse_source_loc, parse_u64_str};
@@ -657,6 +657,10 @@ queries (do not move the cursor):
   origin <expr>       where the value came from, with ownership labels
   history <expr>      every change of the value
   calls [fn]          the call tree, or every call of fn
+  profile [fn|id] [--own] [--min <pct>]
+                      where the ticks went, as a tree of merged calls under fn's
+                      first call or call #id (default: all roots; --own: my code only;
+                      --min: hide nodes under pct% of the root)
   hits <file:line>    every execution of a line
   index [wait]        the index's progress (wait: until it finishes)
   q                   quit";
@@ -829,6 +833,18 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
                 partial_note(&page.completeness, out)?;
             }
         }
+        "profile" => {
+            let req = parse_profile_args(d, arg)?;
+            let top = d.profile(&req, None, PageReq::first(1000))?;
+            if top.items.is_empty() {
+                writeln!(out, "no calls to profile")?;
+            }
+            let total: u64 = top.items.iter().map(|n| n.inclusive).sum();
+            for n in &top.items {
+                print_profile_node(d, &req, n, 0, total, out)?;
+            }
+            partial_note(&top.completeness, out)?;
+        }
         "hits" => {
             let loc = parse_source_loc(need(arg, "a file:line")?)?;
             let page = d.line_hits(loc, MomentRange::all(), PageReq::first(1000))?;
@@ -869,6 +885,98 @@ fn repl_command(d: &dyn Debugger, cmd: &str, arg: &str, out: &mut impl Write) ->
         }
         "help" | "h" | "?" => writeln!(out, "{HELP}")?,
         other => writeln!(out, "unknown command `{other}`; type `help`")?,
+    }
+    Ok(())
+}
+
+/// `profile [fn|id] [--own] [--min <pct>]`: the root is call `id`, or the first call of the
+/// function `fn`; `--min` replaces the default threshold with "at least <pct>% of the root".
+fn parse_profile_args(d: &dyn Debugger, arg: &str) -> Result<ProfileRequest> {
+    let mut req = ProfileRequest::new();
+    let mut words = arg.split_whitespace();
+    while let Some(word) = words.next() {
+        match word {
+            "--own" => req.scope = CodeScope::Own,
+            "--min" => {
+                let pct: f32 = words
+                    .next()
+                    .and_then(|w| w.trim_end_matches('%').parse().ok())
+                    .filter(|p| (0.0..=100.0).contains(p))
+                    .ok_or_else(|| {
+                        HopperError::Invalid("--min needs a percentage from 0 to 100".into())
+                    })?;
+                req.threshold = Threshold {
+                    of_root: pct / 100.0,
+                    of_parent: None,
+                };
+            }
+            flag if flag.starts_with("--") => {
+                return Err(HopperError::Invalid(format!("unknown option {flag}")));
+            }
+            root => {
+                req.root = Some(match root.trim_start_matches('#').parse::<u64>() {
+                    Ok(id) => CallId(id),
+                    Err(_) => {
+                        let filter = CallFilter {
+                            function: Some(root.to_string()),
+                            ..Default::default()
+                        };
+                        let first = d.calls(filter, PageReq::first(1))?;
+                        first
+                            .items
+                            .first()
+                            .map(|c| c.id)
+                            .ok_or_else(|| HopperError::NotFound(format!("a call of {root}")))?
+                    }
+                });
+            }
+        }
+    }
+    Ok(req)
+}
+
+/// One profile node and, below it, its shown children: inclusive share of `total`, ticks, self
+/// ticks, calls and what the threshold hid.
+fn print_profile_node(
+    d: &dyn Debugger,
+    req: &ProfileRequest,
+    node: &hopper_core::api::ProfileNode,
+    depth: usize,
+    total: u64,
+    out: &mut impl Write,
+) -> Result<()> {
+    let share = if total == 0 {
+        0.0
+    } else {
+        100.0 * node.inclusive as f64 / total as f64
+    };
+    write!(
+        out,
+        "{:indent$}{share:5.1}%  {} ticks (self {})  x{}  {} #{}",
+        "",
+        node.inclusive,
+        node.self_cost,
+        node.calls,
+        node.function,
+        node.first_call.0,
+        indent = 2 + 2 * depth
+    )?;
+    if node.recursion > 0 {
+        write!(out, "  recursion {}", node.recursion)?;
+    }
+    if node.hidden.nodes > 0 {
+        write!(
+            out,
+            "  (+{} hidden, {} ticks)",
+            node.hidden.nodes, node.hidden.cost
+        )?;
+    }
+    writeln!(out)?;
+    if node.child_count > 0 {
+        let kids = d.profile(req, Some(node.id), PageReq::first(1000))?;
+        for k in &kids.items {
+            print_profile_node(d, req, k, depth + 1, total, out)?;
+        }
     }
     Ok(())
 }

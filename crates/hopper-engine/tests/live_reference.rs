@@ -6,7 +6,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use hopper_core::api::{CallFilter, Completeness, Debugger, PageReq};
+use hopper_core::api::{
+    CallFilter, CodeScope, Completeness, Debugger, PageReq, ProfileRequest, Threshold,
+};
 use hopper_core::{MomentRange, Place, SourceLoc};
 use hopper_engine::{Session, SessionOptions};
 use support::*;
@@ -68,6 +70,40 @@ fn calls_line_hits_and_allocations_come_from_the_reference_run() {
     assert!(!info.is_reference_moment(&start.at));
     // Its moments belong to the other run: this session cannot seek to them.
     assert!(d.seek(load.entry).is_err());
+
+    // The profile comes from the same reference run: `load` is a node costing its ticks.
+    let all_nodes = ProfileRequest {
+        threshold: Threshold {
+            of_root: 0.0,
+            of_parent: None,
+        },
+        ..ProfileRequest::new()
+    };
+    let top_nodes = d.profile(&all_nodes, None, PageReq::first(100)).unwrap();
+    assert_eq!(
+        top_nodes.completeness,
+        Completeness::Complete,
+        "{top_nodes:?}"
+    );
+    let load_node = find_profile_node(&d, &all_nodes, None, "::load").expect("a node for load");
+    assert_eq!(load_node.calls, 1);
+    assert_eq!(load_node.first_call, load.id);
+    assert_eq!(
+        load_node.inclusive,
+        load.exit.unwrap().ticks - load.entry.ticks
+    );
+    let own_nodes = ProfileRequest {
+        scope: CodeScope::Own,
+        ..all_nodes
+    };
+    let own_top = d.profile(&own_nodes, None, PageReq::first(100)).unwrap();
+    assert!(
+        own_top.items.iter().all(|n| n
+            .location
+            .as_ref()
+            .is_some_and(|l| !l.file.starts_with("/rustc/"))),
+        "{own_top:?}"
+    );
 
     let hits = d
         .line_hits(

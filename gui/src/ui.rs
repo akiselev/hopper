@@ -18,6 +18,7 @@ use skelter_core::{Document, KindId, ListenFlags, PropId, SignalId, StyleInput, 
 
 use crate::app::{QueryLine, UrlBox, Viewer, value_summary};
 use crate::nav::Command;
+use crate::profile::{ProfileControl, ThresholdPreset};
 use crate::rows::{Disclosure, RowCell, RowLine, RowList, RowsHost, Tone, Width};
 use crate::source::SourceHost;
 use crate::timeline::TimelineHost;
@@ -46,12 +47,13 @@ pub const TOOLBAR_H: f32 = 36.0;
 pub const STATUS_H: f32 = 24.0;
 
 /// The panes, by berth id, with their titles.
-pub const PANES: [(&str, &str); 9] = [
+pub const PANES: [(&str, &str); 10] = [
     ("source", "Source"),
     ("stack", "Stack"),
     ("locals", "Locals"),
     ("timeline", "Timeline"),
     ("calls", "Calls"),
+    ("profile", "Profile"),
     ("query", "Query"),
     ("disassembly", "Disassembly"),
     ("registers", "Registers"),
@@ -73,6 +75,7 @@ pub const CSS: &str = r#"
 .hop-console { margin: 4px; flex-shrink: 0; }
 .hop-memory-bar { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 4px; flex-shrink: 0; }
 .hop-memory-addr { width: 220px; }
+.hop-profile-bar { display: flex; flex-direction: row; align-items: center; gap: 4px; margin: 4px; flex-shrink: 0; }
 "#;
 
 /// hopper's panes are fixed: a tab's close button (or closing the window's last tab) is refused.
@@ -231,6 +234,21 @@ pub fn default_layout(size: Size) -> Dock {
             },
         );
     }
+    if let Some(g) = group_of(&dock, "calls") {
+        apply(
+            &mut dock,
+            DockCommand::Open {
+                pane: p("profile"),
+                at: Some(Target::Group {
+                    window: main.clone(),
+                    group: g,
+                    index: None,
+                }),
+                initial_size: None,
+            },
+        );
+        apply(&mut dock, DockCommand::Activate { pane: p("calls") });
+    }
     if let Some(g) = group_of(&dock, "query") {
         apply(
             &mut dock,
@@ -277,6 +295,7 @@ pub enum Action {
     UrlCancel,
     ConsoleSubmit,
     MemorySubmit,
+    Profile(crate::profile::ProfileControl),
     CallsActivated,
     CallsSelected,
 }
@@ -297,6 +316,10 @@ pub struct Ui {
     pub locals: NodeId,
     pub timeline: NodeId,
     pub calls: NodeId,
+    pub profile: NodeId,
+    pub profile_summary: NodeId,
+    /// The profile header's controls, each shown pressed while it is in effect.
+    pub profile_controls: Vec<(NodeId, crate::profile::ProfileControl)>,
     pub query: NodeId,
     pub console: NodeId,
     pub disassembly: NodeId,
@@ -443,6 +466,54 @@ fn buttons() -> Vec<(&'static str, &'static str, Command)> {
     ]
 }
 
+/// The profile header's controls: label, tooltip, what they ask for.
+fn profile_buttons() -> Vec<(&'static str, &'static str, ProfileControl)> {
+    let mut v: Vec<_> = ThresholdPreset::ALL
+        .into_iter()
+        .map(|p| {
+            (
+                p.label(),
+                "Hide calls below this share of the root's cost",
+                ProfileControl::Threshold(p),
+            )
+        })
+        .collect();
+    v.push((
+        "My code",
+        "Only the program's own code (not std or dependencies)",
+        ProfileControl::MyCode,
+    ));
+    v.push((
+        "Pin origin",
+        "Keep the calls of the origin chain last shown in the query pane visible",
+        ProfileControl::PinOrigin,
+    ));
+    v.push((
+        "Profile this call",
+        "Profile the call selected in Calls",
+        ProfileControl::ProfileSelectedCall,
+    ));
+    v.push((
+        "All roots",
+        "Profile every root call",
+        ProfileControl::AllRoots,
+    ));
+    v
+}
+
+/// A control's button text: its label, marked while it is in effect.
+fn profile_button_text(control: ProfileControl, active: bool) -> String {
+    let label = profile_buttons()
+        .into_iter()
+        .find(|(_, _, c)| *c == control)
+        .map_or("", |(l, _, _)| l);
+    if active {
+        format!("● {label}")
+    } else {
+        label.to_string()
+    }
+}
+
 impl Ui {
     /// Builds the window's tree into `doc` (whose registry has skelter-widgets', berth's and
     /// hopper's kinds), with the services the panes read.
@@ -541,6 +612,50 @@ impl Ui {
         if let Some(s) = signal(doc, w::TABLE, "changed") {
             listen(doc, calls, s);
         }
+        let profile_box = node(doc, None, w::BOX, &["hop-query"], "");
+        set(doc, profile_box, ANCHOR, Value::Str("pane:profile".into()));
+        let profile_bar = node(doc, Some(profile_box), w::BOX, &["hop-profile-bar"], "");
+        let mut profile_controls = Vec::new();
+        for (text, tip, control) in profile_buttons() {
+            let b = node(doc, Some(profile_bar), w::BUTTON, &[], "");
+            set(doc, b, w::BUTTON_TEXT, Value::Str(text.into()));
+            set(doc, b, w::BUTTON_SMALL, Value::Bool(true));
+            set(doc, b, TITLE, Value::Str(tip.into()));
+            set(
+                doc,
+                b,
+                ANCHOR,
+                Value::Str(format!("profile:{}", text.to_lowercase().replace(' ', "-")).into()),
+            );
+            listen(doc, b, w::CLICKED);
+            actions.insert(b, Action::Profile(control));
+            profile_controls.push((b, control));
+        }
+        let profile_summary = node(doc, Some(profile_bar), w::LABEL, &[], "");
+        let profile = node(
+            doc,
+            Some(profile_box),
+            w::TABLE,
+            &[],
+            "flex-grow: 1; min-height: 0; width: 100%",
+        );
+        set(doc, profile, ANCHOR, Value::Str("profile-table".into()));
+        set(doc, profile, ARIA_LABEL, Value::Str("Profile".into()));
+        for (_, title, width) in crate::profile::COLUMNS {
+            let c = node(doc, Some(profile), column, &[], "");
+            if let Some(p) = col_prop(doc, "title") {
+                set(doc, c, p, Value::Str(title.into()));
+            }
+            if let Some(p) = col_prop(doc, "width") {
+                set(doc, c, p, Value::F64(f64::from(width)));
+            }
+        }
+        if let Some(s) = signal(doc, w::TABLE, "activated") {
+            listen(doc, profile, s);
+        }
+        if let Some(s) = signal(doc, w::TABLE, "changed") {
+            listen(doc, profile, s);
+        }
         let query_box = node(doc, None, w::BOX, &["hop-query"], "");
         set(doc, query_box, ANCHOR, Value::Str("pane:query".into()));
         let query = node(
@@ -617,6 +732,7 @@ impl Ui {
             ("locals", locals),
             ("timeline", timeline),
             ("calls", calls),
+            ("profile", profile_box),
             ("query", query_box),
             ("disassembly", disassembly),
             ("registers", registers),
@@ -701,6 +817,9 @@ impl Ui {
             locals,
             timeline,
             calls,
+            profile,
+            profile_summary,
+            profile_controls,
             query,
             console,
             disassembly,
@@ -725,6 +844,16 @@ impl Ui {
         let model = Arc::new(crate::calls::CallRows::new(v.calls.clone()));
         if let Err(e) = skelter_widgets::table::model::TableModels::attach(doc, self.calls, model) {
             eprintln!("hopper-gui: the call table: {e:?}");
+        }
+    }
+
+    /// Attaches the profile table's model.
+    pub fn attach_profile(&self, doc: &mut Document, v: &Viewer) {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let model = Arc::new(crate::profile::ProfileRows::new(v.profile.clone()));
+        if let Err(e) = skelter_widgets::table::model::TableModels::attach(doc, self.profile, model)
+        {
+            eprintln!("hopper-gui: the profile table: {e:?}");
         }
     }
 
@@ -792,6 +921,19 @@ impl Ui {
         }
         if ch.calls {
             let _ = skelter_widgets::table::model::TableModels::refresh(doc, self.calls);
+        }
+        if ch.profile {
+            let _ = skelter_widgets::table::model::TableModels::refresh(doc, self.profile);
+            for (b, control) in self.profile_controls.clone() {
+                let text = profile_button_text(control, v.profile_control_active(control));
+                set(doc, b, w::BUTTON_TEXT, Value::Str(text.into()));
+            }
+            set(
+                doc,
+                self.profile_summary,
+                w::LABEL_TEXT,
+                Value::Str(v.profile_summary().into()),
+            );
         }
         if ch.machine {
             let (rows, at) = disassembly_rows(v);

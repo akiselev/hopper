@@ -41,8 +41,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use hopper_core::api::{
     AllocationId, AllocationInfo, BreakLocation, BreakpointId, Budget, CallFilter, CallNode,
     Completeness, Debugger, Frame, IndexStatus, Instruction, OriginChain, OwnershipState, Page,
-    PageReq, ProcessInfo, RecordingInfo, StepKind, Stop, StopCause, TimelineEvent, Until,
-    UserBreakpoint, ValueHandle, ValueView, WriteEvent,
+    PageReq, ProcessInfo, ProfileNode, ProfileNodeId, ProfileRequest, RecordingInfo, StepKind,
+    Stop, StopCause, TimelineEvent, Until, UserBreakpoint, ValueHandle, ValueView, WriteEvent,
 };
 use hopper_core::target::{Breakpoint, Direction, Memory, Target, TargetMemory};
 use hopper_core::{
@@ -1216,6 +1216,21 @@ impl Debugger for Session {
             };
         }
         queries::calls(self.shared(), filter, page)
+    }
+
+    fn profile(
+        &self,
+        req: &ProfileRequest,
+        parent: Option<ProfileNodeId>,
+        page: PageReq,
+    ) -> Result<Page<ProfileNode>> {
+        if self.is_live() {
+            return match &self.inner.reference {
+                Ok(r) => r.indexed.index.profile(req, parent, page),
+                Err(_) => Err(self.inner.live_refusal("the profile")),
+            };
+        }
+        queries::profile(self.shared(), req, parent, page)
     }
 
     fn line_hits(&self, loc: SourceLoc, range: MomentRange, page: PageReq) -> Result<Page<Moment>> {

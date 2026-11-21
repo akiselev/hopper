@@ -147,3 +147,11 @@ on gdbserver and `StopReason` variants for thread create and exit, if rr reports
 only the last thread's exit (rr `ca20dcb`, `GdbServerConnection::set_var`,
 `GdbServer::maybe_notify_stop`), so rr replicas compare thread lists at every forward stop. Phase A
 uses the events, keeping the `thread_start` heuristic when the server does not report them.
+
+## Profile pane (2026-11-02)
+
+**P1. Header controls for a table pane (svelters, owner: skelter's owner).** The Profile pane's
+header uses plain `button` widgets and shows a pressed control by prefixing its text with "● ".
+Asked: a toggle or segmented-button widget with a `checked` property (threshold presets are one
+exclusive group; "My code" and "Pin origin" are independent toggles). *Meanwhile:* the prefixed
+text buttons in `gui/src/ui.rs` (`profile_button_text`).

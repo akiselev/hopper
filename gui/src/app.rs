@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hopper_core::api::{
-    BreakLocation, Budget, CallFilter, CallId, Debugger, Frame, IndexStatus, Instruction,
-    OriginChain, OriginEnd, OriginHop, OwnershipKind, OwnershipLabel, OwnershipState, Page,
-    RecordingInfo, Stop, StopCause, TimelineEvent, Until, UserBreakpoint, ValueHandle, ValueView,
+    BreakLocation, Budget, CallFilter, CallId, CallNode, CodeScope, Debugger, Frame, IndexStatus,
+    Instruction, OriginChain, OriginEnd, OriginHop, OwnershipKind, OwnershipLabel, OwnershipState,
+    Page, ProfileNodeId, ProfileRequest, RecordingInfo, Stop, StopCause, TimelineEvent, Until,
+    UserBreakpoint, ValueHandle, ValueView,
 };
 use hopper_core::api::{Completeness, Confidence, MachineKind, PageReq};
 use hopper_core::target::Direction;
@@ -27,6 +28,7 @@ use crate::calls::CallTree;
 use crate::gutter::{Arrow, ArrowAt, HitCount, HitCounts};
 use crate::jobs::{Jobs, Lane};
 use crate::nav::{Command, Move, NavState, move_of};
+use crate::profile::{ProfileControl, ProfileView, ThresholdPreset};
 use crate::rows::{RowCell, Tone};
 use crate::timeline_model::TimelineModel;
 use crate::tree::{Fetch, LazyTree};
@@ -53,6 +55,7 @@ pub struct Changed {
     pub stack: bool,
     pub locals: bool,
     pub calls: bool,
+    pub profile: bool,
     pub timeline: bool,
     pub query: bool,
     pub status: bool,
@@ -69,6 +72,7 @@ impl Changed {
             stack: true,
             locals: true,
             calls: true,
+            profile: true,
             timeline: true,
             query: true,
             status: true,
@@ -187,6 +191,17 @@ pub struct Viewer {
     pub locals_selected: Option<usize>,
     pub calls: Rc<RefCell<CallTree>>,
     pub calls_selected: Option<usize>,
+    pub profile: Rc<RefCell<ProfileView>>,
+    /// What the profile pane shows; any change of it asks again from the top.
+    pub profile_request: ProfileRequest,
+    /// The name of the call the profile is rooted at, when it is.
+    pub profile_root: Option<String>,
+    /// Whether the last profile page covered the whole recording.
+    pub profile_completeness: Option<Completeness>,
+    /// Bumped by every new profile request; pages asked before it are stale.
+    profile_epoch: u64,
+    /// The moments of the origin chain last shown in the query pane.
+    origin_pins: Vec<Moment>,
     pub timeline: TimelineModel,
     /// A timeline seek is in flight; the latest wanted target waits here.
     seek_in_flight: bool,
@@ -237,6 +252,12 @@ impl Viewer {
             locals_selected: None,
             calls: Rc::new(RefCell::new(CallTree::new(PAGE))),
             calls_selected: None,
+            profile: Rc::new(RefCell::new(ProfileView::new(PAGE))),
+            profile_request: ProfileRequest::new(),
+            profile_root: None,
+            profile_completeness: None,
+            profile_epoch: 0,
+            origin_pins: Vec::new(),
             timeline: TimelineModel::default(),
             seek_in_flight: false,
             seek_next: None,
@@ -322,6 +343,7 @@ impl Viewer {
         );
         let fetch = self.calls.borrow_mut().reset();
         self.fetch_calls(fetch);
+        self.restart_profile();
         self.refresh_breakpoints();
         self.poll_index(None);
     }
@@ -342,6 +364,11 @@ impl Viewer {
                         h.forget_incomplete();
                     }
                     v.changed.source = true;
+                    let fetch = v.calls.borrow_mut().reset();
+                    v.calls_selected = None;
+                    v.fetch_calls(fetch);
+                    v.changed.calls = true;
+                    v.restart_profile();
                 }
                 if !done {
                     v.poll_index(Some(INDEX_POLL));
@@ -889,7 +916,13 @@ impl Viewer {
             Lane::Replay,
             move |d| d.origin(&key, Budget::default()),
             move |v, r| {
+                let pins = r.as_ref().ok().map(|c| v.chain_moments(c));
                 let lines = origin_lines(&view, r, v.recording.as_ref());
+                if v.local_query.as_ref().is_some_and(|q| q.id == id)
+                    && let Some(pins) = pins
+                {
+                    v.origin_pins = pins;
+                }
                 if let Some(q) = v.local_query.as_mut().filter(|q| q.id == id) {
                     q.origin = lines;
                     v.show_local_query();
@@ -1241,6 +1274,11 @@ impl Viewer {
             return;
         };
         drop(tree);
+        self.show_call(&c);
+    }
+
+    /// The call's entry and exit in the query pane, to jump to.
+    fn show_call(&mut self, c: &CallNode) {
         let mut q = vec![QueryLine::text(
             0,
             format!("Call of {}", c.function),
@@ -1293,6 +1331,198 @@ impl Viewer {
         self.local_query = None;
         self.query = q;
         self.changed.query = true;
+    }
+
+    // ---------------------------------------------------------------- profile
+
+    fn fetch_profile(&mut self, f: Fetch<ProfileNodeId>) {
+        let req = self.profile_request.clone();
+        let epoch = self.profile_epoch;
+        let page = f.page;
+        let parent = f.parent;
+        self.jobs.submit(
+            Lane::Replay,
+            move |d| d.profile(&req, parent, page),
+            move |v, r| {
+                if v.profile_epoch != epoch {
+                    return;
+                }
+                match r {
+                    Ok(p) => {
+                        v.profile_completeness = Some(p.completeness);
+                        let mut view = v.profile.borrow_mut();
+                        if parent.is_none() {
+                            view.root_cost += p.items.iter().map(|n| n.inclusive).sum::<u64>();
+                        }
+                        let items = p.items.into_iter().map(|n| (n.id, n)).collect();
+                        view.tree
+                            .children_loaded(parent.as_ref(), page.offset, items, p.total);
+                    }
+                    Err(e) => {
+                        v.profile.borrow_mut().tree.fetch_failed(parent.as_ref());
+                        v.say(format!("profile: {}", err_text(&e)), Tone::Error);
+                    }
+                }
+                v.changed.profile = true;
+            },
+        );
+    }
+
+    /// Forgets the profile and asks for its top level again: node ids belong to one request.
+    pub fn restart_profile(&mut self) {
+        self.profile_epoch += 1;
+        let fetch = {
+            let mut view = self.profile.borrow_mut();
+            view.root_cost = 0;
+            view.threshold = self.profile_request.threshold;
+            view.tree.reset()
+        };
+        self.fetch_profile(fetch);
+        self.changed.profile = true;
+    }
+
+    /// A press on one of the profile pane's header controls.
+    pub fn profile_control(&mut self, control: ProfileControl) {
+        match control {
+            ProfileControl::Threshold(p) => self.profile_request.threshold.of_root = p.of_root(),
+            ProfileControl::MyCode => {
+                self.profile_request.scope = match self.profile_request.scope {
+                    CodeScope::All => CodeScope::Own,
+                    CodeScope::Own => CodeScope::All,
+                };
+            }
+            ProfileControl::PinOrigin => {
+                if self.profile_request.pins.is_empty() {
+                    if self.origin_pins.is_empty() {
+                        self.say(
+                            "Click a value in Locals first: its origin is what gets pinned.",
+                            Tone::Muted,
+                        );
+                        return;
+                    }
+                    self.profile_request.pins = self.origin_pins.clone();
+                } else {
+                    self.profile_request.pins.clear();
+                }
+            }
+            ProfileControl::ProfileSelectedCall => {
+                let tree = self.calls.borrow();
+                let selected = self.calls_selected.and_then(|i| match tree.row(i) {
+                    Some(crate::tree::Row::Node { key, .. }) => {
+                        tree.item(key).map(|c| (c.id, c.function.clone()))
+                    }
+                    _ => None,
+                });
+                drop(tree);
+                let Some((id, name)) = selected else {
+                    self.say("Select a call in Calls first.", Tone::Muted);
+                    return;
+                };
+                self.profile_request.root = Some(id);
+                self.profile_root = Some(name);
+            }
+            ProfileControl::AllRoots => {
+                self.profile_request.root = None;
+                self.profile_root = None;
+            }
+        }
+        self.restart_profile();
+    }
+
+    /// Whether `control` is in effect (the header shows it pressed).
+    pub fn profile_control_active(&self, control: ProfileControl) -> bool {
+        let req = &self.profile_request;
+        match control {
+            ProfileControl::Threshold(p) => ThresholdPreset::of(&req.threshold) == Some(p),
+            ProfileControl::MyCode => req.scope == CodeScope::Own,
+            ProfileControl::PinOrigin => !req.pins.is_empty(),
+            ProfileControl::ProfileSelectedCall => req.root.is_some(),
+            ProfileControl::AllRoots => req.root.is_none(),
+        }
+    }
+
+    /// The header's summary of what is profiled.
+    pub fn profile_summary(&self) -> String {
+        let what = match &self.profile_root {
+            Some(f) => format!("calls under {f}"),
+            None => "all roots".to_string(),
+        };
+        match &self.profile_completeness {
+            Some(Completeness::Partial { .. }) => format!("{what} (index still building)"),
+            _ => what,
+        }
+    }
+
+    /// The moments of an origin chain that are positions in this session, for pinning.
+    fn chain_moments(&self, chain: &OriginChain) -> Vec<Moment> {
+        chain
+            .references
+            .iter()
+            .chain(&chain.hops)
+            .map(|h| h.at)
+            .filter(|m| !other_run(self.recording.as_ref(), m))
+            .collect()
+    }
+
+    /// Activates profile row `i`: expands or collapses it, or loads the next page.
+    pub fn activate_profile(&mut self, i: usize) {
+        let f = self.profile.borrow_mut().tree.activate(i);
+        if let Some(f) = f {
+            self.fetch_profile(f);
+        }
+        self.changed.profile = true;
+    }
+
+    /// Selects profile row `i`: its first call is selected in Calls (when that tree has loaded
+    /// it), shown in the query pane, and the cursor moves to the call's entry.
+    pub fn select_profile_row(&mut self, i: usize) {
+        let node = {
+            let view = self.profile.borrow();
+            match view.tree.row(i) {
+                Some(crate::tree::Row::Node { key, .. }) => view.tree.item(key).cloned(),
+                _ => None,
+            }
+        };
+        let Some(node) = node else {
+            return;
+        };
+        let (id, name) = (node.first_call, node.function);
+        self.jobs.submit(
+            Lane::Replay,
+            {
+                let name = name.clone();
+                move |d| find_call(d, id, &name)
+            },
+            move |v, r| match r {
+                Ok(Some(c)) => v.reveal_call(&c),
+                Ok(None) => v.say(
+                    format!("profile: the call of {name} is not in the call tree"),
+                    Tone::Muted,
+                ),
+                Err(e) => v.say(format!("profile: {}", err_text(&e)), Tone::Error),
+            },
+        );
+    }
+
+    /// Selects `c` in the call tree if it has loaded it, shows it in the query pane and moves
+    /// the cursor to its entry.
+    fn reveal_call(&mut self, c: &CallNode) {
+        let row = self
+            .calls
+            .borrow()
+            .rows()
+            .iter()
+            .position(|r| matches!(r, crate::tree::Row::Node { key, .. } if *key == c.id));
+        if row.is_some() {
+            self.calls_selected = row;
+            self.changed.calls = true;
+        }
+        self.show_call(c);
+        if !other_run(self.recording.as_ref(), &c.entry)
+            && self.stop.as_ref().is_none_or(|s| s.at != c.entry)
+        {
+            self.seek(c.entry);
+        }
     }
 
     // ---------------------------------------------------------------- status
@@ -1475,6 +1705,38 @@ pub fn source_groups(chain: &OriginChain) -> Vec<Vec<&OriginHop>> {
         }
     }
     groups
+}
+
+/// Pages scanned for a call before giving up.
+const FIND_CALL_PAGES: u64 = 50;
+
+/// The call `id`, found by searching the calls of its function (`Debugger` has no lookup by id).
+fn find_call(
+    d: &dyn Debugger,
+    id: CallId,
+    function: &str,
+) -> hopper_core::Result<Option<CallNode>> {
+    for n in 0..FIND_CALL_PAGES {
+        let filter = CallFilter {
+            function: Some(function.to_string()),
+            ..CallFilter::default()
+        };
+        let page = d.calls(
+            filter,
+            PageReq {
+                offset: n * u64::from(PAGE),
+                limit: PAGE,
+            },
+        )?;
+        let last = page.items.len() < PAGE as usize;
+        if let Some(c) = page.items.into_iter().find(|c| c.id == id) {
+            return Ok(Some(c));
+        }
+        if last {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 /// The query pane's rows for an origin answer: one row per source-level hop (its ownership

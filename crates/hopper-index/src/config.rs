@@ -146,14 +146,7 @@ impl IndexConfig {
     }
 }
 
-/// Toolchain and registry directories: never the program's own code.
-pub(crate) fn is_toolchain_path(path: &str) -> bool {
-    path.starts_with("/rustc/")
-        || path.contains("/.rustup/")
-        || path.contains("/.cargo/registry/")
-        || path.contains("/.cargo/git/")
-        || path.contains("/rustlib/")
-}
+pub(crate) use hopper_core::source::is_toolchain_path;
 
 #[cfg(test)]
 mod tests {
@@ -179,12 +172,5 @@ mod tests {
         assert!(c.is_allocator_frame("__rustc::__rust_alloc"));
         assert!(!c.is_allocator_frame("worked_example::load"));
         assert!(!c.is_allocator_frame("<worked_example::Config as core::clone::Clone>::clone"));
-    }
-
-    #[test]
-    fn toolchain_paths() {
-        assert!(is_toolchain_path("/rustc/abc/library/std/src/rt.rs"));
-        assert!(is_toolchain_path("/home/u/.cargo/registry/src/x/lib.rs"));
-        assert!(!is_toolchain_path("/home/u/proj/src/main.rs"));
     }
 }

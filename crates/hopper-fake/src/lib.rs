@@ -20,6 +20,7 @@
 //! The scripted machine code is not a real x86 encoding: `memory` and `disassemble` agree on
 //! its bytes, but the bytes do not decode.
 
+mod profile;
 mod script;
 mod values;
 
@@ -30,8 +31,9 @@ use std::time::{Duration, Instant};
 use hopper_core::api::{
     AllocationInfo, BreakLocation, BreakpointId, Budget, CallFilter, CallNode, Completeness,
     Debugger, Frame, IndexStatus, Instruction, OriginChain, OriginEnd, OriginHop, Page, PageReq,
-    PathElem, ProcessInfo, RecordingInfo, StepKind, Stop, StopCause, TimelineEvent, Until,
-    UserBreakpoint, ValueHandle, ValueTarget, ValueView, WriteEvent,
+    PathElem, ProcessInfo, ProfileNode, ProfileNodeId, ProfileRequest, RecordingInfo, StepKind,
+    Stop, StopCause, TimelineEvent, Until, UserBreakpoint, ValueHandle, ValueTarget, ValueView,
+    WriteEvent,
 };
 use hopper_core::target::Direction;
 use hopper_core::{
@@ -897,6 +899,35 @@ impl Debugger for FakeDebugger {
             })
             .collect();
         Ok(page(&items, req, completeness))
+    }
+
+    fn profile(
+        &self,
+        req: &ProfileRequest,
+        parent: Option<ProfileNodeId>,
+        page_req: PageReq,
+    ) -> Result<Page<ProfileNode>> {
+        self.delay();
+        let (covered, completeness) = self.coverage(PHASE_CALLS);
+        // Calls the index has not reached yet are not in the profile; the ones still open at the
+        // horizon end there.
+        let horizon = self.steps().get(covered).map(|s| s.moment);
+        let seen: Vec<CallNode> = self
+            .script
+            .calls
+            .iter()
+            .filter(|c| horizon.is_none_or(|h| c.entry.is_before(&h)))
+            .cloned()
+            .map(|mut c| {
+                if let Some(h) = horizon {
+                    c.exit = c.exit.filter(|e| e.is_before(&h));
+                }
+                c
+            })
+            .collect();
+        let end = horizon.unwrap_or_else(|| self.steps().last().expect("steps").moment);
+        let items = profile::profile_children(&seen, end, req, parent)?;
+        Ok(page(&items, page_req, completeness))
     }
 
     fn line_hits(&self, loc: SourceLoc, range: MomentRange, req: PageReq) -> Result<Page<Moment>> {

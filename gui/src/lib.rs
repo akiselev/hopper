@@ -7,6 +7,7 @@ pub mod document;
 pub mod gutter;
 pub mod jobs;
 pub mod nav;
+pub mod profile;
 pub mod rows;
 pub mod run;
 pub mod source;

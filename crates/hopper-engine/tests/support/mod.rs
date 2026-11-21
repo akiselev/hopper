@@ -180,3 +180,22 @@ pub fn source_hop_text(h: &hopper_core::api::OriginHop) -> String {
 
 pub mod gdb;
 pub mod step_recording;
+
+/// The first node under `parent` (depth first) whose function ends with `suffix`.
+pub fn find_profile_node(
+    d: &hopper_engine::Session,
+    req: &hopper_core::api::ProfileRequest,
+    parent: Option<hopper_core::api::ProfileNodeId>,
+    suffix: &str,
+) -> Option<hopper_core::api::ProfileNode> {
+    let page =
+        hopper_core::api::Debugger::profile(d, req, parent, hopper_core::api::PageReq::first(1000))
+            .unwrap();
+    page.items.into_iter().find_map(|n| {
+        if n.function.ends_with(suffix) {
+            Some(n)
+        } else {
+            find_profile_node(d, req, Some(n.id), suffix)
+        }
+    })
+}

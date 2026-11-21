@@ -374,6 +374,118 @@ pub struct CallFilter {
     pub process: Option<ProcessId>,
 }
 
+// ---------------------------------------------------------------- the profile
+
+/// Which calls the profile shows as nodes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CodeScope {
+    /// Every function.
+    All,
+    /// Only the recording's own code: functions whose source file is not in a toolchain or
+    /// registry directory. A function without a source location is not own. Other functions
+    /// are transparent: their cost stays in the nearest own ancestor and their own-code callees
+    /// attach to that ancestor.
+    Own,
+}
+
+/// When a node is shown. A node is shown when its parent is shown and it passes either test, or
+/// when it is on a pinned path ([`ProfileRequest::pins`]).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Threshold {
+    /// Inclusive cost of at least this fraction (`0.01` is 1%) of the profiled root's cost.
+    pub of_root: f32,
+    /// Or, when set, of at least this fraction of the parent node's inclusive cost: keeps the
+    /// local structure inside subtrees too small to pass `of_root`. `None`: only `of_root`.
+    pub of_parent: Option<f32>,
+}
+
+impl Default for Threshold {
+    fn default() -> Self {
+        Threshold {
+            of_root: 0.01,
+            of_parent: Some(0.25),
+        }
+    }
+}
+
+/// A profile of the calling-context tree under one call (or every root call). Answers are
+/// cached per request: pages of the same request see the same [`ProfileNodeId`]s.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileRequest {
+    /// The call to profile; `None`: every root call.
+    pub root: Option<CallId>,
+    /// Only the calls of this thread.
+    pub tid: Option<Tid>,
+    pub scope: CodeScope,
+    pub threshold: Threshold,
+    /// Calls active at these moments (on each moment's thread), and their ancestors, are shown
+    /// whatever their cost: an origin chain's hops, a breakpoint's hits.
+    pub pins: Vec<Moment>,
+}
+
+impl ProfileRequest {
+    /// Every root call, all code, the default threshold, no pins.
+    pub fn new() -> Self {
+        ProfileRequest {
+            root: None,
+            tid: None,
+            scope: CodeScope::All,
+            threshold: Threshold::default(),
+            pins: Vec::new(),
+        }
+    }
+}
+
+impl Default for ProfileRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Identifies a node within one [`ProfileRequest`]; meaningless for another request.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ProfileNodeId(pub u64);
+
+/// The children of a node that the threshold hid (direct children only).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Hidden {
+    pub nodes: u64,
+    /// The sum of their inclusive costs, in ticks.
+    pub cost: u64,
+}
+
+/// One node of the calling-context tree: all the calls reaching one function by the same path of
+/// shown functions. Costs are in ticks of the calls' own thread; a call that never returned
+/// costs up to the end of what the index covered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileNode {
+    pub id: ProfileNodeId,
+    /// `None` for the top-level nodes (the root call, or the root calls' functions).
+    pub parent: Option<ProfileNodeId>,
+    pub function: String,
+    pub location: Option<SourceLoc>,
+    /// Calls merged into this node, folded recursive calls included.
+    pub calls: u64,
+    /// Ticks of the outermost calls merged into this node (nested calls of the same node are not
+    /// counted twice), including transparent callees under [`CodeScope::Own`].
+    pub inclusive: u64,
+    /// Ticks spent in this node's own calls and in the transparent and recursively folded calls
+    /// under them, but in no call that has a node of its own. Hidden and shown children are
+    /// both excluded, so `inclusive = self_cost + sum of the children's inclusive` except that
+    /// children of a recursive node may overlap (see `recursion`).
+    pub self_cost: u64,
+    /// This node holds a call active at a pin, or an ancestor of one.
+    pub pinned: bool,
+    /// Shown children.
+    pub child_count: u64,
+    pub hidden: Hidden,
+    /// The first merged call (in entry order), to jump to an example.
+    pub first_call: CallId,
+    /// How deeply this function called itself inside this node (0: never). Callees of the
+    /// folded calls attach to this node, so a recursive algorithm is one node.
+    pub recursion: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteEvent {
     pub at: Moment,
@@ -547,6 +659,16 @@ pub trait Debugger: Send + Sync {
 
     // omniscient queries
     fn calls(&self, filter: CallFilter, page: PageReq) -> Result<Page<CallNode>>;
+    /// The calling-context tree with tick costs, as [`ProfileRequest`] defines it: the shown
+    /// children of node `parent`, or with `None` the top-level nodes, most expensive first.
+    /// Walk down by passing a node's `id` as `parent`. An unknown `parent` is an error. The
+    /// completeness follows the `Calls` coverage, as in [`Debugger::calls`].
+    fn profile(
+        &self,
+        req: &ProfileRequest,
+        parent: Option<ProfileNodeId>,
+        page: PageReq,
+    ) -> Result<Page<ProfileNode>>;
     fn line_hits(&self, loc: SourceLoc, range: MomentRange, page: PageReq) -> Result<Page<Moment>>;
     fn value_history(
         &self,

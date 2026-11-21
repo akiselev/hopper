@@ -1,9 +1,9 @@
 //! The tools: their input schemas and their handlers over [`Debugger`].
 
 use hopper_core::api::{
-    BreakLocation, Budget, CallFilter, CallId, CallNode, Completeness, Debugger, Frame,
-    OriginChain, OriginHop, OwnershipLabel, OwnershipState, PageReq, StepKind, Stop, StopCause,
-    Until, ValueView,
+    BreakLocation, Budget, CallFilter, CallId, CallNode, CodeScope, Completeness, Debugger, Frame,
+    OriginChain, OriginHop, OwnershipLabel, OwnershipState, PageReq, ProfileNode, ProfileNodeId,
+    ProfileRequest, StepKind, Stop, StopCause, Threshold, Until, ValueView,
 };
 use hopper_core::target::Direction;
 use hopper_core::wire::{self, hex, moment_json, parse_break_location, parse_source_loc};
@@ -92,6 +92,17 @@ pub fn tool_definitions() -> Vec<Value> {
         "thread": thread_prop(),
     }));
     page_props(&mut calls);
+    let mut profile = obj(json!({
+        "root": {"type": "integer", "description": "Profile the subtree of this call id. Default: every root call."},
+        "function": {"type": "string", "description": "Instead of `root`: profile the first call of a function whose name contains this text."},
+        "thread": thread_prop(),
+        "scope": {"type": "string", "enum": ["all", "own"], "description": "own: only the program's own code; toolchain and registry functions are folded into their nearest own caller. Default all."},
+        "min_percent": {"type": "number", "minimum": 0, "maximum": 100, "description": "Show nodes costing at least this percentage of the root. Default 1."},
+        "min_percent_of_parent": {"type": "number", "minimum": 0, "maximum": 100, "description": "Also show nodes costing at least this percentage of their parent, keeping local structure inside small subtrees. Default 25. 100 effectively turns it off."},
+        "pins": {"type": "array", "items": {"type": "string"}, "description": "Position URLs: the calls active at these moments, and their ancestors, are shown whatever their cost."},
+        "node": {"type": "integer", "description": "List the children of this node id (from an earlier answer to the same arguments). Without it: the top-level nodes."},
+    }));
+    page_props(&mut profile);
     let mut hits = obj(json!({
         "location": {"type": "string", "description": "file:line, matched by path suffix (`main.rs:16`)."},
     }));
@@ -177,6 +188,13 @@ pub fn tool_definitions() -> Vec<Value> {
             "Calls",
             "The call tree from the index: each call's function, entry and exit moments and child count.",
             Value::Object(calls),
+            &[],
+        ),
+        tool(
+            "profile",
+            "Profile",
+            "Where the ticks went: the calling-context tree of the recording (or of one call), with calls merged by path, inclusive and self cost in ticks, and what the threshold hid under each node. Walk down with `node`; node ids belong to one set of arguments. Costs come from the index.",
+            Value::Object(profile),
             &[],
         ),
         tool(
@@ -514,6 +532,7 @@ pub(crate) fn call(d: &dyn Debugger, name: &str, args: &Args) -> Option<Result<V
         "eval" => eval,
         "memory" => memory,
         "calls" => calls,
+        "profile" => profile,
         "line_hits" => line_hits,
         "value_history" => value_history,
         "last_write" => last_write,
@@ -703,6 +722,89 @@ fn calls(d: &dyn Debugger, args: &Args) -> Result<Value> {
         "completeness": completeness_json(&page.completeness),
         "reference_run": reference_run_json(d, page.items.iter().map(|c| &c.entry)),
     }))
+}
+
+fn profile(d: &dyn Debugger, args: &Args) -> Result<Value> {
+    let root = match (opt_u64(args, "root")?, opt_str(args, "function")?) {
+        (Some(_), Some(_)) => return Err(invalid("give `root` or `function`, not both")),
+        (Some(id), None) => Some(CallId(id)),
+        (None, Some(name)) => {
+            let filter = CallFilter {
+                function: Some(name.to_string()),
+                ..Default::default()
+            };
+            let first = d.calls(filter, PageReq::first(1))?;
+            let call = first
+                .items
+                .first()
+                .ok_or_else(|| HopperError::NotFound(format!("a call of {name}")))?;
+            Some(call.id)
+        }
+        (None, None) => None,
+    };
+    let scope = match opt_str(args, "scope")? {
+        None | Some("all") => CodeScope::All,
+        Some("own") => CodeScope::Own,
+        Some(other) => {
+            return Err(invalid(format!("scope must be all or own, not {other:?}")));
+        }
+    };
+    let defaults = Threshold::default();
+    let threshold = Threshold {
+        of_root: opt_percent(args, "min_percent")?.unwrap_or(defaults.of_root),
+        of_parent: opt_percent(args, "min_percent_of_parent")?.or(defaults.of_parent),
+    };
+    let pins = match args.get("pins") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| wire::parse_moment(v).map_err(|e| invalid(format!("`pins`: {e}"))))
+            .collect::<Result<Vec<_>>>()?,
+        Some(other) => return Err(invalid(format!("`pins` must be an array, got {other}"))),
+    };
+    let req = ProfileRequest {
+        root,
+        tid: opt_u64(args, "thread")?.map(|t| Tid(t as i32)),
+        scope,
+        threshold,
+        pins,
+    };
+    let node = opt_u64(args, "node")?.map(ProfileNodeId);
+    let page = d.profile(&req, node, page_req(args)?)?;
+    Ok(json!({
+        "root": root.map(|r| r.0),
+        "nodes": page.items.iter().map(profile_node_json).collect::<Vec<_>>(),
+        "total": page.total,
+        "completeness": completeness_json(&page.completeness),
+    }))
+}
+
+/// A percentage argument (0 to 100) as the fraction the API takes.
+fn opt_percent(args: &Args, key: &str) -> Result<Option<f32>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(p) if (0.0..=100.0).contains(&p) => Ok(Some((p / 100.0) as f32)),
+            _ => Err(invalid(format!("`{key}` must be a number from 0 to 100"))),
+        },
+    }
+}
+
+fn profile_node_json(n: &ProfileNode) -> Value {
+    json!({
+        "id": n.id.0,
+        "parent": n.parent.map(|p| p.0),
+        "function": n.function,
+        "location": loc_json(&n.location),
+        "calls": n.calls,
+        "inclusive_ticks": n.inclusive,
+        "self_ticks": n.self_cost,
+        "pinned": n.pinned,
+        "child_count": n.child_count,
+        "hidden": {"nodes": n.hidden.nodes, "ticks": n.hidden.cost},
+        "first_call": n.first_call.0,
+        "recursion": n.recursion,
+    })
 }
 
 /// When the moments come from a live session's reference run (another run of the program,
